@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+build/
+dist/
+.venv/
+venv/
+env/
+.tox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv
+.python-version
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+service-account*.json
+
+# ML artifacts (regenerable, large, content-addressed)
+data/
+checkpoints/
+runs/
+wandb/
+mlruns/
+lightning_logs/
+*.parquet
+*.npy
+*.npz
+*.pkl
+*.pt
+*.pth
+*.safetensors
+
+# Logs
+*.log
+logs/
+
+# Pre-pivot planning artifacts (kept local, not for repo)
+samsiavoshian-main-design-*.md
+timeline.jsonl
