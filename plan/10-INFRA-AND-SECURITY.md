@@ -191,7 +191,7 @@ git push
 - **1Password CLI integration with launchd** — for live keys management
 - **Modern `pyproject.toml` template** — KDnuggets / Astral docs evolve
 
-### V4 Pinned Versions (DO NOT DOWNGRADE)
+### V1 Pinned Versions (DO NOT DOWNGRADE)
 
 ```toml
 [project]
@@ -203,7 +203,7 @@ dependencies = [
     "transformers>=5.7.0",
     "sentence-transformers>=5.0",
     "huggingface_hub>=1.13.0",
-    "accelerate>=1.13,<2.0",      # device-agnostic boilerplate (V5.1 May 2026)
+    "accelerate>=1.13,<2.0",      # device-agnostic boilerplate (V1)
     "alpaca-py>=0.43,<1.0",
     "yfinance==1.3.0",            # exact pin — fixed April 2026 dividends bug
     "fredapi==0.5.2",
@@ -520,7 +520,7 @@ Catches yfinance / Alpaca API breakage before you find out via a failed live cyc
 ## Now Resolved (post-deep-dive)
 
 - ✅ CI workflow YAMLs designed (above)
-- ✅ Stay 100% local — Modal/cloud rejected per V2 pivot
+- ✅ Stay 100% local — Modal/cloud rejected per pivot
 - ✅ State store: SQLite at `~/.config/nanogld/state.sqlite` (designed in doc 09)
 - ✅ Checkpoint backup: weekly cron uploads best checkpoint to HF Hub (private repo, ~30MB compressed)
 - ✅ Monitoring: wandb workspace (public for X-thread), `~/Library/Logs/nanogld.log` for ops, weekly manual review

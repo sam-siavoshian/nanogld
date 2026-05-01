@@ -2,7 +2,7 @@
 
 ## YOU ARE THE ML SYSTEMS ENGINEER AGENT
 
-You own the nanoGLD transformer code itself. You write the model from scratch in raw PyTorch (Karpathy mode — NO HuggingFace `Trainer`, NO Unsloth, NO TRL). You implement the V4 architecture spec locked below.
+You own the nanoGLD transformer code itself. You write the model from scratch in raw PyTorch (Karpathy mode — NO HuggingFace `Trainer`, NO Unsloth, NO TRL). You implement the V1 architecture spec locked below.
 
 **Read 00-OVERVIEW.md FIRST.** Project context.
 **You DO NOT train.** That's doc 05. You build the model class + verify forward pass shapes.
@@ -31,7 +31,7 @@ src/nanogld/model/
 ├── sype.py                 # [A/B candidate] Symplectic Position Embedding
 ├── revin.py                # Reversible Instance Norm per channel-group (Kim ICLR 2022)
 ├── news_fuser.py           # Perceiver-Resampler-lite + Flamingo-gated cross-attn
-├── tiny_trader.py          # Main nanoGLDV4 class wiring everything together
+├── tiny_trader.py          # Main nanoGLDV1 class wiring everything together
 ├── baselines.py            # DLinear, TSMixer, TimeMixer, xLSTMTime stubs (full impls in doc 06)
 └── cli.py                  # `python -m nanogld.model summary` prints param count + arch table
 
@@ -52,7 +52,7 @@ tests/
 
 ```python
 # Other docs (esp. doc 05) instantiate:
-model = nanoGLDV4(
+model = nanoGLDV1(
     numeric_dim: int = 36,
     n_news_queries: int = 8,
     D: int = 384,
@@ -66,7 +66,7 @@ model = nanoGLDV4(
 
 # Forward signature
 def forward(self, channel_inputs: dict[str, torch.Tensor], 
-            news_embeddings: torch.Tensor,    # (B, n_sources, 256) — V4: Qwen3 truncated
+            news_embeddings: torch.Tensor,    # (B, n_sources, 256) — V1: Qwen3 truncated
             news_mask: torch.Tensor) -> torch.Tensor:  # (B, n_sources)
     return logits  # (B, 3)
 ```
@@ -92,7 +92,7 @@ Especially:
 - **Per-head gating + value residuals** (IMU-1 arXiv:2602.02522) — paper has spec; verify your impl matches
 - **Latest PyTorch SDPA on MPS bug list** (PyTorch issue tracker) — week-to-week changes
 
-### Critical V4 Architecture Decisions (DO NOT REVERT)
+### Critical V1 Architecture Decisions (DO NOT REVERT)
 
 1. **ENCODER-only** (drop causal mask). Bidirectional context strictly better for next-bar classification.
 2. **Channel-group tokens** (~14 group tokens via iTransformer-lite), NOT 64 per-bar tokens.
@@ -106,7 +106,7 @@ Especially:
 
 ### A/B Candidates (post-baseline)
 
-These are coded as alternative components but NOT used in the default V4 build:
+These are coded as alternative components but NOT used in the default V1 build:
 - **TDA in 1 attention block** — replace `CausalSelfAttention` middle block, compare val Sharpe
 - **SyPE replaces RoPE** — single hyperparameter swap
 - **Muon optimizer** for 2D weights (doc 05 owns this — model code unchanged)
@@ -131,9 +131,9 @@ Now read the architecture spec below.
 **Status:** ✅ Complete, implementation-ready, Nia-verified
 **Last verified:** 2026-04-30
 
-## ARCHITECTURE V4 — 6-Agent 2026 Deep Research (May 2026)
+## ARCHITECTURE (V1) — 6-Agent 2026 Deep Research (May 2026)
 
-After 7-agent V3 research, ran 6 more agents on 2026-specific releases (Llama 4, Gemma 4, Qwen 3.5, embedding SOTA, time-series foundation models, architecture innovations Jan-May 2026, finance papers, training optimizations). Critical 2026 findings below — V4 ADDS these to V3 stack.
+After 7-agent earlier-draft research, ran 6 more agents on 2026-specific releases (Llama 4, Gemma 4, Qwen 3.5, embedding SOTA, time-series foundation models, architecture innovations Jan-May 2026, finance papers, training optimizations). Critical 2026 findings below — V1 ADDS these to earlier draft.
 
 ### CRITICAL ADDITIONS FROM 2026 PAPERS
 
@@ -153,8 +153,8 @@ This is now a hard rule across docs 03, 05, 06. Loss-function choice is no longe
 IMU-1 demonstrates **56× sample efficiency** on 430M model (matches teachers trained on 72B tokens). Validated each component via ablation. Recipe: QK-norm (we have) + **per-head gating** (NEW) + **value residuals** (NEW) + LayerNorm scaling + NorMuon optimizer + muP.
 
 ```python
-class CausalSelfAttentionV4(nn.Module):
-    """V4 adds per-head gating + value residual (IMU-1 recipe)."""
+class CausalSelfAttentionV1(nn.Module):
+    """V1 adds per-head gating + value residual (IMU-1 recipe)."""
     def __init__(self, D, num_heads, max_seq, dropout=0.2):
         super().__init__()
         # ... existing qkv, proj, q_norm, k_norm, RoPE buffers ...
@@ -250,7 +250,7 @@ def apply_partial_rope(x, cos, sin, frac: float = 0.10):
 
 **Implication:** add xLSTM (xLSTMTime — separate paper, code released 2025) as a **mandatory baseline** alongside DLinear, TSMixer, TimeMixer. Doc 06 update.
 
-If our 24-60M Transformer can't beat xLSTM at ~10M params on val Sharpe, ship xLSTM. Same logic as TLOB's "MLP matches transformer" finding from V3.
+If our 24-60M Transformer can't beat xLSTM at ~10M params on val Sharpe, ship xLSTM. Same logic as TLOB's "MLP matches transformer" finding from earlier draft.
 
 #### G. **Hybrid attention NOT recommended at our scale** (Qwen 3.5 production endorsement)
 
@@ -264,29 +264,29 @@ FA4 (arXiv:2603.05451, March 2026) is CUDA Blackwell-targeted. PyTorch SDPA on M
 
 Trapezoidal SSM + complex state + MIMO. Half state size of Mamba-2. MPS-feasible but no CUDA selective-scan kernel = slow. At T=64-256 with 24M params, Transformer still wins on speed AND quality. Skip.
 
-### Updated V4 Architecture Spec
+### Updated V1 Architecture Spec
 
 ```
-nanoGLD V4 (May 2026)
+nanoGLD V1 (May 2026)
 ═══════════════════════════════════════════════════════════════════
-Backbone:        ENCODER-only transformer (V3 — kept)
-Tokenization:    Channel-group (iTransformer-lite, ~14 tokens) (V3 — kept)
-Per-block:       RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias (V3 — kept)
-ADDITIONS V4:    
+Backbone:        ENCODER-only transformer 
+Tokenization:    Channel-group (iTransformer-lite, ~14 tokens) 
+Per-block:       RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias 
+ADDITIONS:    
   • Per-head gating (IMU-1) — sigmoid scalar per head, learned
   • Value residuals (IMU-1) — Linear shortcut on V across blocks
   • Partial RoPE (apply to 10% of head_dim, leave rest unrotated)
   • [A/B candidate] TDA in 1+ blocks — sink-free attention
   • [A/B candidate] SyPE replaces RoPE — symplectic position for cycles
-News fusion:     Perceiver-Resampler-lite + Flamingo-gated cross-attn (V3 — kept)
-News embedder:   Qwen/Qwen3-Embedding-4B 4-bit MLX (V4 — replaces Llama-3.1-8B)
+News fusion:     Perceiver-Resampler-lite + Flamingo-gated cross-attn 
+News embedder:   Qwen/Qwen3-Embedding-4B 4-bit MLX (V1 — replaces Llama-3.1-8B)
 Loss:            3-class CE with class weights + label smoothing 0.1
                  NEVER MSE on returns (forecast-collapse rule, arXiv:2604.00064)
-Pretrain:        SSL masked-bar reconstruction → linear-probe → LLRD fine-tune (V3 — kept)
-Optimizer:       SAM ρ=0.05 wrapping AdamW (V3 — kept)
+Pretrain:        SSL masked-bar reconstruction → linear-probe → LLRD fine-tune 
+Optimizer:       SAM ρ=0.05 wrapping AdamW 
                  [A/B candidate] NorMuon — IMU-1 paper, free at our scale
-EMA weights:     decay=0.999 (V3 — kept)
-Regularization:  Dropout 0.2 + stochastic depth 0.15 + label smoothing 0.1 (V3 — kept)
+EMA weights:     decay=0.999 
+Regularization:  Dropout 0.2 + stochastic depth 0.15 + label smoothing 0.1 
 Mandatory baselines (doc 06 — UPDATED):
   • DLinear (~10K params)
   • TSMixer (~2M)
@@ -295,7 +295,7 @@ Mandatory baselines (doc 06 — UPDATED):
   • XGBoost (committed config)
 ```
 
-### Loss Function Hard Rule (NEW V4)
+### Loss Function Hard Rule (V1)
 
 > **NEVER use squared loss (MSE) on raw returns. Use 3-class cross-entropy or quantile loss.**
 > 
@@ -315,11 +315,11 @@ Test in this order (cheapest→most invasive):
 
 Decision criterion at each gate: ≥0.1 Sharpe improvement OOS, seed-averaged across 5 seeds. Otherwise revert.
 
-## ARCHITECTURE V3 (Nia 7-agent deep research, May 2026)
+## ARCHITECTURE — earlier-draft research (May 2026)
 
 The 5 corrections from previous Nia rounds stand. PLUS major architecture pivots from 7 parallel research agents (modern LLM SOTA + time-series transformers + multimodal fusion + attention 2026 + small-data training + empirical SOTA + MPS optimization). Cross-agent consensus drove these decisions.
 
-### Major Pivots (V3)
+### Major Pivots
 
 1. **DECODER-ONLY → ENCODER-ONLY** — drop causal mask. Bidirectional context is strictly better for next-bar 3-class classification (no autoregressive rollout). Free win, all time-series transformer literature converges on this. Reference: PatchTST, iTransformer, MOIRAI all encoder-only.
 
@@ -365,7 +365,7 @@ Targets:
 - ❌ Standard residual init → ✅ **scaled residual init** for `*proj.weight` layers: `std=0.02 / sqrt(2 * num_layers)`. GPT-2 trick, keeps activation variance stable as depth grows.
 - ❌ NewsProjection raw output → ✅ add **`LayerNorm(projected_dim)` after each per-source Linear** (handles variable news-embedding magnitude across articles)
 - ❌ `torch.compile` on MPS — try it → ✅ **DON'T**. PyTorch issue #171764: produces NaN loss on MPS where eager converges fine. Stay eager.
-- ⚠️ SwiGLU vs GELU MLP: marginal gain (1-3% ppl) at this scale. Skip for v1 (Karpathy mode = type GELU, ship). V2 candidate if val loss plateaus.
+- ⚠️ SwiGLU vs GELU MLP: marginal gain (1-3% ppl) at this scale. Skip for v1 (Karpathy mode = type GELU, ship). future candidate if val loss plateaus.
 - ⚠️ MPS BF16 autocast partial in 2026 (PyTorch #139386, #97236, #84516). Phase 1 = FP32 only. Phase 2 = autocast forward only (NEVER manual `.to(bfloat16)` on weights — explicit anti-pattern in PyTorch docs).
 **Owner:** samsiavoshian
 **Implementation effort:** 1 day (day 6 of week 1)
@@ -412,7 +412,7 @@ To hit 50M: try `D=512, num_layers=10, mlp_hidden=2048`. Calc: per-block ~3.1M �
 
 To hit 100M: try `D=768, num_layers=12`. ~85-100M. Will fit on Mac mini 16GB but tight during training.
 
-**Recommendation:** start at D=384 / 8 layers / ~24M total. Train it, see if val loss converges. Scale up only if val loss hasn't converged AND OOS Sharpe is improving with capacity (it usually doesn't on financial data — see V2 doc warning).
+**Recommendation:** start at D=384 / 8 layers / ~24M total. Train it, see if val loss converges. Scale up only if val loss hasn't converged AND OOS Sharpe is improving with capacity (it usually doesn't on financial data — see prior warning).
 
 ## Code (~80 lines)
 
@@ -626,7 +626,7 @@ User mentioned MoE earlier. MoE shines when:
 
 For our case (~50-100M, single domain, single asset), MoE adds complexity for no meaningful gain. Skip.
 
-## V3 Reference Implementation (Modern Stack)
+## V1 Reference Implementation (Modern Stack)
 
 ```python
 # src/model/tiny_trader_v3.py
@@ -790,7 +790,7 @@ class NewsFuser(nn.Module):
         return out  # (B, n_queries, D)
 
 
-class nanoGLDV3(nn.Module):
+class nanoGLDV1(nn.Module):
     """Encoder-only, channel-group tokenization, full modern stack."""
     def __init__(
         self,
@@ -872,7 +872,7 @@ Param count check at D=384, 12 layers, 6 heads:
 - 12 blocks: ~21.2M
 - Channel projections: ~15M (depends on T)
 - NewsFuser: ~4.5M
-- **Total: ~40-50M params.** Bigger than V2 24M because we kept Channel projections fat. Tune by reducing T-collapse or D.
+- **Total: ~40-50M params.** Bigger than earlier 24M target because we kept Channel projections fat. Tune by reducing T-collapse or D.
 
 ## Open Questions / TODOs
 

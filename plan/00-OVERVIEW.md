@@ -5,6 +5,7 @@
 **Project:** nanoGLD — Karpathy-mode LLM-augmented gold trader on local hardware
 **Owner:** samsiavoshian
 **Status:** Planning complete. Implementation phase.
+**Version:** **V1 — frozen.** Plan does not get a version bump until the owner explicitly says so. All earlier draft labels (V2/V3/V4/V5) collapsed into V1. Agents must not introduce new version stamps.
 **Last verified:** 2026-05-01 (3 verification rounds, 19 specialized Nia research agents, ~30 critical findings absorbed)
 
 ---
@@ -94,7 +95,7 @@ A from-scratch encoder-only transformer (~24-60M params) that predicts next-30mi
 5. **Local hardware only.** M4 Mac mini 16GB (trainer) + M4 Pro Macbook 16GB (live + dev). NO cloud GPU. NO Modal/Runpod/Lambda.
 6. **Honest beats clever.** If a 2M-param TSMixer beats our 50M transformer on val Sharpe, ship TSMixer. If a Forecast-to-Fill replication (no ML at all) beats both, ship that. Story matters more than complexity.
 
-### Library Policy (V5 — May 2026 update)
+### Library Policy (V1)
 
 **Permitted now:**
 
@@ -123,12 +124,12 @@ A from-scratch encoder-only transformer (~24-60M params) that predicts next-30mi
 - Single asset: GLD only.
 - Free data sources only (Alpaca historical bars, Alpaca News API, GDELT BigQuery free tier, FRED + ALFRED, yfinance for daily oil/macro, GPR Index monthly).
 - 3-class cross-entropy or quantile loss only — **NEVER MSE on returns** (forecast-collapse rule, arXiv:2604.00064).
-- ~~No fine-tuning of the embedder LLM~~ — **LIFTED V5.** If LoRA fine-tune of Qwen3-Embedding-4B on financial news improves quality, do it.
-- ~~No HuggingFace `Trainer` / Unsloth / TRL~~ — **LIFTED V5.** Use HF infra freely. Build the MODEL from scratch (learning core), use libraries for everything else.
+- ~~No fine-tuning of the embedder LLM~~ — **LIFTED in V1.** If LoRA fine-tune of Qwen3-Embedding-4B on financial news improves quality, do it.
+- ~~No HuggingFace `Trainer` / Unsloth / TRL~~ — **LIFTED in V1.** Use HF infra freely. Build the MODEL from scratch (learning core), use libraries for everything else.
 - PyTorch 2.11.0 pinned (has SDPA fix #174945 for MPS).
 - FP32 weights everywhere (no autocast, no torch.compile, no quantization).
 
-## Architecture Spec V4 (locked May 2026)
+## Architecture Spec (V1, locked May 2026)
 
 ```
 DATA PIPELINE (doc 01)
@@ -152,13 +153,13 @@ FEATURE ENGINEERING (doc 02)
 
 NEWS EMBEDDING (doc 04)
 ├── Qwen3-Embedding-4B 4-bit MLX (Apache 2.0, ~18K tok/s on M4 mini)
-│   ├── 45× faster than Llama-3.1-8B mean-pool (V3 plan)
+│   ├── 45× faster than Llama-3.1-8B mean-pool (earlier draft)
 │   ├── MTEB-en avg 74.6 (+10pts vs LLM2Vec)
 │   └── MRL truncation: 2560-dim → 256-dim, 99% quality retention
 ├── Per-source instruction-aware prompts ("Represent this financial news...")
 ├── Anchor-cosine semantic features (4 anchors: conflict, monetary, dollar, recession)
 ├── Learned [NO_NEWS] token + 15% modality dropout
-└── memmap fp16 .npy storage (~133MB total — was 4GB with V3)
+└── memmap fp16 .npy storage (~133MB total — was 4GB in earlier draft)
 
 MODEL ARCHITECTURE (doc 03)
 ├── ENCODER-only (no causal mask — bidirectional context for classification)
@@ -241,9 +242,9 @@ INFRA + SECURITY (doc 10)
 | 00  | OVERVIEW (this)     | ✅                                | n/a (read-first reference) | n/a                              |
 | 01  | DATA-PIPELINE       | ✅ Complete + Nia-verified        | Data engineer              | 2-3 days                         |
 | 02  | FEATURE-ENGINEERING | ✅ Complete + Nia-verified        | Feature engineer           | 1 day                            |
-| 03  | MODEL-ARCHITECTURE  | ✅ V4 (May 2026)                  | ML systems engineer        | 1 day                            |
-| 04  | NEWS-EMBEDDING      | ✅ V4 (Qwen3-Embedding-4B switch) | ML engineer                | 0.5 day setup + 30min precompute |
-| 05  | TRAINING-PROCEDURE  | ✅ V4 (Schedule-Free + F-SAM)     | ML engineer                | 1 day                            |
+| 03  | MODEL-ARCHITECTURE  | ✅ V1                  | ML systems engineer        | 1 day                            |
+| 04  | NEWS-EMBEDDING      | ✅ V1 (Qwen3-Embedding-4B) | ML engineer                | 0.5 day setup + 30min precompute |
+| 05  | TRAINING-PROCEDURE  | ✅ V1 (Schedule-Free + F-SAM)     | ML engineer                | 1 day                            |
 | 06  | BACKTEST            | ✅ Complete + Nia-verified        | Quant engineer             | 1 day                            |
 | 07  | SIZING-STAGE2       | ✅ Complete + conformal           | Quant engineer             | 0.5 day                          |
 | 09  | LIVE-TRADING        | ✅ Complete + Nia-verified        | Production engineer        | 1.5 days                         |
@@ -251,7 +252,7 @@ INFRA + SECURITY (doc 10)
 | --  | STATUS              | ✅ Live tracker                   | n/a (anyone can update)    | n/a                              |
 
 
-**Deleted from V3:** doc 08 (RL Stage 3 — speculative, gated, only build if Stage 2 leaves Sharpe), doc 11 (X-thread + blog content — user writes himself).
+**Deleted from earlier draft:** doc 08 (RL Stage 3 — speculative, gated, only build if Stage 2 leaves Sharpe), doc 11 (X-thread + blog content — user writes himself).
 
 ## Implementation Order (concurrent-friendly)
 
@@ -385,7 +386,7 @@ If you spawn an agent and it disagrees with the doc, document the disagreement I
 
 | Date       | Decision                                                | Rationale                                                           |
 | ---------- | ------------------------------------------------------- | ------------------------------------------------------------------- |
-| 2026-04-25 | V1 (admissions-framed) → V2 (Karpathy + viral X + $100) | User pivot                                                          |
+| 2026-04-25 | initial admissions-framed → V1 (Karpathy + viral X + $100) | User pivot                                                          |
 | 2026-04-30 | Decoder-only → Encoder-only                             | Time-series agent: bidirectional better for next-bar classification |
 | 2026-04-30 | Per-bar tokens → Channel-group tokens                   | iTransformer-lite, empirically dominant                             |
 | 2026-04-30 | Add SAM ρ=0.05                                          | SAMformer ICML 2024: 14% MSE improvement                            |

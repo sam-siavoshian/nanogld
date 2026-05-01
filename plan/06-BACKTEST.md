@@ -92,7 +92,7 @@ result = vectorized_backtest(bars=df, positions=position_series, config=config)
 - **arch.bootstrap.StationaryBootstrap** — verify API current (PyPI version may have changed)
 - **Modern XGBoost defaults** — verify `xgboost==2.x` API for our committed config still works
 
-### V4 Critical Findings (DO NOT REVERT)
+### V1 Critical Findings (DO NOT REVERT)
 
 1. **bars_per_year = 3276** (NYSE RTH only). Original 17500 was 24/7 calendar — fatal bug, inflates Sharpe 2.31×.
 2. **Sortino formula corrected** to canonical target downside dev.
@@ -412,7 +412,7 @@ Reported as: `Sharpe = 0.51 [bootstrap CI: 0.18, 0.84], DSR p = 0.73 (n_trials=1
 
 DSR p < 0.95 = strategy may be a lucky selection from many tried. DSR p > 0.95 = robust to multi-testing.
 
-## V4 — 2026 Empirical Findings (finance-papers agent)
+## V1 — 2026 Empirical Findings (finance-papers agent)
 
 - **Forecast-to-Fill (Sharpe 2.88 on gold) STILL UNREPLICATED in 2026.** No public falsification or replication found Jan-May 2026. The bar stands. Building our own honest 30min gold benchmark with cost+DSR is **publishable** (gap in literature).
 - **arXiv:2604.18821 (April 2026)**: 1,726 strategies analyzed. **Backtests mostly capture launch-period market conditions, not skill.** Demands peer-benchmark discount in writeup.

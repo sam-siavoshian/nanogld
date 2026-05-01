@@ -9,7 +9,7 @@
 
 A from-scratch encoder-only transformer that predicts the next 30-minute direction of **GLD** (gold ETF), fused with frozen LLM news embeddings, trained on 5 years of 30-minute bars on a single **16GB M4 Mac mini**, then deployed live on **$100 of real Alpaca capital** from a **16GB M4 Pro Macbook**.
 
-> **TL;DR:** `nanoGPT` for gold trading. ~24-60M params, raw PyTorch on MPS, no cloud GPU, no API training tricks, no quantization, no autocast. Karpathy-mode learning project. Real money. Honest results, including the bad ones.
+> **TL;DR:** `nanoGPT` for gold trading. ~24-60M params, raw PyTorch on MPS, no cloud GPU, no API training tricks, no quantization, no autocast. Real money. Honest results, including the bad ones.
 
 ```
    ┌──────────────┐      ┌──────────────────┐      ┌──────────────┐
@@ -23,7 +23,7 @@ A from-scratch encoder-only transformer that predicts the next 30-minute directi
      Schedule-Free          (immutable, hashed)       every 30min
      + Friendly-SAM                                   during RTH
           │                                                │
-          └──────────────────► nanoGLDV4 ◄─────────────────┘
+          └──────────────────► nanoGLDV1 ◄─────────────────┘
                               ~24-60M params
                               channel-group tokens
                               + Qwen3-Embedding-4B (frozen)
@@ -74,7 +74,7 @@ Bars (T=128, 30min RTH)            News (T=128, multi-source)
        │                                   │
        ▼                                   ▼
    ┌──────────────────────────────────────────┐
-   │  nanoGLDV4 encoder                       │
+   │  nanoGLDV1 encoder                       │
    │  RMSNorm + SwiGLU + RoPE (real-form)     │
    │  + QK-Norm + per-head gating             │
    │  + value residuals                       │
@@ -156,7 +156,7 @@ Tree     XGBoost on the same features       gradient boosted truth-stick
 
 Replica  Forecast-to-Fill (Wright et al)    no ML at all, just rules
 
-Ours     nanoGLDV4                          the thing we're building
+Ours     nanoGLDV1                          the thing we're building
 ```
 
 The X thread shows every row, with stationary block bootstrap CIs, regime breakdowns (vol terciles, FOMC weeks, news density), and Deflated Sharpe Ratio. Cherry-picking is a fireable offense.
@@ -172,7 +172,7 @@ plan/                         the spec (read first)
   00-OVERVIEW.md              project context, hard rules, execution mode
   01-DATA-PIPELINE.md         GLD bars + GDELT + macro + news → parquet
   02-FEATURE-ENGINEERING.md   42 features + RevIN + 3-class labels
-  03-MODEL-ARCHITECTURE.md    nanoGLDV4 spec, raw PyTorch
+  03-MODEL-ARCHITECTURE.md    nanoGLDV1 spec, raw PyTorch
   04-NEWS-EMBEDDING.md        Qwen3-Embedding-4B, 4-bit MLX, anchor cosines
   05-TRAINING-PROCEDURE.md    SSL → probe → LLRD, Schedule-Free + F-SAM
   06-BACKTEST.md              walk-forward CV, baseline ladder, DSR

@@ -57,8 +57,8 @@ tests/
 
 ```python
 # From doc 03/05:
-from nanogld.model.tiny_trader import nanoGLDV4
-model = nanoGLDV4(...)
+from nanogld.model.tiny_trader import nanoGLDV1
+model = nanoGLDV1(...)
 model.load_state_dict(torch.load("checkpoints/fold_3_seed_42_ema.pt")['ema_state_dict'])
 
 # From doc 07:
@@ -94,12 +94,12 @@ from nanogld.features.build import build_feature_window_for_bar
 - **Pushover free tier limits** (10K/month vs 7.5K — check if changed in May 2026)
 - **alpaca-py rate limits** in 2026 — current built-in retry logic
 
-### V4 Critical Decisions (DO NOT REVERT)
+### V1 Critical Decisions (DO NOT REVERT)
 
 1. **`StartCalendarInterval` (array)** NOT `StartInterval=1800` — fires only RTH M-F
 2. **`launchctl bootstrap gui/$UID`** NOT `launchctl load` (deprecated since macOS 10.11)
 3. **`pmset -c sleep 0 disablesleep 1`** — #1 production risk if skipped
-4. **Pre-cycle: check open orders, cancel stale ones** — bug fix from V3
+4. **Pre-cycle: check open orders, cancel stale ones** — bug fix from earlier draft
 5. **`get_all_positions()` + filter** vs `get_open_position()` (clean no-exception path)
 6. **`submit_order(order_data=order)` keyword** required in newer alpaca-py
 7. **Two-key separation:** `.env.paper` for dev, `.env.live` ONLY in launchd env (never in dev shell)

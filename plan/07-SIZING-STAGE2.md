@@ -2,7 +2,7 @@
 
 ## YOU ARE THE QUANT SIZING AGENT
 
-You own the position sizing layer. You take model logits from doc 05 and produce the desired position multiplier (signed, clipped). You also implement the conformal calibration layer (V4 addition).
+You own the position sizing layer. You take model logits from doc 05 and produce the desired position multiplier (signed, clipped). You also implement the conformal calibration layer (V1 addition).
 
 **Read 00-OVERVIEW.md FIRST.**
 **Read 06-BACKTEST.md** for engine integration (Stage 2 plugs into backtest).
@@ -84,7 +84,7 @@ size = stage2_sizing(
 - **Conformal prediction TS extensions** — Wright 2026 (arXiv:2601.07852) for utility-weighted; pure Kato 2024 (arXiv:2410.16333) for portfolio variant. Pick the one that fits your data shape.
 - **Drawdown circuit-breaker re-entry rules** — survey papers if our 5-day fallback rule isn't documented elsewhere
 
-### V4 Critical Decisions (DO NOT REVERT)
+### V1 Critical Decisions (DO NOT REVERT)
 
 1. **bars_per_year = 3276** (propagated from doc 06). Annualization MUST be `sqrt(3276)`.
 2. **Drawdown sign consistency** — store as NEGATIVE number (-0.15 = 15% DD). Use `<=` comparisons throughout.
@@ -262,7 +262,7 @@ def smoothed_sizing(probs, current_position, target_size, enter_threshold=0.4, e
         return target_size
 ```
 
-## V4 — Conformal Prediction for Sizing (May 2026, training-agent finding)
+## V1 — Conformal Prediction for Sizing (May 2026, training-agent finding)
 
 Beyond temperature scaling: wrap softmax with **split-conformal calibration** to produce CALIBRATED PREDICTION INTERVALS. Use INTERVAL WIDTH to size positions, not just point probabilities.
 
@@ -316,7 +316,7 @@ def stage2_sizing_v4_with_conformal(
     kelly_fraction: float = 0.5,
     position_limit: float = 1.0,
 ) -> float:
-    """V4 sizing: vol-target × Kelly-lite × conformal-confidence."""
+    """V1 sizing: vol-target × Kelly-lite × conformal-confidence."""
     direction = np.argmax(probs)
     if direction == 1:  # FLAT
         return 0.0

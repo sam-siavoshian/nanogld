@@ -54,7 +54,7 @@ tests/
 
 ### Stable Interface You Publish
 
-`build_feature_table(snapshot_path, embeddings_path, anchors_path) -> pd.DataFrame` — returns DataFrame with columns specified in this doc's "Per-Bar Input Vector" section. Total ~804 dims per bar (after V4: ~803 with multi-dim sentiment replacing single).
+`build_feature_table(snapshot_path, embeddings_path, anchors_path) -> pd.DataFrame` — returns DataFrame with columns specified in this doc's "Per-Bar Input Vector" section. Total ~804 dims per bar (V1: ~803 with multi-dim sentiment replacing single).
 
 ### Acceptance Criteria
 
@@ -85,9 +85,9 @@ Specifically:
 7. **L2-normalize 4096-dim news embeddings before projection** (StockTime pattern).
 8. **Multi-dimensional sentiment > scalar polarity** per arXiv:2603.11408 (March 2026). Add intensity + uncertainty extracted via LLM prompts.
 
-### V4 Updates (May 2026)
+### V1 Updates (May 2026)
 
-- News embedding dim changed: 4096 (V3 Llama-3.1-8B) → 256 (V4 Qwen3-Embedding-4B truncated via MRL). See doc 04 for details.
+- News embedding dim changed: 4096 (earlier Llama-3.1-8B) → 256 (V1 Qwen3-Embedding-4B truncated via MRL). See doc 04 for details.
 - Add 3 multi-dim sentiment features per news source (polarity / intensity / uncertainty) per arXiv:2603.11408.
 - Anchor-cosine pattern unchanged but now uses Qwen3 embeddings.
 

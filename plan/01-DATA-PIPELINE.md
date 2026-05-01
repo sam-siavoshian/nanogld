@@ -16,7 +16,7 @@ You own data ingestion, joining, and snapshot artifacts. You will build the pipe
 - **Loop:** read doc → Nia for unknowns → code → `/review` → `/qa` → `/cso` (if security-sensitive) → `/ship`.
 - **Escalate after 3 failed attempts.** AskUserQuestion. Bad work is worse than no work.
 
-### Storage Plan (V5.2 — checked May 2026, owner's machine)
+### Storage Plan (V1 — checked May 2026, owner's machine)
 
 **Owner disk check at planning time:**
 - Total: 494 GB Mac internal

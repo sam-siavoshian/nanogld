@@ -85,7 +85,7 @@ Especially:
 - **MPS-specific seeding** — `torch.mps.manual_seed()` exists in PyTorch 2.11; verify it works as expected
 - **wandb logging cadence on macOS** (avoid daemon issues with multiprocess)
 
-### V4 Critical Decisions (DO NOT REVERT)
+### V1 Critical Decisions (DO NOT REVERT)
 
 1. **Schedule-Free AdamW REPLACES "AdamW + cosine + warmup"** — Defazio ICLR 2025
 2. **Friendly-SAM REPLACES vanilla SAM** — filters gradient noise, drop-in
@@ -120,7 +120,7 @@ Now read the implementation specifics.
 **Status:** ✅ Complete, implementation-ready, Nia-verified
 **Last verified:** 2026-04-30
 
-## V5.1 — Library addition: `accelerate==1.13.x` (May 2026)
+## V1 — Library addition: `accelerate==1.13.x` (May 2026)
 
 Owner lifted "raw PyTorch only" for non-architectural infrastructure. Single library added: **`accelerate>=1.13,<2.0`** (HuggingFace).
 
@@ -167,22 +167,22 @@ accelerator.save_state("checkpoints/fold_3/")
 
 **`peft==0.19.x` deferred** until/if embedder fine-tune day arrives (currently month 4+ per Agent E recommendation).
 
-## TRAINING STACK V4 — 2026 SOTA (May 2026, 6-agent research)
+## TRAINING STACK (V1) — 2026 SOTA (May 2026, 6-agent research)
 
-After V3 stack went live, ran another deep-research pass on training/optimization papers from Jun 2025 to May 2026. Several adopted improvements below.
+After earlier draft went live, ran another deep-research pass on training/optimization papers from Jun 2025 to May 2026. Several adopted improvements below.
 
-### Major V4 Changes
+### Changes (V1)
 
 #### 1. Schedule-Free AdamW REPLACES "AdamW + cosine + warmup"
 
 **Defazio et al., ICLR 2025 outstanding paper, arXiv:2405.15682.** Won MLCommons AlgoPerf 2024 across all workloads. Removes the LR schedule entirely via momentum-based iterate averaging. **Anytime-optimal** — checkpoint at any step is the best the model can be at that point.
 
 ```python
-# Old V3:
+# Old draft:
 # optimizer = torch.optim.AdamW(...)
 # scheduler = cosine_lr_schedule(optimizer, warmup_steps, total_steps)
 
-# New V4:
+# New (V1):
 import schedulefree
 optimizer = schedulefree.AdamWScheduleFree(
     model.parameters(),
@@ -227,7 +227,7 @@ Repo: https://github.com/KellerJordan/Muon
 
 **arXiv:2602.04643 (Feb 2026), Multi-variate Time Series JEPA.** Predict masked target EMBEDDINGS (not raw values) from context embeddings. Avoids MAE pixel-level reconstruction wastage AND contrastive collapse problem.
 
-For us: V3 plan uses MAE (reconstruct masked OHLCV). JEPA produces smoother representations that transfer better to small-data classification. Larger code change (~1-2 days), highest-ceiling change in the list.
+For us: Earlier plan used MAE (reconstruct masked OHLCV). JEPA produces smoother representations that transfer better to small-data classification. Larger code change (~1-2 days), highest-ceiling change in the list.
 
 **Plan:** Pilot MTS-JEPA after Schedule-Free + F-SAM are stable. Compare val Sharpe vs MAE pretrain.
 
@@ -252,35 +252,35 @@ Update: extract THREE sentiment scores per news item using LLM prompts:
 
 Add as 3 cheap features in `geo_features` table (arXiv:2603.11408 found these dominate via SHAP).
 
-### Updated V4 Training Stack Summary
+### Training Stack Summary (V1)
 
 ```
 Optimizer:      Schedule-Free AdamW (β=0.9, β2=0.95, wd=0.1, lr=1e-4, warmup_steps=300)
                 [A/B against Muon-for-2D + AdamW-for-rest]
 LR schedule:    NONE (Schedule-Free handles this) OR WSD if SF underperforms
 Sharpness:      Friendly-SAM ρ=0.05 (replace vanilla SAM)
-EMA:            decay=0.999 (V3 — kept)
-Regularization: dropout 0.2 + stoch depth 0.15 + label smoothing 0.1 (V3 — kept)
-Augmentation:   jittering σ=0.02 + magnitude warping (V3 — kept)
-Manifold Mixup: at hidden states α=0.2 (V3 — kept)
-Modality dropout: 15% on news embeddings (V3 — kept)
-SSL pretrain:   MAE on masked bars (V3 default)
+EMA:            decay=0.999 
+Regularization: dropout 0.2 + stoch depth 0.15 + label smoothing 0.1 
+Augmentation:   jittering σ=0.02 + magnitude warping 
+Manifold Mixup: at hidden states α=0.2 
+Modality dropout: 15% on news embeddings 
+SSL pretrain:   MAE on masked bars 
                 [A/B with MTS-JEPA — Phase 2, higher ceiling]
-Linear-probe → LLRD fine-tune: V3 — kept
+Linear-probe → LLRD fine-tune: 
 Cross-asset transfer: SPY→GLD as bonus experiment after baseline
 Conformal calibration: split-CP on val fold for sizing (deploy-side, see doc 07)
 Loss:           3-class CE + label smoothing 0.1 (NEVER MSE on returns — forecast-collapse rule from doc 03)
-Mixed precision: FP32 weights (V3 — kept; FP8 H100-only, unstable for small models)
+Mixed precision: FP32 weights (; FP8 H100-only, unstable for small models)
 ```
 
-### What V4 Skips (saved investigation)
+### What we skip (saved investigation)
 
 - Sophia optimizer — at <150M scale ties Signum, barely beats AdamW
 - FP8 mixed precision — H100-only, unstable for small models per NVIDIA + Axolotl 2025-2026 docs
 - Knowledge distillation from foundation model — no useful teacher available yet
 - Pure Mamba / xLSTM as backbone — covered in doc 03 (skip at our scale)
 
-## SMALL-DATA TRAINING STACK V3 (kept for reference)
+## SMALL-DATA TRAINING STACK V1 (kept for reference)
 
 For 16K labeled samples, regularization beats capacity. Stack is non-negotiable. Each piece has documented ROI.
 

@@ -2,7 +2,7 @@
 
 ## YOU ARE THE NEWS EMBEDDING AGENT
 
-You own the news-text-to-vector pipeline. You set up Qwen3-Embedding-4B (V4 swap from Llama-3.1-8B-mean-pool), embed all news for all bars once, cache to disk. You also compute the anchor embeddings used by doc 02 for semantic features.
+You own the news-text-to-vector pipeline. You set up Qwen3-Embedding-4B (swap from Llama-3.1-8B-mean-pool), embed all news for all bars once, cache to disk. You also compute the anchor embeddings used by doc 02 for semantic features.
 
 **Read 00-OVERVIEW.md FIRST.**
 **Read 01-DATA-PIPELINE.md** for the parquet input schema (alpaca_headlines, gdelt_headlines, rss_headlines columns).
@@ -81,9 +81,9 @@ anchors_npz = np.load("data/anchors/v1.npz")
 - **Anchor headline selection** — what 20 headlines best represent "geopolitical military conflict" vs "monetary policy"? Spawn agent to suggest representative texts
 - **MRL truncation dim trade-off** — confirm 256-dim retains ≥99% MTEB quality on retrieval (256 is recommended; 128 saves more space)
 
-### V4 Critical Decision (DO NOT REVERT)
+### V1 Critical Decision (DO NOT REVERT)
 
-**Switched from `meta-llama/Llama-3.1-8B-Instruct-4bit` mean-pool to `Qwen/Qwen3-Embedding-4B` 4-bit MLX.** Reasons in this doc's "V4 PIVOT" section. Key wins: 45× faster (18K vs 400 tok/s), Apache 2.0 license (vs Meta Community), MTEB-en 74.6 (vs ~64), MRL truncatable 2560→256.
+**Switched from `meta-llama/Llama-3.1-8B-Instruct-4bit` mean-pool to `Qwen/Qwen3-Embedding-4B` 4-bit MLX.** Reasons in this doc's "V1 PIVOT" section. Key wins: 45× faster (18K vs 400 tok/s), Apache 2.0 license (vs Meta Community), MTEB-en 74.6 (vs ~64), MRL truncatable 2560→256.
 
 If you find Qwen3-Embedding-4B doesn't fit your hardware or has a bug, fallback options (with documented quality cost):
 - `Qwen/Qwen3-Embedding-0.6B` — 44K tok/s, 70.7 MTEB (-4 pts), 900MB RAM
@@ -110,13 +110,13 @@ Now read the spec below.
 **Status:** ✅ Complete, implementation-ready, Nia-verified
 **Last verified:** 2026-04-30
 
-## V4 PIVOT — Switch from Llama-3.1-8B-Mean-Pool to Qwen3-Embedding-4B (May 2026)
+## V1 PIVOT — Switch from Llama-3.1-8B-Mean-Pool to Qwen3-Embedding-4B (May 2026)
 
 After 7-agent research found that 2026 brought purpose-built embedding models that crush generative-LLM mean-pool on every relevant axis. We switch to **`Qwen/Qwen3-Embedding-4B`** in 4-bit MLX.
 
 ### Why this swap is non-negotiable
 
-| Metric | V3 (Llama-3.1-8B mean-pool) | V4 (Qwen3-Embedding-4B) | Delta |
+| Metric | Earlier (Llama-3.1-8B mean-pool) | V1 (Qwen3-Embedding-4B) | Delta |
 |--------|----------------------------|------------------------|-------|
 | M4 mini throughput | ~400 tok/s | **~18,000 tok/s** | **45×** |
 | RAM (4-bit) | ~5 GB | **~2.5 GB** | -50% |
@@ -154,7 +154,7 @@ from sentence_transformers import SentenceTransformer
 import torch
 
 class Qwen3NewsEmbedder:
-    """Replaces V3's Llama-3.1-8B mean-pool. ~45× faster, +10pts MTEB."""
+    """Replaces earlier Llama-3.1-8B mean-pool. ~45× faster, +10pts MTEB."""
     
     def __init__(self, model_id: str = "Qwen/Qwen3-Embedding-4B", truncate_dim: int = 256):
         self.model = SentenceTransformer(
@@ -212,8 +212,8 @@ We use **256-dim** as default. Already fits in our `Linear(256, D=384)` projecti
 
 87K bars × 3 sources × ~150 tokens (5 headlines × 30 tokens avg) = ~39M tokens to embed.
 
-- V3 (Llama-3.1-8B mean-pool, ~400 tok/s): **~27 hours**. Overnight runs.
-- V4 (Qwen3-Embedding-4B 4-bit MLX, ~18K tok/s): **~36 minutes**. Iterate same-day.
+- Earlier (Llama-3.1-8B mean-pool, ~400 tok/s): **~27 hours**. Overnight runs.
+- V1 (Qwen3-Embedding-4B 4-bit MLX, ~18K tok/s): **~36 minutes**. Iterate same-day.
 
 For **anchor embeddings** (one-time, ~80 anchors at ~30 tokens each): ~0.13 seconds. Negligible.
 
@@ -260,7 +260,7 @@ If the M4 mini is also doing nanoGLD training simultaneously (memory pressure):
 | MTEB-en avg | 70.70 (-4 pts vs 4B) |
 | Recommendation | Use only if 4B doesn't co-exist with training |
 
-### What V4 Drops
+### What we drop
 
 - ❌ Llama-3.1-8B-Instruct-4bit (replaced)
 - ❌ HuggingFace transformers + MPS for 8B model (replaced by sentence-transformers Qwen3 + MLX)
@@ -269,7 +269,7 @@ If the M4 mini is also doing nanoGLD training simultaneously (memory pressure):
 - ❌ Llama 3.1 license acceptance step
 - ❌ tokenizer.padding_side / pad_token configuration (sentence-transformers handles)
 
-### What V4 Keeps
+### What we keep
 
 - ✅ L2-normalize before projection (already done by `normalize_embeddings=True`)
 - ✅ Learnable [NO_NEWS] token per source (still needed when no news)
@@ -314,7 +314,7 @@ Convert each piece of news text per source per bar into a fixed-dim vector that 
 
 ## Why Llama-3.1-8B and Not Smaller
 
-User upgraded from Llama-3.2-1B to 8B in the V2.1 pivot. Tradeoffs:
+User upgraded from Llama-3.2-1B to 8B in the the pivot. Tradeoffs:
 
 | Model | Memory (4-bit) | Tokens/sec on M4 mini | Embedding quality |
 |-------|---------------|-----------------------|-------------------|

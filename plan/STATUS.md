@@ -4,6 +4,7 @@
 **Owner:** samsiavoshian
 **Date last updated:** 2026-05-01
 **Phase:** Planning complete. Implementation phase begins.
+**Version:** **V1 — frozen.** No version bump until owner explicitly says so. Agents do NOT introduce V2/V3/etc references. Past planning iterations collapsed into V1.
 
 ---
 
@@ -25,15 +26,15 @@ Estimated implementation: **10-14 days** end-to-end (concurrent-friendly with 4 
 | 00 OVERVIEW | n/a | ✅ Read-first reference | n/a | n/a |
 | 01 DATA-PIPELINE | Data engineer | ✅ Spec ready | 2-3 days | doc 10 (repo + uv) |
 | 02 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready | 1 day | doc 01 + doc 04 |
-| 03 MODEL-ARCHITECTURE | ML systems engineer | ✅ Spec ready (V4) | 1 day | doc 10 |
-| 04 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V4 Qwen3) | 0.5 day setup + 30min precompute | doc 01 |
-| 05 TRAINING-PROCEDURE | ML engineer | ✅ Spec ready (V4 Schedule-Free + F-SAM) | 1 day | docs 02, 03, 04 |
+| 03 MODEL-ARCHITECTURE | ML systems engineer | ✅ Spec ready (V1) | 1 day | doc 10 |
+| 04 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3) | 0.5 day setup + 30min precompute | doc 01 |
+| 05 TRAINING-PROCEDURE | ML engineer | ✅ Spec ready (V1 Schedule-Free + F-SAM) | 1 day | docs 02, 03, 04 |
 | 06 BACKTEST | Quant engineer | ✅ Spec ready | 1 day | doc 03 (baseline arch stubs), doc 05 (checkpoints) |
 | 07 SIZING-STAGE2 | Quant engineer | ✅ Spec ready (+ conformal) | 0.5 day | doc 06 (engine), doc 05 (logits) |
 | 09 LIVE-TRADING | Production engineer | ✅ Spec ready | 1.5 days | docs 03, 05, 07 |
 | 10 INFRA-AND-SECURITY | DevOps | ✅ Spec ready | 0.5 day (day 1) | nothing — START HERE |
 
-**Deleted docs (V4 cleanup, May 1):**
+**Deleted docs (V1 cleanup, May 1):**
 - `08-RL-STAGE3.md` — speculative, gated on Stage 2 results, 95%+ chance never built
 - `11-X-THREAD-AND-BLOG.md` — content strategy, owner writes himself, not implementation
 
@@ -110,7 +111,7 @@ Day 13-14: Fund $100, switch to live, build-in-public X thread
 
 ---
 
-## V5.1 — Library Policy Update (2026-05-01)
+## V1 — Library Policy Update (2026-05-01)
 
 Owner lifted "raw PyTorch only / no HuggingFace" restriction. Researched modern training libraries.
 
@@ -120,7 +121,7 @@ Owner lifted "raw PyTorch only / no HuggingFace" restriction. Researched modern 
 
 **Skipped permanently (MPS-incompatible regardless of restriction):** Unsloth (no Triton on Mac), bitsandbytes 4-bit (CUDA-only), torch.compile on MPS (NaN bug), lightning-thunder (NVIDIA-focused), torchtitan (multi-GPU overkill).
 
-**No architectural changes.** V4 from-scratch nanoGLD stays locked. Foundation model untouched. Embedder still frozen Qwen3-Embedding-4B.
+**No architectural changes.** V1 from-scratch nanoGLD stays locked. Foundation model untouched. Embedder still frozen Qwen3-Embedding-4B.
 
 ## Verification History
 
@@ -134,7 +135,7 @@ Owner lifted "raw PyTorch only / no HuggingFace" restriction. Researched modern 
 
 ---
 
-## V4 Architecture Locked (May 1, 2026)
+## V1 Architecture Locked (May 1, 2026)
 
 **Backbone:** encoder-only transformer, ~24-60M params, channel-group tokens (~14)
 **Per-block:** RMSNorm + SwiGLU + RoPE (real-form) + QK-Norm + per-head gating + value residuals + no-bias
@@ -194,7 +195,7 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| 2026-04-25 | V1 → V2 (Karpathy + viral X + $100) | User pivot |
+| 2026-04-25 | initial admissions-framed → V1 | User pivot |
 | 2026-04-30 | Decoder-only → Encoder-only | Bidirectional better for next-bar classification |
 | 2026-04-30 | Per-bar tokens → Channel-group tokens | iTransformer-lite, empirically dominant |
 | 2026-04-30 | Add SAM ρ=0.05 | SAMformer ICML 2024 |
@@ -218,7 +219,7 @@ These need user decisions OR Nia verification BEFORE implementation begins:
 - [ ] Verify GCP billing approval if non-US card (may have day-delay)
 - [ ] Confirm GDELT BigQuery dry-run estimate matches reality on YOUR query phrasing (±10% expected)
 - [ ] T5YIE vs T5YIFR final choice (breakeven vs forward inflation expectation)
-- [ ] Do we A/B test TDA + SyPE before locking V4, or after baseline?
+- [ ] Do we A/B test TDA + SyPE , before or after baseline?
 
 ---
 
@@ -247,7 +248,7 @@ Total active setup time: **~3-4 hours** (when not waiting).
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| Llama-3.1-8B-4bit too slow on Mac mini | LOW (V4 swapped to Qwen3) | Already mitigated |
+| Llama-3.1-8B-4bit too slow on Mac mini | LOW (V1 uses Qwen3) | Already mitigated |
 | Qwen3-Embedding-4B doesn't fit 16GB | LOW | Falls back to Qwen3-Embedding-0.6B (44K tok/s, 900MB RAM) |
 | yfinance breaks during implementation | MEDIUM | Pin v1.3.0; Alpaca historical for 30m bars (NOT yfinance) |
 | GDELT BigQuery free tier exceeded | MEDIUM | maximum_bytes_billed cap + 1024 GiB/day quota cap, materialize once |
