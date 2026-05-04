@@ -11,8 +11,8 @@
 ## Quick Status
 
 ```
-Planning:        ██████████████ 100% locked, Nia-verified across 3 rounds (19 agents)
-Implementation:  ░░░░░░░░░░░░░░   0% — agents ready to be dispatched
+Planning:        ██████████████ 100% locked, Nia-verified across 5 rounds (27 agents)
+Implementation:  █░░░░░░░░░░░░░  ~6% — doc 01 (infra) shipped 2026-05-04; doc 02 unblocked
 ```
 
 Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one agent per doc, hand off when done. **8 docs after V5 merge** (was 11; merged model+train+calib into doc 05, sizing+exits into doc 07).
@@ -24,7 +24,7 @@ Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one age
 | Doc | Owner role | Status | Effort | Blocked by |
 |-----|-----------|--------|--------|-----------|
 | 00 OVERVIEW | n/a | ✅ Read-first reference | n/a | n/a |
-| 01 INFRA-AND-SECURITY | DevOps | ✅ Spec ready | 0.5 day | nothing — START HERE |
+| 01 INFRA-AND-SECURITY | DevOps | ✅ **Implemented 2026-05-04** (see hand-off below) | 0.5 day | n/a |
 | 02 DATA-PIPELINE | Data engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **4-5 days** | doc 01 |
 | 03 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3 + V4 expanded pipeline + LAFTR + new aggregator) | **1.5 day** setup + ~120min precompute | doc 02 |
 | 04 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **1.5 days** | doc 03 |
@@ -306,6 +306,58 @@ Total active setup time: **~3-4 hours** (when not waiting).
 - **Bug reports:** via DEVIATION sections appended to top of relevant doc.
 
 **No Slack, no async, no wait time.** Each agent works from spec, ships, updates STATUS, hands off.
+
+---
+
+## Implementation Hand-offs
+
+Each agent appends a record here when their doc is shipped. Subsequent agents read this to understand the in-flight system state.
+
+### Doc 01 INFRA-AND-SECURITY — shipped 2026-05-04
+
+**Repo:** `https://github.com/sam-siavoshian/nanogld` (public, MIT, branch `main`)
+**Local dir:** `/Users/samsiavoshian/Desktop/Coding Stuff/Side Projects/nanogld/`
+**Python:** 3.11.14 (pinned via `.python-version` + `requires-python = ">=3.11,<3.13"`)
+
+**What's in:**
+- `pyproject.toml` + `uv.lock` with V1 pinned deps (torch 2.11.0 / transformers 5.7.0 / sentence-transformers 5.4.1 / mlx-lm 0.31.3 (darwin-only) / schedulefree 1.4.1 / accelerate 1.13 / alpaca-py / yfinance 1.3.0 / fredapi 0.5.2 / pandas-ta-classic 0.5.44 / arch / xgboost / etc.). Cold-cache `uv sync`: 41s on M4.
+- `.pre-commit-config.yaml`: gitleaks v8.24.2 + pre-commit-hooks v5.0.0 + ruff v0.11.0 (lint --fix + format). Verified against fake `ALPACA_API_KEY=PKTEST...` commit — exit code 1, blocked. ✅
+- `.github/workflows/test.yml` — runs `ruff check` + `ruff format --check` + `pytest -q` + `gitleaks-action@v2` on push/PR. setup-uv@v8, ubuntu-latest, 15min timeout.
+- `.github/workflows/smoke-test.yml` — monthly cron `0 0 1 * *` + manual dispatch. Imports every critical dep (catches API drift between active dev cycles). 20min timeout.
+- `tests/test_smoke.py` — 3 trivial tests (Python version range, critical-imports, `nanogld.__version__`). Keeps CI green from day 1.
+- `Makefile` with `help / install / lock / sync / upgrade / lint / format / test / pre-commit / clean` + placeholder targets `data / train / backtest / live`.
+- `docs/SETUP.md` — per-key signup walkthrough, `~/.config/nanogld/` layout, two-key principle, ADC-not-JSON for GCP, rotation policy, optional 1Password CLI for `.env.live`.
+- `docs/REPRODUCE.md` — fresh-clone walkthrough, prereqs, per-doc execution order with effort + output, doc 01 acceptance checklist.
+- `src/nanogld/__init__.py` — empty package root with `__version__ = "0.1.0"`. Hatchling auto-detects via `[tool.hatch.build.targets.wheel] packages = ["src/nanogld"]`.
+- `~/.config/nanogld/.env.paper` + `.env.live` (chmod 600, dir chmod 700, NOT in repo) — populated with `<FILL_ME>` placeholders. Owner fills before doc 02.
+- `README.md` — mechanical link fixes only (8 stale `plan/0X-*.md` paths corrected to V5 numbering). No architecture/metric edits.
+- `.gitignore` — augmented (added `*.h5`, `*.ckpt`, `alpaca-*`, `.neptune/`, `.comet/`, `outputs/`, `.hydra/`, `.coverage`, `htmlcov/`; removed `.python-version` from ignore so uv pin tracks).
+
+**Acceptance criteria status:**
+1. ✅ Public repo from commit 1.
+2. ✅ Pre-commit blocks fake-key commits (verified).
+3. ✅ `uv sync --frozen` produces working env (41s cold cache).
+4. ✅ `uv.lock` committed.
+5. CI green on first push — verified at push time (step 13 of phase 1 plan).
+6. ✅ Monthly smoke-test cron scheduled.
+7. ✅ `~/.config/nanogld/.env.{paper,live}` chmod 600.
+8. ✅ Fresh-clone-to-`make test`-pass: ~2min on M4.
+
+**Verification commands the next agent can run:**
+```bash
+uv sync --frozen      # ~40s cold, instant warm
+make test             # 3 tests pass
+make lint             # ruff clean
+make pre-commit       # gitleaks + ruff + whitespace + EOF — all pass
+gitleaks detect --no-git --verbose   # clean
+```
+
+**Open items for owner before doc 02:**
+- Fill `~/.config/nanogld/.env.paper` with real Alpaca paper + FRED + HF + wandb keys.
+- `gcloud init` + `gcloud auth application-default login` (BigQuery / GDELT — see `docs/SETUP.md`).
+- Optional: bump pinned versions if Nia spots a 5+ day update; otherwise spec versions resolved cleanly.
+
+**Doc 02 unblocked.** Owner: data engineer agent. Effort: 4-5 days. Spec: `plan/02-DATA-PIPELINE.md`.
 
 ---
 
