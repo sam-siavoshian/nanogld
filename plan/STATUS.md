@@ -12,7 +12,8 @@
 
 ```
 Planning:        ██████████████ 100% locked, Nia-verified across 5 rounds (27 agents)
-Implementation:  █░░░░░░░░░░░░░  ~6% — doc 01 (infra) shipped 2026-05-04; doc 02 unblocked
+Implementation:  ███░░░░░░░░░░░  ~30% — doc 01 + doc 02 code shipped 2026-05-04;
+                                       owner fills ENV before doc 03 starts
 ```
 
 Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one agent per doc, hand off when done. **8 docs after V5 merge** (was 11; merged model+train+calib into doc 05, sizing+exits into doc 07).
@@ -25,7 +26,7 @@ Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one age
 |-----|-----------|--------|--------|-----------|
 | 00 OVERVIEW | n/a | ✅ Read-first reference | n/a | n/a |
 | 01 INFRA-AND-SECURITY | DevOps | ✅ **Implemented 2026-05-04** (see hand-off below) | 0.5 day | n/a |
-| 02 DATA-PIPELINE | Data engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **4-5 days** | doc 01 |
+| 02 DATA-PIPELINE | Data engineer | ✅ **Code complete 2026-05-04** (see hand-off below); 5 keyless sources pulled end-to-end; Alpaca/FRED/GDELT/HF datasets pending owner ENV | **4-5 days** | doc 01 |
 | 03 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3 + V4 expanded pipeline + LAFTR + new aggregator) | **1.5 day** setup + ~120min precompute | doc 02 |
 | 04 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **1.5 days** | doc 03 |
 | 05 MODEL-TRAINING-CALIBRATION | ML systems engineer | ✅ Spec ready (V5 merge: model + training + calibration in one file) | **3 days** | doc 04 |
@@ -358,6 +359,79 @@ gitleaks detect --no-git --verbose   # clean
 - Optional: bump pinned versions if Nia spots a 5+ day update; otherwise spec versions resolved cleanly.
 
 **Doc 02 unblocked.** Owner: data engineer agent. Effort: 4-5 days. Spec: `plan/02-DATA-PIPELINE.md`.
+
+### Doc 02 DATA-PIPELINE — code shipped 2026-05-04
+
+**18 source modules** under `src/nanogld/data/`, all schema-validated, all
+emit `(release_ts, t_visible)` PIT-correct frames.
+
+**Foundation:**
+- `utils.py` — FRED_RELEASE_TOD_ET (35-series ET tod table), `cot_release_ts_utc`,
+  `assert_t_visible_invariant`, `merge_asof_pit` (strict-< asof), retry HTTP,
+  rotating logger.
+- `schema.py` — 9 source manifests + `validate()`, no pandera dep.
+- `snapshot.py` — `pd.util.hash_pandas_object` + cols + dtypes (per doc 01
+  Critical Corrections; 10-100× faster than `to_csv`). meta.json sidecar
+  carries git_commit + full source manifest + time_range.
+
+**Sources:**
+| # | Module | Status |
+|---|--------|--------|
+| 1 | alpaca_bars.py (GLD 30m) | code complete; owner runs after `.env.paper` |
+| 8 | alpaca_etfs.py (9 ETF basket) | code complete; same |
+| 2 | alpaca_news.py (Benzinga) | code complete; same — `created_at` (NOT `published_at`) |
+| 3 | gdelt.py | code complete; owner runs `gdelt_materialize` after `gcloud auth ADC` |
+| 4 | fred.py (35 ALFRED series) | code complete; owner runs after FRED_API_KEY filled |
+| 5 | yfinance_helpers.py (Brent/WTI) | ✅ pulled — 1258 BZ + 1257 CL daily rows |
+| 6 | gpr.py | ✅ pulled — 213,540 rows, 116 series |
+| 9 | cot.py | ✅ pulled — 278 weekly rows (5y) |
+| 10 | wgc.py | ⚠️ HTML form-wall — owner extracts real URL via /browse |
+| 11 | calendar_events.py | ✅ pulled — 408 events |
+| 12-18 | news_{fnspid,kitco,investing,bullionvault,central_bank,reddit,kaggle}.py | code complete; HF datasets need HF_TOKEN; scrapers run on demand |
+
+**Joiner + CLI:**
+- `join.py` — strict-< asof on `bar_close_utc`, allow_exact_matches=False
+  everywhere. Lag-1 bars, FRED forward-fill, news counts, calendar binary
+  proximity.
+- `cli.py` + `__main__.py` — `python -m nanogld.data {list,pull,join,build}`
+  with `--skip-keyed`, `--force`. Idempotent.
+
+**Tests (49 pass, 6 skip):**
+- `tests/test_pit.py` — golden fixture from spec (NON-NEGOTIABLE).
+- `tests/test_join_schema.py` — manifest + dtype + null + PIT invariant.
+- `tests/test_snapshot_hash.py` — determinism + content-addressing.
+- `tests/test_no_leakage.py` — 28 mandatory tests, V4 leakage findings.
+  Live-data tests (`@NEEDS_DATA`) auto-skip until owner runs `build`.
+
+**Pulled artifacts (data/raw/, 13 MB):**
+```
+brent_daily.parquet            1258 rows
+calendar_events_v1.parquet      408 rows
+cftc_cot_gold_weekly.parquet    278 rows
+gpr_combined.parquet         213540 rows
+wti_daily.parquet              1257 rows
+```
+
+**Dataset deviations from V1 spec (logged for /browse follow-up):**
+- WGC `gold.org/download/{8052,7739}` returns HTML form-wall on direct GET.
+  Spec line 162 acknowledges this.
+- CPI / JOLTS / PCE / GDP calendar dates use deterministic approximations
+  (CPI 12th, JOLTS 9th, PCE last BD). Spec line 1054 acknowledges this.
+
+**Owner-action checklist before doc 03:**
+1. Fill `~/.config/nanogld/.env.paper` with real Alpaca paper + FRED + HF +
+   wandb keys (see `docs/SETUP.md`).
+2. `gcloud init && gcloud auth application-default login` for BigQuery.
+3. (Optional) /browse-extract real WGC URL + /browse-verify CPI/JOLTS dates
+   against BLS calendar.
+4. (Optional) Download Reddit Arctic Shift `.jsonl.zst` dumps to
+   `data/raw/reddit/`.
+5. Run `python -m nanogld.data build` end-to-end. Verify 16K-bar snapshot
+   under `data/snapshots/v1_<sha>.parquet` + sidecar meta.json.
+6. Re-run `pytest tests/` — `@NEEDS_DATA` tests should now exercise.
+
+**Doc 03 unblocked.** Owner: ML engineer agent. Effort: 1.5 days setup +
+~120 min precompute. Spec: `plan/03-NEWS-EMBEDDING.md`.
 
 ---
 

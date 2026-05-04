@@ -43,8 +43,13 @@ service-account*.json
 alpaca-*
 
 # ML artifacts (regenerable, large, content-addressed)
-# anchor data/ to repo root so src/nanogld/data/ (code) is NOT ignored
-/data/
+# anchor to repo root so src/nanogld/data/ (code) is NOT ignored.
+# Per-subdir exclusion (rather than /data/) so data/README.md can be tracked.
+/data/raw/
+/data/snapshots/
+/data/embeddings/
+/data/anchors/
+/data/processed/
 /checkpoints/
 /runs/
 wandb/
