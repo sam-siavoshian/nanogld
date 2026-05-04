@@ -2,11 +2,11 @@
 
 ## YOU ARE THE QUANT BACKTEST AGENT
 
-You own the backtest engine + baseline ladder + honest reporting. You take trained checkpoints from doc 06 and produce equity curves, Sharpe ratios with confidence intervals, regime breakdowns, and the comparison table that goes in the X thread.
+You own the backtest engine + baseline ladder + honest reporting. You take trained checkpoints from doc 05 and produce equity curves, Sharpe ratios with confidence intervals, regime breakdowns, and the comparison table that goes in the X thread.
 
 **Read 00-OVERVIEW.md FIRST.**
-**Read 05-MODEL-ARCHITECTURE.md** for baseline architecture stubs.
-**Read 06-TRAINING-PROCEDURE.md** for checkpoint format.
+**Read 05-MODEL-TRAINING-CALIBRATION.md** for baseline architecture stubs.
+**Read 05-MODEL-TRAINING-CALIBRATION.md** for checkpoint format.
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -58,8 +58,8 @@ reports/
 ### Files You DO NOT Touch
 
 - `src/nanogld/model/` — doc 05 (you USE the model classes for baselines, don't modify)
-- `src/nanogld/training/` — doc 06
-- `src/nanogld/sizing/` — doc 09 (you call `stage2_sizing(...)` from doc 09's interface)
+- `src/nanogld/training/` — doc 05
+- `src/nanogld/sizing/` — doc 07 (you call `stage2_sizing(...)` from doc 07's interface)
 - Anything else outside `backtest/` and `reports/`
 
 ### Stable Interface You Publish
@@ -115,7 +115,7 @@ If 24-60M Transformer doesn't beat baselines, **explicitly recommend shipping th
 ### Hand-off Protocol
 
 1. Update STATUS.md with: per-fold Sharpe, DSR, comparison table, equity curve PNG path
-2. Notify doc 09 (sizing) that backtest engine is ready (Stage 2 sizer needs the same engine)
+2. Notify doc 07 (sizing) that backtest engine is ready (Stage 2 sizer needs the same engine)
 3. Notify user via STATUS update that report is ready for X thread
 
 Now read the implementation specifics.
@@ -164,8 +164,8 @@ All baselines run on identical walk-forward protocol with identical cost model:
 4. **XGBoost on price+macro features** — same features as our model, no news embeddings
 5. **XGBoost on price+macro+news_anchor_cosines** — adds the cheap semantic features
 6. **nanoGLD (our model, Stage 1 fixed sizing)**
-7. **nanoGLD (Stage 2: vol-target × Kelly-lite, see doc 09)**
-8. **nanoGLD (Stage 3: tiny RL sizer, see doc 10)** — only if Stage 2 leaves room
+7. **nanoGLD (Stage 2: vol-target × Kelly-lite, see doc 07)**
+8. **nanoGLD (Stage 3: tiny RL sizer, see doc 07)** — only if Stage 2 leaves room
 
 ### XGBoost Baseline Config (committed)
 

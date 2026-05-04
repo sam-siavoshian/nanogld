@@ -29,7 +29,7 @@ src/nanogld/embed/
 ├── aggregator.py           # NEW V4 — PerSourcePMA + BarConditionedQuery + Q-Former-lite + Flamingo gate
 ├── adversary.py            # NEW V4 — LAFTR-style adversarial head with gradient reversal
 ├── anchors.py              # Computes 4 anchor embeddings from V4 hand-crafted templates
-├── live_embed.py           # Single-bar embedding for live cycle (doc 11 imports)
+├── live_embed.py           # Single-bar embedding for live cycle (doc 08 imports)
 ├── cache.py                # SHA256-keyed cache (model + prompt + text → embedding)
 └── cli.py                  # `python -m nanogld.embed precompute`
 
@@ -76,10 +76,10 @@ agg = BarConditionedNewsAggregator(
 news_tokens, gate = agg(articles_per_bar, src_ids, dt_to_bar, mask, bar_feat)
 # news_tokens: [B, K=8, 128]   gate: scalar (Flamingo tanh-gate)
 
-# doc 06 imports the LAFTR adversary:
+# doc 05 imports the LAFTR adversary:
 from nanogld.embed.adversary import AdversarialDebiasingHead, GradientReversalLayer
 
-# doc 11 (live trading) imports for single-bar embedding:
+# doc 08 (live trading) imports for single-bar embedding:
 from nanogld.embed.live_embed import embed_articles_live
 articles_emb = embed_articles_live(articles_in_window: list[Article]) -> pd.DataFrame
 # Returns the same per-article schema as the precomputed parquet, for live cycle.
@@ -430,7 +430,7 @@ Anchor cohesion test on these templates is now stricter: intra-anchor pairwise c
 
 ### Hand-off / dataset additions
 
-doc 02 (data pipeline) gets new sources 12-18 for the historical news corpus. doc 04 imports the source registry. doc 06 (training) implements LAFTR head + inverse-frequency reweighting. This doc owns the embedder + aggregator only.
+doc 02 (data pipeline) gets new sources 12-18 for the historical news corpus. doc 04 imports the source registry. doc 05 (training) implements LAFTR head + inverse-frequency reweighting. This doc owns the embedder + aggregator only.
 
 ---
 

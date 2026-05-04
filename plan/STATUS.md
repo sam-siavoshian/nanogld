@@ -15,7 +15,7 @@ Planning:        ██████████████ 100% locked, Nia-ver
 Implementation:  ░░░░░░░░░░░░░░   0% — agents ready to be dispatched
 ```
 
-Estimated implementation: **~17-19 days** end-to-end. **Sequential** — one agent per doc, hand off when done.
+Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one agent per doc, hand off when done. **8 docs after V5 merge** (was 11; merged model+train+calib into doc 05, sizing+exits into doc 07).
 
 ---
 
@@ -27,18 +27,17 @@ Estimated implementation: **~17-19 days** end-to-end. **Sequential** — one age
 | 01 INFRA-AND-SECURITY | DevOps | ✅ Spec ready | 0.5 day | nothing — START HERE |
 | 02 DATA-PIPELINE | Data engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **4-5 days** | doc 01 |
 | 03 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3 + V4 expanded pipeline + LAFTR + new aggregator) | **1.5 day** setup + ~120min precompute | doc 02 |
-| 04 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **1.5 days** | doc 02 + doc 03 |
-| 05 MODEL-ARCHITECTURE | ML systems engineer | ✅ Spec ready (V1) | 1 day | doc 04 |
-| 06 TRAINING-PROCEDURE | ML engineer | ✅ Spec ready (V1 Schedule-Free + F-SAM) | 1 day | doc 04 + doc 05 |
-| 07 CALIBRATION | Calibration engineer | ✅ Spec ready (V1, 2026-05-04) — temperature scaling + APS Mondrian conformal + drift stack | 1 day | doc 06 |
-| 08 BACKTEST | Quant engineer | ✅ Spec ready | 1 day | doc 05 + doc 06 + doc 07 |
-| 09 SIZING-STAGE2 | Quant engineer | ⚠️ Sizing math partly superseded by doc 10 — keep as public-facing entry point | 0.5 day | doc 07 + doc 08 |
-| 10 EXITS-AND-RISK | Quant risk engineer | ✅ Spec ready (V1, 2026-05-04, 4 research agents) — sizing V2 + per-trade SL + profit-take logic | 1.5 days | doc 08 + doc 09 |
-| 11 LIVE-TRADING | Production engineer | ✅ Spec ready (stop-loss path uses doc 10 client-side polling) | 1.5 days | doc 05 + doc 06 + doc 09 + doc 10 |
+| 04 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **1.5 days** | doc 03 |
+| 05 MODEL-TRAINING-CALIBRATION | ML systems engineer | ✅ Spec ready (V5 merge: model + training + calibration in one file) | **3 days** | doc 04 |
+| 06 BACKTEST | Quant engineer | ✅ Spec ready | 1 day | doc 05 |
+| 07 SIZING-AND-EXITS | Quant risk engineer | ✅ Spec ready (V5 merge: sizing + per-trade SL + profit-take + drawdown circuit-breaker) | **2 days** | doc 06 |
+| 08 LIVE-TRADING | Production engineer | ✅ Spec ready | 1.5 days | doc 07 |
+
+**V5 Merge (2026-05-04):** old docs 05+06+07 merged into the new doc 05 (MODEL-TRAINING-CALIBRATION). Old docs 09+10 merged into the new doc 07 (SIZING-AND-EXITS). One agent owns each merged doc end-to-end. Each doc's `Blocked by` is now exactly the immediately-preceding doc — pure linear chain.
 
 **Deleted docs (V1 cleanup, May 1):**
-- ~~old `08-RL-STAGE3.md`~~ — RL deferred to V2. The replacement `EXITS-AND-RISK` (sizing V2 + per-trade SL + profit-take logic) lives at the new sequential slot **doc 10**.
-- ~~old `11-X-THREAD-AND-BLOG.md`~~ — content strategy, owner writes himself, not implementation. Slot 11 reused for `LIVE-TRADING`.
+- ~~old `08-RL-STAGE3.md`~~ — RL deferred to V2.
+- ~~old `11-X-THREAD-AND-BLOG.md`~~ — content strategy, owner writes himself.
 
 ---
 
@@ -79,9 +78,9 @@ read doc → Nia subagent for unknowns → code → /review → /qa → /cso (if
 
 ---
 
-## Implementation Order — Sequential, One Agent Per Doc
+## Implementation Order — Sequential, One Agent Per Doc (V5 — 8 docs after merge)
 
-Each agent starts only when the previous agent has handed off. No overlap. No concurrent work.
+Each agent starts only when the previous agent has handed off. **No blocking on multiple upstream docs — pure linear chain.**
 
 ```
 Agent 01 → doc 01 INFRA-AND-SECURITY               (0.5 day)
@@ -102,45 +101,34 @@ Agent 03 → doc 03 NEWS-EMBEDDING                   (1.5 days + ~120min precomp
 Agent 04 → doc 04 FEATURE-ENGINEERING              (1.5 days)
   └── 12 feature categories (price, risk, macro short, geo, equities, treasury curve,
       macro bundle, COT, WGC, calendar). Z-score + clip(-10, 10) + RevIN.
-      Output: feature DataFrame consumed by docs 05 + 06.
+      Output: feature DataFrame.
 
-Agent 05 → doc 05 MODEL-ARCHITECTURE               (1 day)
-  └── Encoder-only transformer (~14-25 channel-group tokens, 12 layers, D=384,
-      RMSNorm + SwiGLU + RoPE + QK-Norm + per-head gating + value residuals).
-      Plus baselines (DLinear, TSMixer, TimeMixer, xLSTMTime, XGBoost, F-to-F).
-      Output: src/nanogld/model/
+Agent 05 → doc 05 MODEL-TRAINING-CALIBRATION       (3 days, all in one)
+  └── Part 1 — Build encoder-only transformer + baselines (DLinear, TSMixer, TimeMixer,
+      xLSTMTime, XGBoost, Forecast-to-Fill replica).
+  └── Part 2 — Train it: 3-stage (SSL-MAE → linear-probe → LLRD fine-tune),
+      Schedule-Free AdamW + Friendly-SAM + EMA + walk-forward CV + LAFTR adversary.
+  └── Part 3 — Calibrate it: temperature scaling (val-B) + APS Mondrian conformal
+      (val-C) + classwise Adaptive ECE + drift stack (3 tiers).
+      Output: checkpoints/v1_<hash>.pt with calibration objects baked in.
 
-Agent 06 → doc 06 TRAINING-PROCEDURE               (1 day)
-  └── 3-stage training (SSL-MAE → linear-probe → LLRD fine-tune).
-      Schedule-Free AdamW + Friendly-SAM ρ=0.05 + EMA 0.999 + walk-forward CV.
-      LAFTR adversary + inverse-frequency reweighting wired in.
-      Output: checkpoints/
-
-Agent 07 → doc 07 CALIBRATION                      (1 day)
-  └── Temperature scaling (val-B fold) + APS Mondrian class-conditional conformal
-      (val-C fold) + classwise Adaptive ECE + Brier + drift stack (3 tiers).
-      Output: calibrated probability layer.
-
-Agent 08 → doc 08 BACKTEST                         (1 day)
+Agent 06 → doc 06 BACKTEST                         (1 day)
   └── Vectorized engine + 5bps cost model + bars_per_year=3276 + DSR + bootstrap CIs
       + regime stratification. Run all baselines + nanoGLD.
       Output: reports/v1_<hash>_backtest.md
 
-Agent 09 → doc 09 SIZING-STAGE2                    (0.5 day)
-  └── Vol-target × Kelly-lite using calibrated probabilities. Drawdown circuit-breaker.
-      Output: sizing module.
+Agent 07 → doc 07 SIZING-AND-EXITS                 (2 days, all in one)
+  └── Part 1 — Vol-target × Kelly-lite × calibrated conformal shrinkage.
+  └── Part 2 — Per-trade stop-loss + profit-take ladders + drawdown circuit-breaker.
+      Output: position-mgmt module.
 
-Agent 10 → doc 10 EXITS-AND-RISK                   (1.5 days)
-  └── Per-trade SL + profit-take + continuous conformal shrinkage + drawdown rules.
-      Output: exits module.
-
-Agent 11 → doc 11 LIVE-TRADING                     (1.5 days)
+Agent 08 → doc 08 LIVE-TRADING                     (1.5 days)
   └── launchd cron + Alpaca SDK + drift detection + 1Password live keys.
       Paper-trade soak (5+ days), debug. Then fund $100, switch to live,
       build-in-public X thread.
 
 ────────────────────────────────────────────────────
-Total: ~17-19 days end-to-end (sequential, single agent per doc).
+Total: ~14-16 days end-to-end (sequential, 8 self-contained agents).
 ```
 
 ---
@@ -149,7 +137,7 @@ Total: ~17-19 days end-to-end (sequential, single agent per doc).
 
 Owner lifted "raw PyTorch only / no HuggingFace" restriction. Researched modern training libraries.
 
-**Adopted:** `accelerate>=1.13,<2.0` only (5 LOC for device-agnostic boilerplate + free checkpoint state + seed handling). Added to doc 01 deps + doc 06 stack.
+**Adopted:** `accelerate>=1.13,<2.0` only (5 LOC for device-agnostic boilerplate + free checkpoint state + seed handling). Added to doc 01 deps + doc 05 stack.
 
 **Deferred:** `transformers.Trainer` (optional, decide during impl based on Friendly-SAM override fit), `peft` (until/if embedder fine-tune day).
 
@@ -196,7 +184,7 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 | 3 | Muon optimizer for 2D weights | 05 | Schedule-Free plateaus |
 | 4 | MTS-JEPA replaces MAE pretrain | 05 | MAE pretrain converges but val gap stays large |
 | 5 | Cross-asset transfer SPY → GLD | 05 | Bonus experiment, free |
-| 6 | RL Stage 3 (deferred — was doc 10) | n/a | Stage 2 leaves Sharpe; user decision |
+| 6 | RL Stage 3 (deferred — was doc 07) | n/a | Stage 2 leaves Sharpe; user decision |
 
 ---
 
@@ -247,12 +235,12 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 | 2026-05-01 | AdamW + cosine + warmup → Schedule-Free AdamW | AlgoPerf 2024 winner |
 | 2026-05-01 | Vanilla SAM → Friendly-SAM | Filters gradient noise |
 | 2026-05-01 | Hard rule: NEVER MSE on returns | Forecast collapse |
-| 2026-05-01 | Add conformal prediction sizing | Calibrated set-size shrinkage; doc 10 supersedes. (Note: original 30% claim from Wright 2026 was fabricated — citation removed in doc 10.) |
+| 2026-05-01 | Add conformal prediction sizing | Calibrated set-size shrinkage; doc 07 supersedes. (Note: original 30% claim from Wright 2026 was fabricated — citation removed in doc 07.) |
 | 2026-05-01 | Add xLSTMTime baseline | 2026 finance benchmark winner |
-| 2026-05-01 | Delete doc 10 + 11 | Speculative + non-implementation |
+| 2026-05-01 | Delete doc 07 + 11 | Speculative + non-implementation |
 | 2026-05-01 | Add agent-isolation headers to all docs | Concurrent multi-agent implementation phase |
 | 2026-05-04 | Dataset expansion (V1, owner directive): 9-ETF basket + full Treasury curve + 19-series macro bundle + CFTC COT + WGC + calendar | Capture real-rate / risk-on-off / sector rotation / positioning drivers. Per-bar dim ~804 → ~1000. doc 02 effort 2-3d → 4-5d, doc 04 1d → 1.5d. No model arch change. |
-| 2026-05-04 | Owner flagged 3 missing pieces: confidence sizing, per-trade SL, profit-taking. Spawned 4 parallel research agents (sizing / SL / TP / Forecast-to-Fill replication + Alpaca constraints). Wrote `plan/10-EXITS-AND-RISK.md` superseding doc 09 sizing math and doc 11 line 198 stop-loss. | (1) Sizing: replace `(max_prob-0.33)` with signed score `P_up-P_down`; quarter-Kelly default; vol-target with `min(σ*/σ_t, 3.0)` cap; continuous conformal shrinkage; EWMA λ=0.94 + 20d floor. (2) Stop-loss: 2.0×ATR(14) hard + 1.5×ATR(14) trailing + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + ±15min FOMC/CPI/NFP blackout. Match Forecast-to-Fill exactly. (3) Profit-take: NO fixed TP (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit `max_prob < entry_max_prob × 0.7` gated on val A/B ≥30bp lift. (4) Live: client-side stop polling — Alpaca rejects bracket orders for fractional positions (error 42210000), and at $100 with GLD ~$200 every position is fractional. (5) Deleted fabricated "30% lower decision loss" Wright 2026 citation. |
+| 2026-05-04 | Owner flagged 3 missing pieces: confidence sizing, per-trade SL, profit-taking. Spawned 4 parallel research agents (sizing / SL / TP / Forecast-to-Fill replication + Alpaca constraints). Wrote `plan/07-SIZING-AND-EXITS.md` superseding doc 07 sizing math and doc 08 line 198 stop-loss. | (1) Sizing: replace `(max_prob-0.33)` with signed score `P_up-P_down`; quarter-Kelly default; vol-target with `min(σ*/σ_t, 3.0)` cap; continuous conformal shrinkage; EWMA λ=0.94 + 20d floor. (2) Stop-loss: 2.0×ATR(14) hard + 1.5×ATR(14) trailing + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + ±15min FOMC/CPI/NFP blackout. Match Forecast-to-Fill exactly. (3) Profit-take: NO fixed TP (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit `max_prob < entry_max_prob × 0.7` gated on val A/B ≥30bp lift. (4) Live: client-side stop polling — Alpaca rejects bracket orders for fractional positions (error 42210000), and at $100 with GLD ~$200 every position is fractional. (5) Deleted fabricated "30% lower decision loss" Wright 2026 citation. |
 
 ---
 
@@ -305,7 +293,7 @@ Total active setup time: **~3-4 hours** (when not waiting).
 | Real $100 Alpaca account issues | MEDIUM | Stay in paper longer, document friction |
 | 16GB Mac mini OOMs during training | MEDIUM | Reduce batch size, gradient accumulation, or model size |
 | Leakage bug not caught by golden fixture | HIGH | Multiple golden fixtures + visual sanity check |
-| Macbook sleeps during market hours | HIGH | pmset -c sleep 0 disablesleep 1 + caffeinate (doc 11) |
+| Macbook sleeps during market hours | HIGH | pmset -c sleep 0 disablesleep 1 + caffeinate (doc 08) |
 | Concurrent doc updates corrupt plan | MEDIUM | Each agent owns ONE doc, AskUserQuestion on cross-doc changes |
 
 ---

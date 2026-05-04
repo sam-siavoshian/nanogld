@@ -140,9 +140,9 @@ A from-scratch encoder-only transformer (~24-60M params) that predicts next-30mi
 **Still build from scratch** (the learning core):
 
 - The nanoGLD transformer architecture itself (RMSNorm, SwiGLU, attention, RoPE, channel-group tokens, news fuser) — doc 05
-- The vectorized backtest engine — doc 08
-- The sizing math (Kelly-lite × vol-target × conformal) — doc 09
-- The Live trading cycle (Alpaca SDK is fine; cycle orchestration is yours) — doc 11
+- The vectorized backtest engine — doc 06
+- The sizing math (Kelly-lite × vol-target × conformal) — doc 07
+- The Live trading cycle (Alpaca SDK is fine; cycle orchestration is yours) — doc 08
 
 **Why this split:** the model architecture is what people will read on the X thread. They want to see transformer math written cleanly. Training infrastructure is plumbing — use the best library, document the choice.
 
@@ -226,7 +226,7 @@ MODEL ARCHITECTURE (doc 05)
 ├── A/B candidates: TDA (arXiv:2601.12145) + SyPE (arXiv:2602.08983)
 └── Mean-pool over tokens → Linear(D, 3) → softmax
 
-TRAINING (doc 06)
+TRAINING (doc 05)
 ├── Stage 1: SSL pretrain (MAE on masked bars, 10 epochs)
 │   [A/B Phase 2: MTS-JEPA arXiv:2602.04643 — replaces MAE]
 ├── Stage 2: Linear-probe (frozen encoder, 5-10 epochs head-only)
@@ -241,7 +241,7 @@ TRAINING (doc 06)
 ├── Cross-asset transfer (bonus): SPY → GLD via LLRD
 └── PyTorch 2.11.0, FP32, num_workers=0 (macOS fork issues)
 
-BACKTEST (doc 08)
+BACKTEST (doc 06)
 ├── Cost model: 5bps round-trip (sensitivity test 3/5/7/10 bps)
 ├── bars_per_year = 3276 (NYSE RTH only — NOT 17500)
 ├── Baselines: buy-hold, MA crossover, Donchian, DLinear, TSMixer, TimeMixer,
@@ -254,7 +254,7 @@ BACKTEST (doc 08)
 └── Hard rule: if 24-60M Transformer can't beat all baselines by ≥0.2 Sharpe,
     SHIP THE BASELINE (TLOB lesson: "MLP can match transformer")
 
-SIZING + EXITS (doc 10 supersedes doc 09 math, 2026-05-04)
+SIZING + EXITS (doc 07 supersedes doc 07 math, 2026-05-04)
 ├── Stage 1: fixed (1 share when argmax ≠ flat)
 ├── Stage 2: signed-score × quarter-Kelly × vol-target(cap=3.0) × conformal
 │   ├── signed score: s = P_up − P_down  (NOT max_prob − 0.33)
@@ -265,14 +265,14 @@ SIZING + EXITS (doc 10 supersedes doc 09 math, 2026-05-04)
 │   ├── continuous conformal shrinkage: set_size {1,2,3} → λ_conf {1.0, 0.5, 0.0}
 │   └── min_signed_signal = 0.05  (skip noise bars)
 │   GATE: full V1 stack must beat Stage 1 by ≥0.2 Sharpe OOS at 7bp cost
-├── Per-trade stop-loss (NEW, doc 10)
+├── Per-trade stop-loss (NEW, doc 07)
 │   ├── Hard ATR stop: 2.0 × ATR(14)_at_entry (frozen at entry)
 │   ├── Trailing ATR stop: 1.5 × ATR(14)_live, ratchet only
 │   ├── Time stop: 390 bars (30 RTH days × 13 30-min bars)
 │   ├── Re-entry gate: cooldown 1 bar + max_prob ≥ 0.55 OR argmax flipped
 │   ├── Session-flat at 15:55 ET, re-eligible 09:35 ET
 │   └── News blackout ±15 min around FOMC / CPI / NFP / GDP / JOLTS / PCE
-├── Profit-taking (NEW, doc 10)
+├── Profit-taking (NEW, doc 07)
 │   ├── NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate)
 │   ├── Model re-decision IS the TP (continuous re-rebalance)
 │   └── OPTIONAL signal-decay exit (gated: ship only if val A/B ≥30bp lift)
@@ -280,7 +280,7 @@ SIZING + EXITS (doc 10 supersedes doc 09 math, 2026-05-04)
 ├── Drawdown circuit-breaker (portfolio-level): -5% halve / -10% quarter / -15% halt
 └── Stage 3 (RL) deferred — gated, only built if Stage 2 leaves Sharpe on table
 
-LIVE TRADING (doc 11)
+LIVE TRADING (doc 08)
 ├── Macbook M4 Pro runs cron via launchd every 30min
 ├── StartCalendarInterval (NOT StartInterval=1800) — fires only RTH M-F
 ├── pmset -c sleep 0 disablesleep 1 (#1 prod risk if skipped)
@@ -307,42 +307,37 @@ INFRA + SECURITY (doc 01)
 ## Doc Index
 
 
-| #   | Doc                 | Owner agent role           | Implementation effort            |
-| --- | ------------------- | -------------------------- | -------------------------------- |
-| 00  | OVERVIEW (this)     | n/a (read-first reference) | n/a                              |
-| 01  | INFRA-AND-SECURITY  | DevOps                     | 0.5 day (START HERE)             |
-| 02  | DATA-PIPELINE       | Data engineer              | 4-5 days                         |
-| 03  | NEWS-EMBEDDING      | ML engineer                | 1.5 day setup + ~120min precompute |
-| 04  | FEATURE-ENGINEERING | Feature engineer           | 1.5 days                         |
-| 05  | MODEL-ARCHITECTURE  | ML systems engineer        | 1 day                            |
-| 06  | TRAINING-PROCEDURE  | ML engineer                | 1 day                            |
-| 07  | CALIBRATION         | Calibration engineer       | 1 day                            |
-| 08  | BACKTEST            | Quant engineer             | 1 day                            |
-| 09  | SIZING-STAGE2       | Quant engineer             | 0.5 day                          |
-| 10  | EXITS-AND-RISK      | Quant risk engineer        | 1.5 days                         |
-| 11  | LIVE-TRADING        | Production engineer        | 1.5 days                         |
-| --  | STATUS              | n/a (anyone can update)    | n/a                              |
+| #   | Doc                          | Owner agent role           | Implementation effort            |
+| --- | ---------------------------- | -------------------------- | -------------------------------- |
+| 00  | OVERVIEW (this)              | n/a (read-first reference) | n/a                              |
+| 01  | INFRA-AND-SECURITY           | DevOps                     | 0.5 day (START HERE)             |
+| 02  | DATA-PIPELINE                | Data engineer              | 4-5 days                         |
+| 03  | NEWS-EMBEDDING               | ML engineer                | 1.5 day setup + ~120min precompute |
+| 04  | FEATURE-ENGINEERING          | Feature engineer           | 1.5 days                         |
+| 05  | MODEL-TRAINING-CALIBRATION   | ML systems engineer        | 3 days (model + train + calib in one) |
+| 06  | BACKTEST                     | Quant engineer             | 1 day                            |
+| 07  | SIZING-AND-EXITS             | Quant risk engineer        | 2 days (sizing + SL + profit-take in one) |
+| 08  | LIVE-TRADING                 | Production engineer        | 1.5 days                         |
+| --  | STATUS                       | n/a (anyone can update)    | n/a                              |
 
-**Reorder note (2026-05-04):** docs renumbered for sequential execution (one agent per doc, hand off when done). Old → new mapping: 10→01, 01→02, 04→03, 02→04, 03→05, 05→06, 11→07 (CALIBRATION new), 06→08, 07→09, 08→10, 09→11. Old `08-RL-STAGE3.md` was deleted May 1 (RL deferred to V2). Old `11-X-THREAD-AND-BLOG.md` deleted (owner writes himself).
+**V5 Merge (2026-05-04):** 11 docs → 8 docs. Old 05+06+07 (model+training+calibration) merged into new 05. Old 09+10 (sizing+exits) merged into new 07. Each remaining doc depends only on the immediately-preceding one — pure linear chain, single agent per doc, no blocking. Old `08-RL-STAGE3.md` was deleted May 1 (RL deferred to V2). Old `11-X-THREAD-AND-BLOG.md` deleted (owner writes himself).
 
 ## Implementation Order — Sequential, One Agent Per Doc
 
-Each agent starts only when previous agent has handed off. No overlap.
+Each agent depends ONLY on the previous agent's output. No overlap. No multi-doc blocking.
 
 ```
 Agent 01 → doc 01 INFRA-AND-SECURITY               (0.5 day)
 Agent 02 → doc 02 DATA-PIPELINE                    (4-5 days)
 Agent 03 → doc 03 NEWS-EMBEDDING                   (1.5 days + ~120min precompute)
 Agent 04 → doc 04 FEATURE-ENGINEERING              (1.5 days)
-Agent 05 → doc 05 MODEL-ARCHITECTURE               (1 day)
-Agent 06 → doc 06 TRAINING-PROCEDURE               (1 day)
-Agent 07 → doc 07 CALIBRATION                      (1 day)
-Agent 08 → doc 08 BACKTEST                         (1 day)
-Agent 09 → doc 09 SIZING-STAGE2                    (0.5 day)
-Agent 10 → doc 10 EXITS-AND-RISK                   (1.5 days)
-Agent 11 → doc 11 LIVE-TRADING                     (1.5 days)
+Agent 05 → doc 05 MODEL-TRAINING-CALIBRATION       (3 days, all in one file)
+Agent 06 → doc 06 BACKTEST                         (1 day)
+Agent 07 → doc 07 SIZING-AND-EXITS                 (2 days, all in one file)
+Agent 08 → doc 08 LIVE-TRADING                     (1.5 days)
 
-Total: ~17-19 days end-to-end. Detailed per-agent description in STATUS.md.
+Total: ~14-16 days end-to-end (sequential, 8 self-contained agents).
+Per-agent details in STATUS.md.
 ```
 
 ## Verification History
@@ -463,9 +458,9 @@ If you spawn an agent and it disagrees with the doc, document the disagreement I
 | 2026-05-01 | Hard rule: NEVER MSE on returns                         | Forecast collapse, arXiv:2604.00064                                 |
 | 2026-05-01 | Add conformal prediction sizing                         | 30% lower decision loss, Wright 2026                                |
 | 2026-05-01 | Add xLSTMTime baseline                                  | Won 2026 finance benchmark                                          |
-| 2026-05-01 | Delete doc 10 (RL) + 11 (content)                      | Speculative + non-implementation                                    |
+| 2026-05-01 | Delete doc 07 (RL) + 11 (content)                      | Speculative + non-implementation                                    |
 | 2026-05-04 | Dataset expansion — 9 equity ETFs (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU), full Treasury curve + TIPS + breakevens (11 FRED), full macro bundle (19 FRED), CFTC COT weekly, WGC quarterly, calendar events | Owner directive — capture more market drivers (real rates, risk-on/off, sector rotation, gold-silver ratio, positioning extremes). Per-bar feature dim grows ~804 → ~1000. doc 02 effort 2-3d → 4-5d. No model arch change. |
-| 2026-05-04 | Wrote `10-EXITS-AND-RISK.md` (4 parallel research agents — sizing / SL / TP / Forecast-to-Fill + Alpaca constraints). Supersedes doc 09 sizing math and doc 11 line 198 stop-loss. | Owner flagged 3 missing pieces. Findings: (1) Sizing formula in doc 09 was magnitude-only (`max_prob-0.33`), discards signed info, fragile `confidence_scale=3` guess, fabricated "30% lower decision loss" Wright 2026 citation. Replaced with signed score `s = P_up - P_down`, quarter-Kelly default, `vol_mult` capped at 3.0, EWMA+20d-floor σ_t, continuous conformal shrinkage. (2) Per-trade SL absent; literature (Kaminski-Lo, Han-Zhou-Zhu, F2F arXiv:2511.08571) and 5%-of-bars-with-news-tail-risk argue for wide ATR stop. Match F2F: 2.0×ATR14 hard + 1.5×ATR14 trail + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + news blackout. (3) NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit gated on val A/B ≥30bp lift. (4) Live: Alpaca rejects bracket orders for fractional positions (error 42210000); at $100 + GLD ~$200 every position is fractional, so stops enforced client-side via `cycle.py` polling. |
+| 2026-05-04 | Wrote `07-SIZING-AND-EXITS.md` (4 parallel research agents — sizing / SL / TP / Forecast-to-Fill + Alpaca constraints). Supersedes doc 07 sizing math and doc 08 line 198 stop-loss. | Owner flagged 3 missing pieces. Findings: (1) Sizing formula in doc 07 was magnitude-only (`max_prob-0.33`), discards signed info, fragile `confidence_scale=3` guess, fabricated "30% lower decision loss" Wright 2026 citation. Replaced with signed score `s = P_up - P_down`, quarter-Kelly default, `vol_mult` capped at 3.0, EWMA+20d-floor σ_t, continuous conformal shrinkage. (2) Per-trade SL absent; literature (Kaminski-Lo, Han-Zhou-Zhu, F2F arXiv:2511.08571) and 5%-of-bars-with-news-tail-risk argue for wide ATR stop. Match F2F: 2.0×ATR14 hard + 1.5×ATR14 trail + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + news blackout. (3) NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit gated on val A/B ≥30bp lift. (4) Live: Alpaca rejects bracket orders for fractional positions (error 42210000); at $100 + GLD ~$200 every position is fractional, so stops enforced client-side via `cycle.py` polling. |
 | 2026-05-04 | Verification Round 4 — 17 leakage findings encoded as hard rules + 28 mandatory tests | 5 Nia agents audited every source. Bar timestamp=START leakage, FEDFUNDS→DFF, 6 GDELT codes refuted, GDELT 30min buffer, WGC URL fix (monthly not quarterly), AI-GPR not real-time, anchor leakage rule, pandas-ta forbidden indicators, CFTC release-time gate, calendar-binary-only, etc. CI gate via `test_release_ts_lte_t_visible_all_rows`. |
 | 2026-05-04 | News pipeline expansion — 3 sources → 12+ sources + bias-aware LAFTR debiasing + V4 aggregator (per-source PMA + bar-conditioned FiLM Q-Former K=8 + Flamingo gate) | 5 Nia agents verified user's 10-source list + free-news datasets + multi-doc aggregation SOTA. Add Kitco/Investing.com/BullionVault/CNBC/FNSPID/central bank speeches/government press/Reddit/Kaggle. Forbid FT (robots.txt bans ML — legal). Defer Reuters/FXStreet/TE (paid). Skip Metals Daily (syndication dup). Source registry with 12 bias tiers + LAFTR adversarial head fights per-source prior. Aggregator upgrade (CMTF + FiCoTS 2025-26 papers): K=16→8, add bar-conditioned FiLM, add per-source PMA pre-pool. Per-article embedding (was per-source mean-pool). doc 03 effort 0.5d → 1.5d. |
 
@@ -490,17 +485,17 @@ ml-trading/  (gh repo create nanogld --public)
 │   ├── features/           (doc 04: feature engineering + RevIN)
 │   ├── embed/              (doc 03: Qwen3 embedder + anchor cosines)
 │   ├── model/              (doc 05: tiny_trader_v4.py + baselines)
-│   ├── training/           (doc 06: walk-forward + Schedule-Free + F-SAM)
-│   ├── backtest/           (doc 08: vectorized engine + bootstrap)
-│   ├── sizing/             (doc 09: stage2 + conformal)
-│   ├── live/               (doc 11: Alpaca cron + drift detection)
+│   ├── training/           (doc 05: walk-forward + Schedule-Free + F-SAM)
+│   ├── backtest/           (doc 06: vectorized engine + bootstrap)
+│   ├── sizing/             (doc 07: stage2 + conformal)
+│   ├── live/               (doc 08: Alpaca cron + drift detection)
 │   └── utils/              (shared: snapshot hashing, point-in-time helpers)
 ├── tests/
 │   ├── test_pit.py         (golden fixture for joiner — doc 02)
 │   ├── test_features.py    (no-leakage tests — doc 04)
 │   ├── test_model.py       (forward pass shapes — doc 05)
-│   ├── test_backtest.py    (cost model arithmetic — doc 08)
-│   └── test_sizing.py      (Kelly-lite formula — doc 09)
+│   ├── test_backtest.py    (cost model arithmetic — doc 06)
+│   └── test_sizing.py      (Kelly-lite formula — doc 07)
 ├── notebooks/
 │   ├── 01_explore_data.ipynb
 │   ├── 02_baseline_xgboost.ipynb

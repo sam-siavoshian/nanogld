@@ -343,7 +343,7 @@ tests/
 - `src/nanogld/features/` — doc 04
 - `src/nanogld/embed/` — doc 03
 - `src/nanogld/model/` — doc 05
-- `src/nanogld/training/` — doc 06
+- `src/nanogld/training/` — doc 05
 - Any doc-NN.md other than this one
 - `.pre-commit-config.yaml`, `pyproject.toml`, `.gitignore` — doc 01 owns these (you can ASK them to add a dep, don't edit yourself)
 

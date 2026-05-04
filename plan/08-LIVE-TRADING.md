@@ -5,7 +5,7 @@
 You own the live trading cycle. You build the launchd cron + Alpaca integration that actually runs the trained model on real money on the Macbook M4 Pro every 30 minutes during market hours.
 
 **Read 00-OVERVIEW.md FIRST.**
-**Read 05-MODEL-ARCHITECTURE.md** + **06-TRAINING-PROCEDURE.md** + **09-SIZING-STAGE2.md** — you load checkpoints, call sizer.
+**Read 05-MODEL-TRAINING-CALIBRATION.md** + **05-MODEL-TRAINING-CALIBRATION.md** + **07-SIZING-AND-EXITS.md** — you load checkpoints, call sizer.
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -61,7 +61,7 @@ from nanogld.model.tiny_trader import nanoGLDV1
 model = nanoGLDV1(...)
 model.load_state_dict(torch.load("checkpoints/fold_3_seed_42_ema.pt")['ema_state_dict'])
 
-# From doc 09:
+# From doc 07:
 from nanogld.sizing.stage2 import stage2_sizing
 from nanogld.sizing.conformal import ConformalSizer
 

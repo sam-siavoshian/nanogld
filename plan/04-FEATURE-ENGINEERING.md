@@ -2,7 +2,7 @@
 
 ## YOU ARE THE FEATURE ENGINEER AGENT
 
-You own feature construction. You take immutable parquet snapshots from doc 02 + cached embeddings from doc 03 and produce the feature DataFrame that doc 06 (training) consumes.
+You own feature construction. You take immutable parquet snapshots from doc 02 + cached embeddings from doc 03 and produce the feature DataFrame that doc 05 (training) consumes.
 
 **Read 00-OVERVIEW.md FIRST.** Project context is there.
 **Read 02-DATA-PIPELINE.md schema section.** Your input is its output.
@@ -124,7 +124,7 @@ Specifically:
 When done:
 1. Update STATUS.md with feature DataFrame stats (rows, columns, class balance)
 2. Document any deviations from the spec in this doc's "Deviations" section
-3. Notify doc 06 (training) that feature pipeline is stable
+3. Notify doc 05 (training) that feature pipeline is stable
 
 Now read the implementation specifics below.
 

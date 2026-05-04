@@ -254,7 +254,7 @@ python_version = "3.11"
 
 1. **`.gitignore` is the FIRST commit.** Before any code, before any test, before any data.
 2. **`gitleaks` pre-commit MUST be installed before first commit.** Verify by trying to commit a fake key.
-3. **`.env.live` NEVER appears in dev shell.** Sourced ONLY by launchd (doc 11).
+3. **`.env.live` NEVER appears in dev shell.** Sourced ONLY by launchd (doc 08).
 4. **GCP service account JSON keys are FORBIDDEN.** Use `gcloud auth application-default login` for dev (ADC), Workload Identity Federation for CI.
 5. **`maximum_bytes_billed` cap on every BigQuery query** (doc 02).
 6. **Custom BigQuery quota: 1024 GiB/day per user** (Google Console).
@@ -521,7 +521,7 @@ Catches yfinance / Alpaca API breakage before you find out via a failed live cyc
 
 - ✅ CI workflow YAMLs designed (above)
 - ✅ Stay 100% local — Modal/cloud rejected per pivot
-- ✅ State store: SQLite at `~/.config/nanogld/state.sqlite` (designed in doc 11)
+- ✅ State store: SQLite at `~/.config/nanogld/state.sqlite` (designed in doc 08)
 - ✅ Checkpoint backup: weekly cron uploads best checkpoint to HF Hub (private repo, ~30MB compressed)
 - ✅ Monitoring: wandb workspace (public for X-thread), `~/Library/Logs/nanogld.log` for ops, weekly manual review
 
