@@ -17,9 +17,6 @@ env/
 .mypy_cache/
 .ruff_cache/
 
-# uv
-.python-version
-
 # Jupyter
 .ipynb_checkpoints/
 
@@ -43,6 +40,7 @@ Thumbs.db
 secrets/
 credentials.json
 service-account*.json
+alpaca-*
 
 # ML artifacts (regenerable, large, content-addressed)
 data/
@@ -51,13 +49,23 @@ runs/
 wandb/
 mlruns/
 lightning_logs/
+.neptune/
+.comet/
+outputs/
+.hydra/
 *.parquet
 *.npy
 *.npz
 *.pkl
 *.pt
 *.pth
+*.ckpt
 *.safetensors
+*.h5
+
+# Coverage
+.coverage
+htmlcov/
 
 # Logs
 *.log

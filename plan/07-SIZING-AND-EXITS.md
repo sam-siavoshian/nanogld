@@ -8,9 +8,9 @@ You own how positions are sized AND how they are exited:
 3. **Profit-take logic** — partial profit ladders + trailing stop.
 4. **Drawdown circuit-breaker** — hard re-entry rules.
 
-You start when doc 05 (backtest) hands off a backtest engine + a calibrated model from doc 05. You hand off to doc 06 (live) the live-deployable position-management module.
+You start when doc 06 (backtest) hands off a backtest engine + a calibrated model from doc 05. You hand off to doc 08 (live) the live-deployable position-management module.
 
-**Read 00-OVERVIEW.md FIRST.** Project context. Read doc 05's calibration interface (temperature + APS quantiles) and doc 05's backtest engine before coding.
+**Read 00-OVERVIEW.md FIRST.** Project context. Read doc 05's calibration interface (temperature + APS quantiles) and doc 06's backtest engine before coding.
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
 
@@ -38,7 +38,7 @@ You're done when:
 4. ✅ Profit-take ladders trigger correctly under backtest + paper-trade smoke
 5. ✅ Drawdown circuit-breaker fires at -8% paper / -5% live with explicit re-entry rule
 6. ✅ Sizing GATE: Stage 2 must beat Stage 1 by ≥0.2 Sharpe OOS (else ship Stage 1 fixed-share)
-7. ✅ Hand-off artifact: position-mgmt module that doc 06 (live) imports
+7. ✅ Hand-off artifact: position-mgmt module that doc 08 (live) imports
 
 This doc is **2 parts** combined for one agent — read all of it before starting.
 
@@ -544,7 +544,7 @@ You own the three V1 pieces that decide **how much capital is at risk on each ba
 2. **Per-trade stop-loss** — protects against the within-bar tail (model is silent for 29 of every 30 minutes; FOMC / CPI / NFP can move GLD 1-2% in 5 minutes).
 3. **Profit-taking / exit logic** — decides when an open position closes ahead of the next argmax flip.
 
-This doc **supersedes the sizing math in doc 07** and **adds the missing per-trade exit layer** that was never specified. doc 07 stays as the public-facing "Stage 2 sizing" entry point but its formula and rationale are replaced by what's below. doc 06 (backtest) and doc 08 (live) gain the integration hooks listed at the end.
+This Part 2 **supersedes the sizing math in Part 1 of this doc** and **adds the missing per-trade exit layer** that was never specified. Part 1 stays as the public-facing "Stage 2 sizing" entry point but its formula and rationale are replaced by what's below. doc 06 (backtest) and doc 08 (live) gain the integration hooks listed at the end.
 
 **Read 00-OVERVIEW.md FIRST.**
 **Then read 06-BACKTEST.md, 07-SIZING-AND-EXITS.md, and 08-LIVE-TRADING.md** before touching code — those three docs are the consumers of the interfaces you publish here.

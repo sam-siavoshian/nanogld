@@ -7,7 +7,7 @@ You own the predictor end-to-end:
 2. **Train it** with Schedule-Free AdamW + Friendly-SAM + walk-forward CV + LAFTR adversarial debiasing.
 3. **Calibrate it** — temperature scaling + APS Mondrian conformal prediction + drift detection stack.
 
-You start when doc 04 (features) hands off a feature DataFrame. You hand off to doc 05 (backtest) a calibrated checkpoint plus the conformal prediction layer.
+You start when doc 04 (features) hands off a feature DataFrame. You hand off to doc 06 (backtest) a calibrated checkpoint plus the conformal prediction layer.
 
 **Read 00-OVERVIEW.md FIRST.** Project context is there. Read doc 04's output schema (the feature DataFrame) before coding.
 
@@ -1770,10 +1770,10 @@ _(was doc 05-MODEL-TRAINING-CALIBRATION.md before V5 merge — content unchanged
 ## Why This Doc Exists
 
 The plan covers calibration in fragments across 5 docs:
-- **doc 05 / 05** mention label smoothing 0.1 + dropout + stochastic depth (training-time regularization that incidentally affects calibration).
-- **doc 07** sketches temperature scaling + split conformal but cites a fabricated "30% lower decision loss" Wright 2026 number and uses naive split-CP.
-- **doc 07** uses a 3-bucket discrete conformal shrinkage {1: 1.0, 2: 0.5, 3: 0.0} and signed score for sizing.
-- **doc 08** has a single-signal drift detector (entropy z-score > 2 sigma + KL on argmax).
+- **Earlier sections of this doc (model arch + training)** mention label smoothing 0.1 + dropout + stochastic depth (training-time regularization that incidentally affects calibration).
+- **doc 07 (sizing)** sketches temperature scaling + split conformal but cites a fabricated "30% lower decision loss" Wright 2026 number and uses naive split-CP.
+- **doc 07 (exits Part 2)** uses a 3-bucket discrete conformal shrinkage {1: 1.0, 2: 0.5, 3: 0.0} and signed score for sizing.
+- **doc 08 (live trading)** has a single-signal drift detector (entropy z-score > 2 sigma + KL on argmax).
 
 This doc consolidates and upgrades. Three parallel research agents on 2026-05-04 produced ~9000 words of analysis on:
 - Which scalar best measures confidence for a 3-class weak-signal financial model (signed for sizing, MSP for gate, entropy for drift, set size for abstention, MC dropout decomposition for aleatoric/epistemic split).
@@ -1828,7 +1828,7 @@ class Confidence:
 
 ## PART B — Training-Time Calibration
 
-### Loss Function (modifies doc 05 / 05)
+### Loss Function (modifies the training section above in this doc)
 
 ```python
 loss = F.cross_entropy(
@@ -1846,13 +1846,13 @@ loss = F.cross_entropy(
 - LS=0.05 is a conservative halfway step. A/B option: LS=0.0. Pick the one that minimizes val-B NLL.
 - Class weights would solve a different problem (recall on minority classes) at the cost of probability calibration. Class imbalance is handled by **stratified sampling in val-B** (T-fitter sees balanced classes) and **per-class reporting** (classwise AdaECE).
 
-### Snapshot Ensemble (modifies doc 05)
+### Snapshot Ensemble (modifies the training section above in this doc)
 
 After training the final model, save the last 3 EMA checkpoints from epochs N-2, N-1, N. At inference, average their softmax outputs. Free calibration improvement (Huang arXiv:1704.00109). No extra training compute.
 
 ### Mixup — DROP for V1
 
-doc 05 mentions Manifold Mixup. Mixup IS a calibration improver (Thulasidasan arXiv:1905.11001) — input-space label smoothing. **But:** mixup on time-series financial features can leak future information across mixup pairs (mixing bars from different timestamps). Drop for V1 unless time-safe implementation is verified. Defer to V2 with explicit "no cross-time mixing" constraint.
+The training section above mentions Manifold Mixup. Mixup IS a calibration improver (Thulasidasan arXiv:1905.11001) — input-space label smoothing. **But:** mixup on time-series financial features can leak future information across mixup pairs (mixing bars from different timestamps). Drop for V1 unless time-safe implementation is verified. Defer to V2 with explicit "no cross-time mixing" constraint.
 
 ---
 
