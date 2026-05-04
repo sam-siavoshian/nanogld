@@ -184,9 +184,11 @@ def build_calendar(year_start: int = 2021, year_end: int = 2026) -> pd.DataFrame
     df["tier"] = df["tier"].astype("int64")
     df["event_ts_utc"] = pd.to_datetime(df["event_ts_utc"], utc=True)
 
-    # release_ts and t_visible: the event itself IS the release. No additional buffer.
-    df["release_ts"] = df["event_ts_utc"]
-    df["t_visible"] = df["event_ts_utc"]
+    # Calendar SCHEDULES are public ~12 months ahead (Fed posts annual FOMC
+    # schedule ~year out; BLS/BEA the same). t_visible is the announce-time,
+    # NOT the event-time. Conservative: event_ts - 365 days.
+    df["release_ts"] = df["event_ts_utc"] - pd.Timedelta(days=365)
+    df["t_visible"] = df["release_ts"]
     return df
 
 

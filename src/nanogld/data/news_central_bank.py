@@ -44,24 +44,42 @@ def _ensure_token() -> str | None:
     return tok if tok and "FILL_ME" not in str(tok) else None
 
 
+def _col_or_na(df: pd.DataFrame, candidates: tuple[str, ...]) -> pd.Series:
+    """Return the first column from `candidates` present in df, else a NA Series."""
+    for c in candidates:
+        if c in df.columns:
+            return df[c]
+    return pd.Series([pd.NA] * len(df), index=df.index)
+
+
 def _hf_to_news(records: list[dict], source: str, bias_tier: str) -> pd.DataFrame:
     if not records:
         return pd.DataFrame()
-    df = pd.DataFrame(records)
-    df["article_id"] = df.get("id", df.index.astype(str)).astype("string")
-    df["source"] = pd.Series([source] * len(df), dtype="string")
-    df["created_at"] = pd.to_datetime(
-        df.get("date", df.get("published_at", df.get("speech_date"))), utc=True, errors="coerce"
+    df = pd.DataFrame(records).reset_index(drop=True)
+    n = len(df)
+
+    article_id = _col_or_na(df, ("id", "article_id", "uid"))
+    if article_id.isna().all():
+        article_id = pd.Series(df.index.astype(str), index=df.index)
+    created_raw = _col_or_na(df, ("date", "published_at", "speech_date", "pub_date", "datetime"))
+    created_at = pd.to_datetime(created_raw, utc=True, errors="coerce")
+
+    out = pd.DataFrame(
+        {
+            "article_id": article_id.astype("string"),
+            "source": pd.array([source] * n, dtype="string"),
+            "created_at": created_at,
+            "title": _col_or_na(df, ("title", "speech_title", "headline")).astype("string"),
+            "body": _col_or_na(df, ("body", "text", "content", "speech")).astype("string"),
+            "url": _col_or_na(df, ("url",)).astype("string"),
+            "symbols": pd.array([pd.NA] * n, dtype="string"),
+            "bias_tier": pd.array([bias_tier] * n, dtype="string"),
+        }
     )
-    df = df.dropna(subset=["created_at"])
-    df["title"] = df.get("title", df.get("speech_title", "")).astype("string")
-    df["body"] = df.get("body", df.get("text", df.get("content", ""))).astype("string")
-    df["url"] = df.get("url", pd.Series([pd.NA] * len(df))).astype("string")
-    df["symbols"] = pd.Series([pd.NA] * len(df), dtype="string")
-    df["bias_tier"] = pd.Series([bias_tier] * len(df), dtype="string")
-    df["release_ts"] = df["created_at"]
-    df["t_visible"] = df["created_at"]
-    return df[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
+    out = out.dropna(subset=["created_at"])
+    out["release_ts"] = out["created_at"]
+    out["t_visible"] = out["created_at"]
+    return out[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
 
 
 def fetch_bis_speeches() -> pd.DataFrame:

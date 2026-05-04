@@ -45,25 +45,49 @@ def fetch_kaggle_gold_labeled() -> pd.DataFrame:
     rows = list(ds)
     if not rows:
         return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["article_id"] = df.get("id", df.index.astype(str)).astype("string")
-    df["source"] = pd.Series(["kaggle_gold_labeled"] * len(df), dtype="string")
-    # Date column varies — try several common names
+    df = pd.DataFrame(rows).reset_index(drop=True)
+    n = len(df)
+
+    def col_or_na(*names: str) -> pd.Series:
+        for name in names:
+            if name in df.columns:
+                return df[name]
+        return pd.Series([pd.NA] * n, index=df.index)
+
     date_col = next(
-        (c for c in df.columns if c.lower() in {"date", "datetime", "timestamp", "pub_date"}), None
+        (
+            c
+            for c in df.columns
+            if c.lower().startswith(("date", "datetime", "timestamp", "pub_date"))
+        ),
+        None,
     )
-    df["created_at"] = (
-        pd.to_datetime(df[date_col], utc=True, errors="coerce") if date_col else pd.NaT
+    created_at = (
+        pd.to_datetime(df[date_col], utc=True, errors="coerce")
+        if date_col
+        else pd.Series([pd.NaT] * n, index=df.index)
     )
-    df = df.dropna(subset=["created_at"])
-    df["title"] = df.get("title", df.get("headline", "")).astype("string")
-    df["body"] = df.get("body", df.get("text", df.get("content", ""))).astype("string")
-    df["url"] = df.get("url", pd.Series([pd.NA] * len(df))).astype("string")
-    df["symbols"] = pd.Series([pd.NA] * len(df), dtype="string")
-    df["bias_tier"] = pd.Series([BIAS_TIER] * len(df), dtype="string")
-    df["release_ts"] = df["created_at"]
-    df["t_visible"] = df["created_at"]
-    return df[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
+
+    article_id = col_or_na("id", "article_id", "uid")
+    if article_id.isna().all():
+        article_id = pd.Series(df.index.astype(str), index=df.index)
+
+    out = pd.DataFrame(
+        {
+            "article_id": article_id.astype("string"),
+            "source": pd.array(["kaggle_gold_labeled"] * n, dtype="string"),
+            "created_at": created_at,
+            "title": col_or_na("title", "headline", "News").astype("string"),
+            "body": col_or_na("body", "text", "content", "News").astype("string"),
+            "url": col_or_na("url", "URL").astype("string"),
+            "symbols": pd.array([pd.NA] * n, dtype="string"),
+            "bias_tier": pd.array([BIAS_TIER] * n, dtype="string"),
+        }
+    )
+    out = out.dropna(subset=["created_at"])
+    out["release_ts"] = out["created_at"]
+    out["t_visible"] = out["created_at"]
+    return out[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
 
 
 def write_kaggle_parquet() -> tuple[pd.DataFrame, str]:
