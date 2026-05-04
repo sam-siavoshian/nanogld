@@ -27,15 +27,16 @@ Estimated implementation: **10-14 days** end-to-end (concurrent-friendly with 4 
 | 01 DATA-PIPELINE | Data engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **4-5 days** | doc 10 (repo + uv) |
 | 02 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **1.5 days** | doc 01 + doc 04 |
 | 03 MODEL-ARCHITECTURE | ML systems engineer | ✅ Spec ready (V1) | 1 day | doc 10 |
-| 04 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3) | 0.5 day setup + 30min precompute | doc 01 |
+| 04 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3 + V4 expanded news pipeline + LAFTR + new aggregator) | **1.5 day** setup + ~120min precompute | doc 01 |
 | 05 TRAINING-PROCEDURE | ML engineer | ✅ Spec ready (V1 Schedule-Free + F-SAM) | 1 day | docs 02, 03, 04 |
 | 06 BACKTEST | Quant engineer | ✅ Spec ready | 1 day | doc 03 (baseline arch stubs), doc 05 (checkpoints) |
-| 07 SIZING-STAGE2 | Quant engineer | ✅ Spec ready (+ conformal) | 0.5 day | doc 06 (engine), doc 05 (logits) |
-| 09 LIVE-TRADING | Production engineer | ✅ Spec ready | 1.5 days | docs 03, 05, 07 |
+| 07 SIZING-STAGE2 | Quant engineer | ⚠️ Sizing math superseded by doc 08 — keep as public-facing entry point only | 0.5 day | doc 06 (engine), doc 05 (logits), doc 08 |
+| 08 EXITS-AND-RISK | Quant risk engineer | ✅ Spec ready (V1, 2026-05-04, 4 research agents) — sizing V2 + per-trade SL + profit-take logic | 1.5 days | docs 06, 07, 09 |
+| 09 LIVE-TRADING | Production engineer | ✅ Spec ready (line 198 stop-loss superseded by doc 08 client-side polling) | 1.5 days | docs 03, 05, 07, 08 |
 | 10 INFRA-AND-SECURITY | DevOps | ✅ Spec ready | 0.5 day (day 1) | nothing — START HERE |
 
 **Deleted docs (V1 cleanup, May 1):**
-- `08-RL-STAGE3.md` — speculative, gated on Stage 2 results, 95%+ chance never built
+- ~~`08-RL-STAGE3.md`~~ — slot reused 2026-05-04 for `08-EXITS-AND-RISK.md` (sizing V2 + per-trade SL + profit-take logic). RL deferred to V2.
 - `11-X-THREAD-AND-BLOG.md` — content strategy, owner writes himself, not implementation
 
 ---
@@ -131,8 +132,9 @@ Owner lifted "raw PyTorch only / no HuggingFace" restriction. Researched modern 
 | 2 | 2026-04-30 | 7 (LLM SOTA, TS, multimodal, attention, small-data, empirical SOTA, MPS) | 12 critical bugs (bars_per_year=17500 → 3276 fatal, decoder→encoder pivot, head_dim=32 too small, fold count off) |
 | 3 | 2026-05-01 | 6 (2026 LLMs, embedders, TS foundation, architecture, finance, training) | 8+ critical (Qwen3-Embedding-4B 45× faster, Schedule-Free AdamW, F-SAM, NEVER MSE on returns hard rule) |
 | 4 | 2026-05-04 | 5 (Alpaca + bars/news/IEX leakage, FRED+ALFRED full audit, CFTC+WGC verify, GDELT+yfinance+GPR verify, cross-source leakage taxonomy) | **17 silent killers**: bar `t`=START leak, `created_at` field correction, FEDFUNDS→DFF, 6 GDELT codes refuted, GDELT 30min buffer, WGC URL was wrong + monthly, AI-GPR has 30-day lag, GPR no vintage archive, pandas-ta KAMA/Ichimoku/KST/DPO/TRIX/Vortex forbidden, CFTC 2025 shutdown gap, multi-symbol pagination interleaves, `adjustment="all"` retroactive, WALCL/ICSA release-time gating, anchor-cosine pre-train-period rule, no minutes-until-event features. All encoded as 17 hard rules + 28 mandatory tests. |
+| 5 | 2026-05-04 | 5 (gold-news sources Kitco/MetalsDaily/BullionVault/Investing.com, mainstream CNBC/Reuters/FT/TE/FXStreet, multi-source bias debiasing, multi-doc embedding aggregation SOTA, free 10y news datasets) | **News pipeline 3→12+ sources**. FT REFUTED (robots.txt bans ML). Reuters/FXStreet/TE DEFER (paid). Kitco/Investing.com/BullionVault/CNBC ADD (free scrape). FNSPID (15.7M articles, 1999-2023, CC BY 4.0) ADD as biggest free win. Central bank speeches + government press releases (Fed/ECB/BIS/Treasury/CFTC) ADD (US gov public domain). Reddit Arctic Shift ADD. Bias-aware: 12 source-bias tiers + LAFTR adversarial head + inverse-frequency reweighting. Aggregator V4: K=16→8, +bar-conditioned FiLM, +per-source PMA pre-pool. Per-article embedding (was per-source mean-pool). Doc 04 effort 0.5d → 1.5d. |
 
-**Total: 22 specialized Nia agents, ~50 critical findings absorbed.**
+**Total: 27 specialized Nia agents, ~70 critical findings absorbed.**
 
 ---
 
@@ -212,11 +214,12 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 | 2026-05-01 | AdamW + cosine + warmup → Schedule-Free AdamW | AlgoPerf 2024 winner |
 | 2026-05-01 | Vanilla SAM → Friendly-SAM | Filters gradient noise |
 | 2026-05-01 | Hard rule: NEVER MSE on returns | Forecast collapse |
-| 2026-05-01 | Add conformal prediction sizing | 30% lower decision loss (Wright 2026) |
+| 2026-05-01 | Add conformal prediction sizing | Calibrated set-size shrinkage; doc 08 supersedes. (Note: original 30% claim from Wright 2026 was fabricated — citation removed in doc 08.) |
 | 2026-05-01 | Add xLSTMTime baseline | 2026 finance benchmark winner |
 | 2026-05-01 | Delete docs 08 + 11 | Speculative + non-implementation |
 | 2026-05-01 | Add agent-isolation headers to all docs | Concurrent multi-agent implementation phase |
 | 2026-05-04 | Dataset expansion (V1, owner directive): 9-ETF basket + full Treasury curve + 19-series macro bundle + CFTC COT + WGC + calendar | Capture real-rate / risk-on-off / sector rotation / positioning drivers. Per-bar dim ~804 → ~1000. Doc 01 effort 2-3d → 4-5d, doc 02 1d → 1.5d. No model arch change. |
+| 2026-05-04 | Owner flagged 3 missing pieces: confidence sizing, per-trade SL, profit-taking. Spawned 4 parallel research agents (sizing / SL / TP / Forecast-to-Fill replication + Alpaca constraints). Wrote `plan/08-EXITS-AND-RISK.md` superseding doc 07 sizing math and doc 09 line 198 stop-loss. | (1) Sizing: replace `(max_prob-0.33)` with signed score `P_up-P_down`; quarter-Kelly default; vol-target with `min(σ*/σ_t, 3.0)` cap; continuous conformal shrinkage; EWMA λ=0.94 + 20d floor. (2) Stop-loss: 2.0×ATR(14) hard + 1.5×ATR(14) trailing + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + ±15min FOMC/CPI/NFP blackout. Match Forecast-to-Fill exactly. (3) Profit-take: NO fixed TP (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit `max_prob < entry_max_prob × 0.7` gated on val A/B ≥30bp lift. (4) Live: client-side stop polling — Alpaca rejects bracket orders for fractional positions (error 42210000), and at $100 with GLD ~$200 every position is fractional. (5) Deleted fabricated "30% lower decision loss" Wright 2026 citation. |
 
 ---
 

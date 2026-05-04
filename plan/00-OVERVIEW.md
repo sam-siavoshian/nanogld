@@ -197,15 +197,22 @@ FEATURE ENGINEERING (doc 02) — V1 expanded 2026-05-04
 ├── Labels: 3-class via 5bps threshold
 └── Z-score with rolling 1000-bar lookback + clip(-10, 10) — extended to 3276 for YoY-bearing macro features
 
-NEWS EMBEDDING (doc 04)
+NEWS EMBEDDING (doc 04) — V4 expanded news pipeline + bias-aware aggregator
 ├── Qwen3-Embedding-4B 4-bit MLX (Apache 2.0, ~18K tok/s on M4 mini)
 │   ├── 45× faster than Llama-3.1-8B mean-pool (earlier draft)
 │   ├── MTEB-en avg 74.6 (+10pts vs LLM2Vec)
 │   └── MRL truncation: 2560-dim → 256-dim, 99% quality retention
-├── Per-source instruction-aware prompts ("Represent this financial news...")
-├── Anchor-cosine semantic features (4 anchors: conflict, monetary, dollar, recession)
-├── Learned [NO_NEWS] token + 15% modality dropout
-└── memmap fp16 .npy storage (~133MB total — was 4GB in earlier draft)
+├── 12+ news sources (was 3): Alpaca News + GDELT + Kitco + Investing.com + BullionVault + CNBC + FNSPID + central bank speeches (Fed/ECB/BIS) + government press (Treasury/CFTC) + Reddit Arctic Shift + WGC + Kaggle gold-labeled
+├── FORBIDDEN: FT (robots.txt bans ML), DEFERRED: Reuters/FXStreet/Trading Economics (paid), SKIPPED: Metals Daily (syndication dup)
+├── Source registry with 12 bias tiers — every article tagged at ingestion (industry_bullish, dealer_bullish, mainstream_neutral, central_bank_official, retail_social, etc.)
+├── LAFTR adversarial debiasing head (arXiv:1802.06309) + gradient reversal (DANN, arXiv:1505.07818) + inverse-frequency reweighting
+├── Per-article embedding (NOT per-source mean-pool) — preserves per-article meaning
+├── Aggregator V4 = Per-source PMA pre-pool (Set Transformer) → bar-conditioned FiLM Q-Former (K=8 latents, was 16) → Flamingo tanh-gated cross-attn (gate init=0)
+│   ├── Per-source PMA: 2 seeds/source, handles 50+ articles/bar (FinGPT dissemination, arXiv:2412.10823)
+│   ├── Bar-conditioned FiLM: latent queries adapt to current price/vol regime (CMTF arXiv:2504.13522, FiCoTS arXiv:2512.00293)
+│   └── Flamingo gate: init=0 ensures stable training when news is sparse
+├── Anchor-cosine semantic features — V4 anchors are HAND-CRAFTED TEMPLATES (no event provenance, fixes leakage)
+└── Per-article parquet storage (~500MB - 2GB depending on volume)
 
 MODEL ARCHITECTURE (doc 03)
 ├── ENCODER-only (no causal mask — bidirectional context for classification)
@@ -247,13 +254,30 @@ BACKTEST (doc 06)
 └── Hard rule: if 24-60M Transformer can't beat all baselines by ≥0.2 Sharpe,
     SHIP THE BASELINE (TLOB lesson: "MLP can match transformer")
 
-SIZING (doc 07)
+SIZING + EXITS (doc 08 supersedes doc 07 math, 2026-05-04)
 ├── Stage 1: fixed (1 share when argmax ≠ flat)
-├── Stage 2: vol-target × Kelly-lite (0.5 Kelly, target 10% annual vol)
-│   GATE: must beat Stage 1 by ≥0.2 Sharpe OOS
-├── + Conformal Prediction (Wright 2026, arXiv:2601.07852)
-│   30% lower realized decision loss vs uncalibrated
-├── Drawdown circuit-breaker with explicit re-entry rule
+├── Stage 2: signed-score × quarter-Kelly × vol-target(cap=3.0) × conformal
+│   ├── signed score: s = P_up − P_down  (NOT max_prob − 0.33)
+│   ├── kelly_fraction = 0.25 V1 (ramp to 0.5 only after 6mo OOS)
+│   ├── target_vol = 0.10 (F2F 0.15 in A/B for V2)
+│   ├── σ_t = max(EWMA λ=0.94, 0.5 × 20d_rolling, 1e-3)
+│   ├── vol_mult = min(target_vol / σ_t, 3.0)
+│   ├── continuous conformal shrinkage: set_size {1,2,3} → λ_conf {1.0, 0.5, 0.0}
+│   └── min_signed_signal = 0.05  (skip noise bars)
+│   GATE: full V1 stack must beat Stage 1 by ≥0.2 Sharpe OOS at 7bp cost
+├── Per-trade stop-loss (NEW, doc 08)
+│   ├── Hard ATR stop: 2.0 × ATR(14)_at_entry (frozen at entry)
+│   ├── Trailing ATR stop: 1.5 × ATR(14)_live, ratchet only
+│   ├── Time stop: 390 bars (30 RTH days × 13 30-min bars)
+│   ├── Re-entry gate: cooldown 1 bar + max_prob ≥ 0.55 OR argmax flipped
+│   ├── Session-flat at 15:55 ET, re-eligible 09:35 ET
+│   └── News blackout ±15 min around FOMC / CPI / NFP / GDP / JOLTS / PCE
+├── Profit-taking (NEW, doc 08)
+│   ├── NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate)
+│   ├── Model re-decision IS the TP (continuous re-rebalance)
+│   └── OPTIONAL signal-decay exit (gated: ship only if val A/B ≥30bp lift)
+├── Live execution: client-side stop polling (Alpaca rejects bracket on fractional, error 42210000)
+├── Drawdown circuit-breaker (portfolio-level): -5% halve / -10% quarter / -15% halt
 └── Stage 3 (RL) deferred — gated, only built if Stage 2 leaves Sharpe on table
 
 LIVE TRADING (doc 09)
@@ -292,13 +316,14 @@ INFRA + SECURITY (doc 10)
 | 04  | NEWS-EMBEDDING      | ✅ V1 (Qwen3-Embedding-4B) | ML engineer                | 0.5 day setup + 30min precompute |
 | 05  | TRAINING-PROCEDURE  | ✅ V1 (Schedule-Free + F-SAM)     | ML engineer                | 1 day                            |
 | 06  | BACKTEST            | ✅ Complete + Nia-verified        | Quant engineer             | 1 day                            |
-| 07  | SIZING-STAGE2       | ✅ Complete + conformal           | Quant engineer             | 0.5 day                          |
-| 09  | LIVE-TRADING        | ✅ Complete + Nia-verified        | Production engineer        | 1.5 days                         |
+| 07  | SIZING-STAGE2       | ⚠️ Sizing math superseded by doc 08 (kept as public-facing entry) | Quant engineer | 0.5 day |
+| 08  | EXITS-AND-RISK      | ✅ V1 spec (4 research agents, 2026-05-04) — sizing V2 + per-trade SL + profit-take logic | Quant risk engineer | 1.5 days |
+| 09  | LIVE-TRADING        | ✅ Complete (line 198 SL superseded by doc 08 client-side polling) | Production engineer        | 1.5 days                         |
 | 10  | INFRA-AND-SECURITY  | ✅ Complete + Nia-verified        | DevOps                     | 0.5 day (day 1 setup)            |
 | --  | STATUS              | ✅ Live tracker                   | n/a (anyone can update)    | n/a                              |
 
 
-**Deleted from earlier draft:** doc 08 (RL Stage 3 — speculative, gated, only build if Stage 2 leaves Sharpe), doc 11 (X-thread + blog content — user writes himself).
+**Slot 08 reused 2026-05-04:** previously ear-marked `08-RL-STAGE3.md` (deleted May 1, speculative). Now hosts `08-EXITS-AND-RISK.md` covering the three pieces owner flagged May 4 (confidence sizing V2, per-trade stop-loss, profit-taking). RL deferred to V2. **Slot 11 still deleted** (X-thread + blog content — user writes himself).
 
 ## Implementation Order (concurrent-friendly)
 
@@ -340,6 +365,7 @@ Day 13-14: fund $100, switch to live, build-in-public X thread
 - **Round 2 (architecture v3):** 7 Nia agents on transformer SOTA / time-series / multimodal / attention / small-data / empirical SOTA / MPS. Found 12 critical bugs (bars_per_year=17500 → 3276, decoder→encoder pivot, head_dim=32 too small, etc).
 - **Round 3 (2026 SOTA):** 6 Nia agents on May 2026 releases (Llama 4, Gemma 4, Qwen 3.5, embedding leaderboard, TS foundation models, architecture innovations, finance papers, training optimization). Major pivot: Llama-3.1-8B → Qwen3-Embedding-4B (45× faster). Schedule-Free AdamW replaces cosine + warmup. Forecast-collapse hard rule (NEVER MSE).
 - **Round 4 (V1 dataset expansion + leakage audit, 2026-05-04):** 5 Nia agents verified all sources for the V1 expansion AND audited every existing source for leakage. Found **17 high-severity issues**: bar timestamp = START not END, Alpaca News field = `created_at` not `published_at`, FEDFUNDS is monthly (need DFF), 6 GDELT theme codes refuted, GDELT buffer 30min not 15min, WGC URL was wrong (correct: gold.org/download/8052), WGC is monthly not quarterly, AI-GPR not real-time (30-day lag), GPR no vintage archive, pandas-ta look-ahead bugs (KAMA/Ichimoku/KST/DPO/TRIX/Vortex forbidden), CFTC 2025 shutdown gap, multi-symbol pagination interleaves, `adjustment="all"` is retroactive, WALCL Thursday 4:30pm release-time gating, ICSA Thursday 8:30am release-time gating, anchor-cosine source must precede train period, no `minutes_until_event` features. All fixes encoded as 17 hard rules + 28 mandatory tests in `tests/test_no_leakage.py`.
+- **Round 5 (news pipeline expansion + ML aggregation refactor, 2026-05-04):** 5 Nia agents verified the user's 10-source list (Kitco / Metals Daily / BullionVault / Investing.com / CNBC / Reuters / FT / Trading Economics / FXStreet / WGC) against live URLs + ToS + 10y archive depth, audited bias profiles, surveyed free 10y datasets, and researched multi-document aggregation SOTA from 2024-2026. **Key findings:** FT robots.txt explicitly bans ML training (legal blocker — skip). Reuters paywall + Reuters Connect enterprise-only (defer paid). FNSPID dataset (15.7M articles, 1999-2023, CC BY 4.0, on HF) is the biggest free win for filling pre-2021 gap. Kitco/BullionVault/Investing.com are all free-scrape with 10y depth. Central bank speeches (Fed/ECB/BIS) + government press (Treasury/CFTC) are public-domain (US 17 USC §105). Reddit Arctic Shift dumps free through 2026-04. Aggregation SOTA: per-source PMA + bar-conditioned FiLM Q-Former (K=8) + Flamingo gate is 2025-26 sweet spot (CMTF arXiv:2504.13522, FiCoTS arXiv:2512.00293). Bias debiasing recipe: LAFTR adversarial head (arXiv:1802.06309) + gradient reversal (arXiv:1505.07818) + inverse-frequency reweighting. Plan: 12+ news sources + 12 bias tiers + LAFTR head + new aggregator. Doc 04 effort 0.5d → 1.5d.
 
 ## Empirical Bar (what success looks like)
 
@@ -453,7 +479,9 @@ If you spawn an agent and it disagrees with the doc, document the disagreement I
 | 2026-05-01 | Add xLSTMTime baseline                                  | Won 2026 finance benchmark                                          |
 | 2026-05-01 | Delete docs 08 (RL) + 11 (content)                      | Speculative + non-implementation                                    |
 | 2026-05-04 | Dataset expansion — 9 equity ETFs (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU), full Treasury curve + TIPS + breakevens (11 FRED), full macro bundle (19 FRED), CFTC COT weekly, WGC quarterly, calendar events | Owner directive — capture more market drivers (real rates, risk-on/off, sector rotation, gold-silver ratio, positioning extremes). Per-bar feature dim grows ~804 → ~1000. Doc 01 effort 2-3d → 4-5d. No model arch change. |
+| 2026-05-04 | Wrote `08-EXITS-AND-RISK.md` (4 parallel research agents — sizing / SL / TP / Forecast-to-Fill + Alpaca constraints). Supersedes doc 07 sizing math and doc 09 line 198 stop-loss. | Owner flagged 3 missing pieces. Findings: (1) Sizing formula in doc 07 was magnitude-only (`max_prob-0.33`), discards signed info, fragile `confidence_scale=3` guess, fabricated "30% lower decision loss" Wright 2026 citation. Replaced with signed score `s = P_up - P_down`, quarter-Kelly default, `vol_mult` capped at 3.0, EWMA+20d-floor σ_t, continuous conformal shrinkage. (2) Per-trade SL absent; literature (Kaminski-Lo, Han-Zhou-Zhu, F2F arXiv:2511.08571) and 5%-of-bars-with-news-tail-risk argue for wide ATR stop. Match F2F: 2.0×ATR14 hard + 1.5×ATR14 trail + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + news blackout. (3) NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit gated on val A/B ≥30bp lift. (4) Live: Alpaca rejects bracket orders for fractional positions (error 42210000); at $100 + GLD ~$200 every position is fractional, so stops enforced client-side via `cycle.py` polling. |
 | 2026-05-04 | Verification Round 4 — 17 leakage findings encoded as hard rules + 28 mandatory tests | 5 Nia agents audited every source. Bar timestamp=START leakage, FEDFUNDS→DFF, 6 GDELT codes refuted, GDELT 30min buffer, WGC URL fix (monthly not quarterly), AI-GPR not real-time, anchor leakage rule, pandas-ta forbidden indicators, CFTC release-time gate, calendar-binary-only, etc. CI gate via `test_release_ts_lte_t_visible_all_rows`. |
+| 2026-05-04 | News pipeline expansion — 3 sources → 12+ sources + bias-aware LAFTR debiasing + V4 aggregator (per-source PMA + bar-conditioned FiLM Q-Former K=8 + Flamingo gate) | 5 Nia agents verified user's 10-source list + free-news datasets + multi-doc aggregation SOTA. Add Kitco/Investing.com/BullionVault/CNBC/FNSPID/central bank speeches/government press/Reddit/Kaggle. Forbid FT (robots.txt bans ML — legal). Defer Reuters/FXStreet/TE (paid). Skip Metals Daily (syndication dup). Source registry with 12 bias tiers + LAFTR adversarial head fights per-source prior. Aggregator upgrade (CMTF + FiCoTS 2025-26 papers): K=16→8, add bar-conditioned FiLM, add per-source PMA pre-pool. Per-article embedding (was per-source mean-pool). Doc 04 effort 0.5d → 1.5d. |
 
 
 ## File Layout (when implementation begins)

@@ -22,8 +22,20 @@ You own data ingestion, joining, and snapshot artifacts. You will build the pipe
 - Total: 494 GB Mac internal
 - Free: ~67-72 GB
 - 60% of free (storage budget): **~40 GB**
-- Estimated data footprint: **~10-12 GB** (post-2026-05-04 dataset expansion)
-- Utilization: 12 / 40 = **30% of budget** → KEEP LOCAL
+- Estimated data footprint: **~25-30 GB** (post-2026-05-04 V4 dataset + news-pipeline expansion)
+- Utilization: 28 / 40 = **70% of budget** → KEEP LOCAL but watch carefully
+
+V4 storage breakdown:
+- Original snapshot + GLD bars + ETF basket + FRED ALFRED cubes + GDELT + GPR + COT + WGC: ~10-12 GB
+- FNSPID gold-relevant subset: ~5 GB
+- Kitco scrape (10y): ~1 GB
+- Investing.com scrape (10y): ~2 GB
+- BullionVault scrape: ~0.5 GB
+- CNBC scrape + Wayback backfill: ~2 GB
+- Central bank speeches + government press releases: ~0.5 GB
+- Reddit Arctic Shift filtered: ~5 GB
+- Kaggle gold-labeled: ~0.05 GB
+- Per-article embeddings parquet: ~2 GB
 
 ### Dataset Expansion (2026-05-04 — owner directive)
 
@@ -1044,6 +1056,189 @@ calendar.to_parquet("data/raw/calendar_events_v1.parquet")
 - Some FOMC days have a `decision` and a `press conference` ~30 min later — represent as two separate events if useful; default V1 = single event at decision time (14:00 ET).
 
 **Storage: ~340 events × 5y × 3 cols = trivial.**
+
+## Source 12 — FNSPID Historical News Corpus (V4 expansion 2026-05-04)
+
+**Single biggest free-news win** for filling the historical pre-2021 gap. arXiv:2402.06698, CC BY 4.0.
+
+```python
+# 15.7M news articles, 1999-2023, multi-source: Reuters, NASDAQ, Benzinga, Lenta + 4 stock-news sites
+# Already on HuggingFace, parquet format, ~50 GB
+# Filterable by ticker — pull GLD-relevant rows + any commodity / macro tickers
+
+from datasets import load_dataset
+fnspid = load_dataset("Zihan1004/FNSPID", split="train")
+# Filter to: GLD, commodity miners (NEM, GOLD, FNV, AEM), gold ETFs, macro tickers (TLT, IEF, UUP, GDX, SLV)
+relevant = fnspid.filter(lambda x: x["symbol"] in {"GLD", "GDX", "SLV", "NEM", "GOLD", "FNV", "AEM", "TLT", "IEF", "UUP"})
+relevant.to_parquet("data/raw/fnspid_gold_relevant.parquet")
+```
+
+**Schema:** `[symbol, date, title, body, source, url, sentiment]`. Source field is one of `{Reuters, NASDAQ, Benzinga, Lenta, Cnnmoney, FT_unverified, Marketwatch, Yahoo}`. Map to `SOURCE_REGISTRY` (see doc 04).
+
+**License:** CC BY 4.0 — free with attribution. Cite arXiv:2402.06698 in README.
+
+**Leakage:** FNSPID timestamps are **date-precise only** (`YYYY-MM-DD`), no time-of-day. Conservative gate: feature visible at first RTH bar of date+1. This is a 1-day buffer, more conservative than minute-level Alpaca/Kitco articles. Document this in `t_visible` calculation.
+
+**Storage:** ~5 GB filtered to gold-relevant tickers + 10y window.
+
+## Source 13 — Kitco News Scraper (V4 expansion 2026-05-04)
+
+Free site, no API. Date-slugged URLs make 10y backfill feasible.
+
+```python
+# URL pattern: kitco.com/news/category/markets/{page}, articles at /news/article/YYYY-MM-DD/{slug}
+# RSS for live cycle: kitco.com/news/category/markets/rss
+
+KITCO_RSS = {
+    "markets":     "https://www.kitco.com/news/category/markets/rss",
+    "mining":      "https://www.kitco.com/news/category/mining/rss",
+    "commodities": "https://www.kitco.com/news/category/commodities/rss",
+}
+
+def scrape_kitco_archive(start_date: date, end_date: date):
+    """Crawl date-slug archive page-by-page. Throttle 1 req/2s. Respect robots.txt."""
+    # Kitco: full body + author + minute-precise pub_ts in HTML
+    # Use BeautifulSoup4. requests with User-Agent header.
+    # Persist as: (article_id, source_id=SOURCE_REGISTRY['kitco'], created_at, title, body, url)
+    ...
+```
+
+**Bias-tier:** `industry_bullish`. LAFTR head will learn the per-source prior.
+
+**Storage:** ~1 GB for 10y of Kitco markets + commodities articles.
+
+**Pitfalls:**
+- ToS reserves rights — research-use should be fine, redistribution prohibited.
+- robots.txt allows crawl; rate-limit aggressively (1 req/2s minimum).
+- No mature open-source scraper found via Nia search. Build small custom scraper.
+
+## Source 14 — Investing.com Gold Scraper (V4 expansion 2026-05-04)
+
+Aggregator with the largest archive of the user's listed sources (~250K articles confirmed via Apify actor `glitch_404/investing-scraper`). Mostly neutral wire syndication.
+
+```python
+INVESTING_GOLD_URL = "https://www.investing.com/commodities/gold-news"
+
+# Reference implementations (consult before writing):
+# - npm: investing-com-api (MIT license)
+# - GitHub: alvarobartt/investpy (Pandas-style historical lib)
+# - Apify: glitch_404/investing-scraper (commercial, 250K archive claim)
+
+# Cloudflare anti-bot is aggressive — use curl_cffi browser impersonation (already pinned in doc 01)
+def scrape_investing_gold(...):
+    # Article schema: title, body, author, asset_tags (XAU/USD, GLD), pub_ts (minute precision)
+    ...
+```
+
+**Bias-tier:** `aggregator_neutral`. Best signal-to-bias ratio of the user's gold-specific sources.
+
+**ToS:** "Explicit prior written permission" required for redistribution. Research-use grey zone — cite source, throttle aggressively (≤ 1 req/3s), expect Cloudflare friction.
+
+**Storage:** ~2 GB for 10y.
+
+## Source 15 — BullionVault Author-Pages Scraper (V4 expansion 2026-05-04)
+
+Strongly bullish dealer marketing. Use as bias-extreme feature, NOT raw signal.
+
+```python
+BULLIONVAULT_AUTHOR_PAGES = [
+    "https://www.bullionvault.com/gold-news/users/adrian-ash",     # head of research
+    "https://www.bullionvault.com/gold-news/users/gold-report",
+    # Discover others via /gold-news main page pagination
+]
+```
+
+**Bias-tier:** `dealer_bullish`. LAFTR will heavily down-weight in inference.
+
+**No news API exists** — `bullionvault.com/help/xml_api.html` is for trading data only.
+
+**Storage:** ~500 MB.
+
+**Pitfalls:**
+- robots FAQ at `bullionvault.com/help/FAQs/FAQs_bots.html` — review before scraping.
+- RSSHub had a known-broken BullionVault gold-news route (gitcode 2025-05). Custom scraper needed.
+
+## Source 16 — Central Bank Speeches + FOMC Statements (V4 expansion 2026-05-04)
+
+Free, public domain (US 17 USC §105 + ECB free research). Highest-impact news class for gold.
+
+```python
+# Pre-built HF datasets (5min download each):
+# - samchain/bis_central_bank_speeches  (1997-2023+, 90+ central banks)
+# - istat-ai/ECB-FED-speeches            (1996-2025, ECB + FED, 30 MB parquet)
+
+from datasets import load_dataset
+bis_speeches = load_dataset("samchain/bis_central_bank_speeches")
+ecb_fed_speeches = load_dataset("istat-ai/ECB-FED-speeches")
+
+# fomc/statements GitHub repo: pre-cleaned FOMC text 1994+
+# git clone https://github.com/fomc/statements ~/Downloads/fomc-statements
+
+# US Treasury press releases (scrape):
+# https://home.treasury.gov/news/press-releases  (paginated archive 1995+)
+
+# CFTC commissioner speeches:
+# https://www.cftc.gov/PressRoom/SpeechesTestimony  (paginated archive 1990s+)
+```
+
+**Schema unifier:** `(article_id, source_id, bias_tier_id="central_bank_official", t_visible, title, body)`. `t_visible` = official press-release timestamp (every speech's URL has a published-on date; minute-precision available for FOMC press releases via Fed's calendar).
+
+**Bias-tier:** `central_bank_official` (Fed/ECB/BIS) or `government_official` (Treasury/CFTC).
+
+**Storage:** ~200 MB for everything pre-cleaned + scrapes.
+
+## Source 17 — Reddit Arctic Shift Dumps (V4 expansion 2026-05-04)
+
+Pushshift successor. Free torrents through 2026-04. Retail sentiment proxy.
+
+```python
+# Dumps: https://github.com/ArthurHeitmann/arctic_shift (releases page lists monthly torrents)
+# Subreddits to ingest:
+SUBREDDITS = ["Gold", "wallstreetbets", "investing", "Goldandsilverstackers", "Commodities"]
+
+# Each torrent is per-subreddit per-month, JSON-lines compressed with zstd.
+# Filter to gold-relevant submissions + comments via keyword match (gold|GLD|silver|SLV|gdx|comex|xau|bullion)
+```
+
+**Bias-tier:** `retail_social`. Often counter-indicator at extremes (r/wallstreetbets euphoria precedes pullbacks).
+
+**Storage:** ~5 GB for filtered 10y window.
+
+**Pitfalls:**
+- Reddit ToS gray zone for academic distribution — Arctic Shift author still distributes. Use at own risk.
+- Each post + comment has UTC timestamp — fine for `t_visible`.
+- Comments outnumber posts ~50:1 — consider keeping only posts + top-comment for V1.
+
+## Source 18 — Kaggle Gold-Labeled Sentiment (V4 expansion 2026-05-04)
+
+Direct gold-labeled headlines. Small N but useful for training a gold-relevance classifier (binary: is this article gold-relevant?).
+
+```python
+# Two datasets:
+# - kaggle.com/datasets/ankurzing/sentiment-analysis-in-commodity-market-gold (CC0/CC BY)
+# - kaggle.com/datasets/romanfonel/precious-metals-history-since-2000-with-news (CC)
+# - Mirror: huggingface.co/datasets/SaguaroCapital/sentiment-analysis-in-commodity-market-gold
+```
+
+**Use:** training labels for a binary "is this gold-relevant?" classifier that filters the bigger corpora. NOT a feature input.
+
+**Storage:** ~50 MB.
+
+## DEFERRED news sources (V4 — owner can re-prioritize after V1 baseline)
+
+| Source | Reason for defer |
+|---|---|
+| **Reuters Gold** | $1/wk paywall + Reuters Connect API enterprise-only ($5K-$50K+/yr). Plan: revisit when funded. CNBC syndicates Reuters wire for partial free coverage in the meantime. |
+| **Financial Times Gold** | **LEGAL BLOCKER** — `ft.com/robots.txt` explicitly prohibits ML/AI use. DO NOT scrape. Revisit only if FT Datamining License is licensed formally. |
+| **Trading Economics news** | News content is shallow + leaks Reuters wire (which we'd already have via CNBC syndication). Indicator API already in doc 01. |
+| **FXStreet** | Best minute-ts technicals-embedded news but B2B-paid via Acuity Trading. Add when budget allows. |
+| **Metals Daily** | Sharps Pixley aggregator — heavy syndication overlap with primary sources. Skip unless archive depth confirmed past 2-3y. |
+| **ACLED conflict events** | Geopolitical supplement to GDELT. Free for non-commercial only — Arena is commercial in V2+. Skip until license review. |
+| **Bloomberg.com free articles** | Limited free content + News/Media Alliance lawsuit pressure (BREIN forced takedowns 2025). Skip. |
+| **Common Crawl + Bloomberg/CNBC/FT filters** | Same legal pressure. Skip in V1. |
+| **NewsAPI.org / NewsCatcher** | Aggregator APIs, $50-500/mo. Worth evaluating after V1 baseline. |
+| **Twitter/X full-archive search** | Pro tier $200/mo limited, Enterprise $42K+/yr. Skip. |
+| **WGC Goldhub research articles (full body)** | Already have download/8052 + 7739 statistics. Research-article full-body scraping is ToS-gray. V1: title + summary only via Goldhub research-library page. |
 
 ## Point-in-Time Discipline (CRITICAL)
 

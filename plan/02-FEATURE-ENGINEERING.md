@@ -167,10 +167,9 @@ NUMERIC FEATURES (~232 dims):
 ├── WGC central bank flows          (~3 dims — total + YoY + isPositive)
 └── Calendar event features         (~10 dims — event proximity + cyclical sin/cos)
 
-NEWS EMBEDDINGS (768 dims):
-├── Alpaca news embedding           (256 dims, projected from Qwen3-Embedding-4B 2560-dim via MRL truncation + learned Linear)
-├── GDELT news embedding            (256 dims, same projection)
-└── RSS news embedding              (256 dims, same projection — used for live cycle, zeros during historical backfill)
+NEWS EMBEDDINGS (V4: 1024 dims = 8 latent tokens × 128, see doc 04):
+└── Bar-conditioned aggregation of per-article embeddings from 12+ sources
+    via Per-source PMA pre-pool → FiLM Q-Former (K=8) → Flamingo gate
 ```
 
 Sequence shape after stacking 64 bars: `(T=64, ~1000)`.
@@ -326,11 +325,24 @@ def geo_features(df: pd.DataFrame, brent: pd.Series, wti: pd.Series, gpr: pd.Ser
     return out
 ```
 
-## Category 5 — News Embeddings (768 dims, see doc 04)
+## Category 5 — News Embeddings (V4: 8 fused tokens × 128 dim = 1024 dims, see doc 04)
 
-Per source per bar, Qwen3-Embedding-4B (4-bit MLX, frozen) produces a 2560-dim mean-pooled vector that is MRL-truncated to 256-dim and projected via a learned `Linear(2560, 256)` (inside nanoGLD, not the embedder). 3 sources × 256 = 768 dims.
+**V4 refactor (2026-05-04):** news pipeline expanded from 3 sources mean-pooled to 12+ sources per-article-embedded with bias-aware aggregation.
 
-Computation lives in doc 04.
+Per article, Qwen3-Embedding-4B (4-bit MLX, frozen) produces a 2560-dim vector → MRL-truncated to 256-dim → projected to d_model=128 inside the aggregator. Per-bar aggregation:
+
+```
+[N articles in 30-min window]
+  → 256-d MRL embeddings
+  → +source_id_emb +time_offset_emb (per-article tokens)
+  → group by source → PerSourcePMA (Set Transformer, 2 seeds/src)
+  → Bar-conditioned FiLM Q-Former (K=8 latent queries adapt to current price/vol regime)
+  → 8 fused news tokens × 128 = 1024 dims per bar
+```
+
+Plus the LAFTR adversarial head fights per-source bias (industry-bullish Kitco / dealer-bullish BullionVault / etc. don't trick the model).
+
+Doc 04 owns the source registry + aggregator. Doc 02 imports the aggregator and wires its output into the bar-level feature stream.
 
 ## Category 6 — Equity ETF Basket (~72 dims) — V1 expansion 2026-05-04
 
