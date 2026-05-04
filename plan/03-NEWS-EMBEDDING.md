@@ -479,7 +479,7 @@ import torch
 
 class Qwen3NewsEmbedder:
     """Replaces earlier Llama-3.1-8B mean-pool. ~45× faster, +10pts MTEB."""
-    
+
     def __init__(self, model_id: str = "Qwen/Qwen3-Embedding-4B", truncate_dim: int = 256):
         self.model = SentenceTransformer(
             model_id,
@@ -487,7 +487,7 @@ class Qwen3NewsEmbedder:
             device="mps",
         )
         self.truncate_dim = truncate_dim   # MRL: 2560 → 256, smaller cache, near-identical quality
-    
+
     def embed_news_for_bar(self, headlines: list[str], source: str) -> np.ndarray:
         """Embed up to 5 headlines per source. Use instruction-aware prompts."""
         if not headlines:
@@ -501,7 +501,7 @@ class Qwen3NewsEmbedder:
         )
         # MRL truncation
         return emb[: self.truncate_dim]
-    
+
     def embed_anchor(self, anchor_text: str) -> np.ndarray:
         """Anchor embedding uses query-side prompt (slightly different, +1-2% on retrieval)."""
         emb = self.model.encode(
@@ -690,12 +690,12 @@ def precompute_embeddings(
     )
     # Switch to inference mode (no grads, no dropout)
     model.requires_grad_(False)
-    
+
     results = []
     for i in range(0, len(df), batch_size):
         batch = df.iloc[i : i + batch_size]
         embs_per_bar = {"bar_idx": batch.index.tolist()}
-        
+
         for source in ["alpaca", "gdelt", "rss"]:
             texts = [
                 build_text_for_bar(row, source)
@@ -708,24 +708,24 @@ def precompute_embeddings(
                 ).to("mps")
                 outputs = model(**tokens, output_hidden_states=True)
                 last_hidden = outputs.hidden_states[-1]   # (B, seq, 4096)
-                
+
                 # Mean-pool, masking out padding
                 mask = tokens.attention_mask.unsqueeze(-1).float()
                 summed = (last_hidden * mask).sum(dim=1)
                 counts = mask.sum(dim=1).clamp(min=1)
                 pooled = (summed / counts).cpu().numpy()  # (B, 4096)
-            
+
             for j in range(len(batch)):
                 embs_per_bar[f"{source}_emb"] = pooled[j]
-        
+
         results.extend([
             dict(bar_idx=embs_per_bar["bar_idx"][j], **embs_per_bar)
             for j in range(len(batch))
         ])
-        
+
         if i % 1000 == 0:
             print(f"Embedded {i}/{len(df)} bars")
-    
+
     pd.DataFrame(results).to_parquet(output_path)
 ```
 
@@ -807,7 +807,7 @@ def compute_anchors(model, tokenizer) -> dict[str, np.ndarray]:
                 embs.append(pooled[0])
         v = np.stack(embs).mean(axis=0)
         anchors[name] = v / np.linalg.norm(v)
-    
+
     # Save as numpy native (.npz), NOT pickle
     np.savez("data/anchors/v1.npz", **anchors)
     return anchors
@@ -848,17 +848,17 @@ def test_semantic_anchor_alignment():
     """Conflict-themed news should have high cosine with conflict anchor."""
     conflict_text = "Iran closes Strait of Hormuz amid escalating tensions"
     benign_text = "Apple announces new iPhone features"
-    
+
     anchors_npz = np.load("data/anchors/v1.npz")
     e_conflict = embed_text(model, tokenizer, conflict_text)
     e_benign = embed_text(model, tokenizer, benign_text)
-    
+
     e_conflict_norm = e_conflict / np.linalg.norm(e_conflict)
     e_benign_norm = e_benign / np.linalg.norm(e_benign)
-    
+
     sim_conflict = e_conflict_norm @ anchors_npz['conflict']
     sim_benign = e_benign_norm @ anchors_npz['conflict']
-    
+
     assert sim_conflict > sim_benign + 0.1, "Conflict text should align with conflict anchor more than benign text"
 ```
 

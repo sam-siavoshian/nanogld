@@ -274,25 +274,25 @@ def compute_metrics(strategy_returns: pd.Series, positions: pd.Series, config: B
     mean = strategy_returns.mean()
     std = strategy_returns.std()
     sharpe = (mean / std * annualization) if std > 0 else 0.0
-    
+
     # Canonical Sortino: target downside deviation = sqrt(mean(min(0, r-MAR)^2)) over FULL sample
     # NOT std() of only-negative subset (common but technically wrong)
     MAR = 0.0
     downside_dev = np.sqrt(np.mean(np.minimum(strategy_returns - MAR, 0) ** 2))
     sortino = ((mean - MAR) / downside_dev * annualization) if downside_dev > 0 else 0.0
-    
+
     equity = (1 + strategy_returns).cumprod()
     drawdown = (equity - equity.cummax()) / equity.cummax()
     max_dd = drawdown.min()
-    
+
     annual_return = (1 + strategy_returns).prod() ** (config.bars_per_year / max(1, len(strategy_returns))) - 1
     calmar = annual_return / abs(max_dd) if max_dd < 0 else 0.0
-    
+
     nonzero = strategy_returns[positions.abs() > 0] if positions is not None else strategy_returns
     hit_rate = (nonzero > 0).mean() if len(nonzero) > 0 else 0.0
     trade_count = int((positions.diff() != 0).sum()) if positions is not None else 0
     turnover = (positions.diff().abs().sum() * (config.bars_per_year / max(1, len(positions)))) if positions is not None else 0
-    
+
     return {
         'total_return': (1 + strategy_returns).prod() - 1,
         'annual_return': annual_return,
@@ -311,7 +311,7 @@ def compute_metrics(strategy_returns: pd.Series, positions: pd.Series, config: B
 ```
 ENTRY:                  exit:                   ROUND-TRIP:
 - Spread half: 0.5bps   - Spread half: 0.5bps    Best case: ~3bps
-- Commission: 0bps      - Commission: 0bps       
+- Commission: 0bps      - Commission: 0bps
 - Slippage: 1.0bps      - Slippage: 1.0bps       Honest padding: +2bps for surprises
 - Subtotal: 1.5bps      - Subtotal: 1.5bps       USE: 5bps
 ```
@@ -336,10 +336,10 @@ def stationary_block_bootstrap_sharpe(
             block_length = int(opt['stationary'].iloc[0])
         except ImportError:
             block_length = max(1, int(N ** (1/3)))  # rule of thumb fallback
-    
+
     sharpes = []
     annualization = np.sqrt(bars_per_year)
-    
+
     for _ in range(B):
         sample = np.empty(N)
         i = 0
@@ -350,10 +350,10 @@ def stationary_block_bootstrap_sharpe(
             for j in range(length):
                 sample[i + j] = returns[(start + j) % N]
             i += length
-        
+
         s = sample.mean() / sample.std() * annualization if sample.std() > 0 else 0
         sharpes.append(s)
-    
+
     sharpes = np.array(sharpes)
     return sharpes.mean(), np.percentile(sharpes, 2.5), np.percentile(sharpes, 97.5)
 ```
@@ -363,23 +363,23 @@ def stationary_block_bootstrap_sharpe(
 ```python
 def regime_stratified_metrics(strategy_returns: pd.Series, features: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
     rows = []
-    
+
     vol = features['realized_vol_240']
     high_vol = vol > vol.quantile(0.66)
     low_vol = vol < vol.quantile(0.33)
     rows.append(('high_vol', compute_metrics(strategy_returns[high_vol], None, config)))
     rows.append(('mid_vol', compute_metrics(strategy_returns[~high_vol & ~low_vol], None, config)))
     rows.append(('low_vol', compute_metrics(strategy_returns[low_vol], None, config)))
-    
+
     fomc_week = features['is_FOMC_week'].astype(bool)
     rows.append(('fomc_week', compute_metrics(strategy_returns[fomc_week], None, config)))
     rows.append(('non_fomc', compute_metrics(strategy_returns[~fomc_week], None, config)))
-    
+
     news_count = features['gdelt_conflict_count']
     high_news = news_count > news_count.quantile(0.75)
     rows.append(('high_news', compute_metrics(strategy_returns[high_news], None, config)))
     rows.append(('low_news', compute_metrics(strategy_returns[~high_news], None, config)))
-    
+
     return pd.DataFrame([{'regime': r, **m} for r, m in rows]).set_index('regime')
 ```
 
@@ -397,12 +397,12 @@ def deflated_sharpe(sharpe: float, n_trials: int, n_obs: int, skew: float, kurt:
     # Expected max Sharpe under null (random strategies, N trials)
     emc = 0.5772156649  # Euler-Mascheroni
     sharpe_max_null = (1 - emc) * norm.ppf(1 - 1/n_trials) + emc * norm.ppf(1 - 1/(n_trials * np.e))
-    
+
     # Variance of Sharpe under non-normality (PSR adjustment)
     sigma_sharpe = np.sqrt(
         (1 - skew * sharpe + ((kurt - 1) / 4) * sharpe**2) / (n_obs - 1)
     )
-    
+
     # DSR = probability adjusted Sharpe > 0
     z = (sharpe - sharpe_max_null) / sigma_sharpe
     return norm.cdf(z)

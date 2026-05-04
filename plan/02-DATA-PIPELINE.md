@@ -697,7 +697,7 @@ fred = Fred(api_key=os.environ["FRED_API_KEY"])  # ~120 req/min limit per key
 def pit_series(series_id: str, as_of: str) -> pd.Series:
     """
     Return daily series as known on `as_of` (point-in-time-correct).
-    
+
     CRITICAL: get_series_as_of_date returns DataFrame of ALL revisions up to as_of,
     NOT a clean Series. Must groupby('date').tail(1) to collapse.
     """
@@ -1324,17 +1324,17 @@ def test_point_in_time_correctness():
         {"ts": "2024-01-15 14:25:00", "headline": "EARLY"},
         {"ts": "2024-01-15 14:35:00", "headline": "AFTER_BAR_2_CLOSE"},
     ])
-    
+
     joined = join_with_pit_discipline(bars, news, latency_min=15)
-    
+
     # Bar at 14:30 close → news must be < 14:30 - 15min = 14:15
     # Both news items are AFTER 14:15, so neither joins
     assert "EARLY" not in joined.loc[bar_idx_14_30, "news_headlines"]
-    
+
     # Bar at 15:00 close → news must be < 15:00 - 15min = 14:45
     # "EARLY" at 14:25 → joins. "AFTER_BAR_2_CLOSE" at 14:35 → joins.
     assert "EARLY" in joined.loc[bar_idx_15_00, "news_headlines"]
-    
+
     # No future leakage anywhere
     for bar_t, row in joined.iterrows():
         for headline_ts in row.news_timestamps:

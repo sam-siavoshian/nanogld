@@ -230,17 +230,17 @@ def stage2_sizing(
     direction = np.argmax(probs)
     if direction == 1:  # FLAT
         return 0.0
-    
+
     sign = 1.0 if direction == 2 else -1.0
-    
+
     confidence = max(probs) - 0.33
     if confidence <= 0:
         return 0.0  # no edge, don't bet
-    
+
     raw_size = confidence * confidence_scale * kelly_fraction
     vol_mult = target_vol / max(realized_vol_20d, 1e-3)
     size = sign * raw_size * vol_mult
-    
+
     return float(np.clip(size, -position_limit, position_limit))
 
 
@@ -248,7 +248,7 @@ class DrawdownCircuitBreaker:
     """
     Drawdown control with explicit re-entry to avoid recovery lockout.
     DD stored as NEGATIVE number (e.g. -0.15 = 15% drawdown).
-    
+
     States:
     - normal: full sizing
     - half: 50% sizing (DD <= -5%)
@@ -261,7 +261,7 @@ class DrawdownCircuitBreaker:
         self.max_halt_bars = max_halt_bars         # 5 trading days × 13 bars
         self.halted = False
         self.bars_since_halt = 0
-    
+
     def adjust(self, target_size: float, current_drawdown_pct: float) -> float:
         """current_drawdown_pct: negative number (peak - current) / peak."""
         # Re-entry logic
@@ -272,13 +272,13 @@ class DrawdownCircuitBreaker:
                 self.bars_since_halt = 0
             else:
                 return 0.0
-        
+
         # Trigger halt
         if current_drawdown_pct <= self.halt_threshold:
             self.halted = True
             self.bars_since_halt = 0
             return 0.0
-        
+
         # Tiered de-risking
         if current_drawdown_pct <= -0.10:
             return target_size * 0.25
@@ -302,7 +302,7 @@ def adjust_for_drawdown(target_size: float, current_drawdown_pct: float) -> floa
 def smoothed_sizing(probs, current_position, target_size, enter_threshold=0.4, exit_threshold=0.35):
     """Hysteresis: stronger threshold to enter, weaker to exit. Reduces turnover."""
     confidence = max(probs) - 0.33
-    
+
     if abs(current_position) < 1e-6:  # currently flat
         if confidence < enter_threshold:
             return 0.0
@@ -334,7 +334,7 @@ class ConformalSizer:
     def __init__(self, alpha: float = 0.1):
         self.alpha = alpha          # 1 - alpha = coverage (default 90%)
         self.q_hat = None           # learned quantile threshold
-    
+
     def calibrate(self, val_logits: torch.Tensor, val_labels: torch.Tensor):
         """Compute the calibration quantile on val set."""
         probs = torch.softmax(val_logits, dim=-1)
@@ -345,7 +345,7 @@ class ConformalSizer:
         # Conformal quantile (Vovk's split CP)
         k = math.ceil((n + 1) * (1 - self.alpha)) / n
         self.q_hat = torch.quantile(scores, min(k, 1.0)).item()
-    
+
     def confidence_factor(self, logits: torch.Tensor) -> float:
         """
         Returns confidence factor in {1.0, 0.5, 0.0} based on prediction set size.
@@ -406,21 +406,21 @@ class TemperatureScaler(nn.Module):
     def __init__(self):
         super().__init__()
         self.temperature = nn.Parameter(torch.ones(1))
-    
+
     def forward(self, logits: torch.Tensor) -> torch.Tensor:
         return logits / self.temperature
-    
+
     def fit(self, val_logits: torch.Tensor, val_labels: torch.Tensor, max_iter: int = 50):
         """LBFGS fit on val set."""
         nll = nn.CrossEntropyLoss()
         optimizer = torch.optim.LBFGS([self.temperature], lr=0.01, max_iter=max_iter)
-        
+
         def closure():
             optimizer.zero_grad()
             loss = nll(self.forward(val_logits), val_labels)
             loss.backward()
             return loss
-        
+
         optimizer.step(closure)
         return self
 

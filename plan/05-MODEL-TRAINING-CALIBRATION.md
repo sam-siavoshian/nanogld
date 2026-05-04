@@ -119,7 +119,7 @@ model = nanoGLDV1(
 )
 
 # Forward signature
-def forward(self, channel_inputs: dict[str, torch.Tensor], 
+def forward(self, channel_inputs: dict[str, torch.Tensor],
             news_embeddings: torch.Tensor,    # (B, n_sources, 256) — V1: Qwen3 truncated
             news_mask: torch.Tensor) -> torch.Tensor:  # (B, n_sources)
     return logits  # (B, 3)
@@ -216,15 +216,15 @@ class CausalSelfAttentionV1(nn.Module):
         self.head_gate = nn.Parameter(torch.zeros(num_heads))
         # NEW: value residual (MLP that produces a residual to add to V from previous layer's V)
         self.value_residual = nn.Linear(D, D, bias=False)
-    
+
     def forward(self, x, prev_v=None):
         # ... existing QK-Norm + RoPE + SDPA ...
         out_per_head = ...   # (B, H, T, head_dim)
-        
+
         # Per-head gating
         gates = torch.sigmoid(self.head_gate).view(1, -1, 1, 1)  # (1, H, 1, 1)
         out_per_head = out_per_head * gates
-        
+
         # Value residual (skip connection across attention layers on V)
         v_residual = self.value_residual(prev_v) if prev_v is not None else 0
         # ... combine into output ...
@@ -246,7 +246,7 @@ class ThresholdDifferentialAttention(nn.Module):
         self.attn_b = MultiHeadAttention(D, num_heads)
         self.lambda_init = nn.Parameter(torch.full((num_heads,), 0.8))
         self.theta = nn.Parameter(torch.full((1,), theta_init))  # threshold
-    
+
     def forward(self, x):
         a = self.attn_a(x)  # (B, H, T, T) softmax weights
         b = self.attn_b(x)
@@ -277,7 +277,7 @@ class SymplecticPositionEmbedding(nn.Module):
             nn.Linear(2, 16), nn.GELU(), nn.Linear(16, 3)
         )
         # ... full impl per paper ...
-    
+
     def forward(self, x, position_ids):
         # Apply position-dependent symplectic transformation
         ...
@@ -323,24 +323,24 @@ Trapezoidal SSM + complex state + MIMO. Half state size of Mamba-2. MPS-feasible
 ```
 nanoGLD V1 (May 2026)
 ═══════════════════════════════════════════════════════════════════
-Backbone:        ENCODER-only transformer 
-Tokenization:    Channel-group (iTransformer-lite, ~14 tokens) 
-Per-block:       RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias 
-ADDITIONS:    
+Backbone:        ENCODER-only transformer
+Tokenization:    Channel-group (iTransformer-lite, ~14 tokens)
+Per-block:       RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias
+ADDITIONS:
   • Per-head gating (IMU-1) — sigmoid scalar per head, learned
   • Value residuals (IMU-1) — Linear shortcut on V across blocks
   • Partial RoPE (apply to 10% of head_dim, leave rest unrotated)
   • [A/B candidate] TDA in 1+ blocks — sink-free attention
   • [A/B candidate] SyPE replaces RoPE — symplectic position for cycles
-News fusion:     Perceiver-Resampler-lite + Flamingo-gated cross-attn 
+News fusion:     Perceiver-Resampler-lite + Flamingo-gated cross-attn
 News embedder:   Qwen/Qwen3-Embedding-4B 4-bit MLX (V1 — replaces Llama-3.1-8B)
 Loss:            3-class CE with class weights + label smoothing 0.1
                  NEVER MSE on returns (forecast-collapse rule, arXiv:2604.00064)
-Pretrain:        SSL masked-bar reconstruction → linear-probe → LLRD fine-tune 
-Optimizer:       SAM ρ=0.05 wrapping AdamW 
+Pretrain:        SSL masked-bar reconstruction → linear-probe → LLRD fine-tune
+Optimizer:       SAM ρ=0.05 wrapping AdamW
                  [A/B candidate] NorMuon — IMU-1 paper, free at our scale
-EMA weights:     decay=0.999 
-Regularization:  Dropout 0.2 + stochastic depth 0.15 + label smoothing 0.1 
+EMA weights:     decay=0.999
+Regularization:  Dropout 0.2 + stochastic depth 0.15 + label smoothing 0.1
 Mandatory baselines (doc 06 — UPDATED):
   • DLinear (~10K params)
   • TSMixer (~2M)
@@ -352,7 +352,7 @@ Mandatory baselines (doc 06 — UPDATED):
 ### Loss Function Hard Rule (V1)
 
 > **NEVER use squared loss (MSE) on raw returns. Use 3-class cross-entropy or quantile loss.**
-> 
+>
 > Per arXiv:2604.00064 (March 2026): on weak-conditional-structure data, Transformer expressivity increases variance without reducing bias. Squared-loss training is provably worse than linear baselines on majority of windows in noisy financial regimes.
 
 This rule propagates to doc 05 and 06. Already aligned (we use 3-class CE).
@@ -696,7 +696,7 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
-    
+
     def forward(self, x):
         norm = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
         return norm * self.weight
@@ -735,7 +735,7 @@ class CausalSelfAttention(nn.Module):
         cos, sin = precompute_rope_cache(self.head_dim, max_seq)
         self.register_buffer("rope_cos", cos, persistent=False)
         self.register_buffer("rope_sin", sin, persistent=False)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, D = x.shape
         qkv = self.qkv(x).view(B, T, 3, self.H, self.head_dim)
@@ -766,7 +766,7 @@ class SwiGLU(nn.Module):
         self.w_up = nn.Linear(D, hidden, bias=False)
         self.w_down = nn.Linear(hidden, D, bias=False)
         self.dropout = nn.Dropout(dropout)
-    
+
     def forward(self, x):
         return self.dropout(self.w_down(F.silu(self.w_gate(x)) * self.w_up(x)))
 
@@ -779,7 +779,7 @@ class Block(nn.Module):
         self.ln2 = RMSNorm(D)
         self.mlp = SwiGLU(D, dropout)
         self.drop_path = drop_path  # stochastic depth probability
-    
+
     def forward(self, x):
         if self.training and torch.rand(1).item() < self.drop_path:
             return x  # skip block (stochastic depth)
@@ -797,7 +797,7 @@ class RevIN(nn.Module):
         if affine:
             self.weight = nn.Parameter(torch.ones(num_features))
             self.bias = nn.Parameter(torch.zeros(num_features))
-    
+
     def forward(self, x, mode='norm'):
         if mode == 'norm':
             self.mean = x.mean(dim=-2, keepdim=True).detach()
@@ -824,7 +824,7 @@ class NewsFuser(nn.Module):
         )
         self.queries = nn.Parameter(torch.randn(n_queries, d_model) * 0.02)
         self.cross = nn.MultiheadAttention(d_model, num_heads=n_heads, batch_first=True, bias=False)
-    
+
     def forward(self, news_raw: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """news_raw: (B, n_sources, 4096), mask: (B, n_sources) 1=present 0=absent"""
         B, S, _ = news_raw.shape
@@ -888,7 +888,7 @@ class nanoGLDV1(nn.Module):
         self.head = nn.Linear(D, n_classes, bias=False)
         self.dropout = nn.Dropout(dropout)
         self.apply(self._init_weights)
-    
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -896,7 +896,7 @@ class nanoGLDV1(nn.Module):
             for name, _ in self.named_parameters():
                 if 'proj.weight' in name or 'w_down.weight' in name:
                     nn.init.trunc_normal_(m.weight, std=0.02 / math.sqrt(2 * len(self.blocks)))
-    
+
     def forward(self, channel_inputs: dict, news_raw: torch.Tensor, news_mask: torch.Tensor):
         """
         channel_inputs: dict[group_name -> (B, T_group * features) flattened]
@@ -1201,14 +1201,14 @@ Optimizer:      Schedule-Free AdamW (β=0.9, β2=0.95, wd=0.1, lr=1e-4, warmup_s
                 [A/B against Muon-for-2D + AdamW-for-rest]
 LR schedule:    NONE (Schedule-Free handles this) OR WSD if SF underperforms
 Sharpness:      Friendly-SAM ρ=0.05 (replace vanilla SAM)
-EMA:            decay=0.999 
-Regularization: dropout 0.2 + stoch depth 0.15 + label smoothing 0.1 
-Augmentation:   jittering σ=0.02 + magnitude warping 
-Manifold Mixup: at hidden states α=0.2 
-Modality dropout: 15% on news embeddings 
-SSL pretrain:   MAE on masked bars 
+EMA:            decay=0.999
+Regularization: dropout 0.2 + stoch depth 0.15 + label smoothing 0.1
+Augmentation:   jittering σ=0.02 + magnitude warping
+Manifold Mixup: at hidden states α=0.2
+Modality dropout: 15% on news embeddings
+SSL pretrain:   MAE on masked bars
                 [A/B with MTS-JEPA — Phase 2, higher ceiling]
-Linear-probe → LLRD fine-tune: 
+Linear-probe → LLRD fine-tune:
 Cross-asset transfer: SPY→GLD as bonus experiment after baseline
 Conformal calibration: split-CP on val fold for sizing (deploy-side, see doc 07)
 Loss:           3-class CE + label smoothing 0.1 (NEVER MSE on returns — forecast-collapse rule from doc 05)
@@ -1455,22 +1455,22 @@ def walk_forward_splits(
     val_dur = pd.Timedelta(days=val_months * 30)
     test_dur = pd.Timedelta(days=test_months * 30)
     step = pd.Timedelta(days=step_months * 30)
-    
+
     data_start = timestamps.min()
     data_end = timestamps.max()
-    
+
     fold_idx = 0
     train_end = data_start + train_dur
-    
+
     while True:
         val_start = train_end + embargo
         val_end = val_start + val_dur
         test_start = val_end + embargo
         test_end = test_start + test_dur
-        
+
         if test_end > data_end:
             break
-        
+
         yield Fold(fold_idx, data_start, train_end, val_start, val_end, test_start, test_end)
         fold_idx += 1
         train_end += step
@@ -1490,7 +1490,7 @@ def configure_optimizer(model: nn.Module, lr: float = 3e-4, weight_decay: float 
             no_decay_params.append(p)
         else:
             decay_params.append(p)
-    
+
     return torch.optim.AdamW(
         [
             {'params': decay_params, 'weight_decay': weight_decay},
@@ -1513,7 +1513,7 @@ def cosine_lr_schedule(optimizer, warmup_steps: int, total_steps: int, min_lr_ra
         progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
         cosine = 0.5 * (1 + math.cos(math.pi * progress))
         return min_lr_ratio + (1 - min_lr_ratio) * cosine
-    
+
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 ```
 
@@ -1537,7 +1537,7 @@ class CheckpointTracker:
         self.best_val_loss = float('inf')
         self.epochs_no_improve = 0
         self.best_path = None
-    
+
     def step(self, model, optimizer, val_loss: float, epoch: int) -> bool:
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
@@ -1577,54 +1577,54 @@ def train_one_fold(
     wandb_run=None,
 ) -> dict:
     model = model.to(device)
-    
+
     # Class weights from training set only (no val/test peeking)
     train_labels = torch.cat([batch[2] for batch in train_loader])
     class_weights = compute_class_weights(train_labels).to(device)
-    
+
     optimizer = configure_optimizer(model, peak_lr, weight_decay)
     total_steps = len(train_loader) * num_epochs
     warmup_steps = int(total_steps * warmup_pct)
     scheduler = cosine_lr_schedule(optimizer, warmup_steps, total_steps)
     tracker = CheckpointTracker('checkpoints/', patience=patience)
-    
+
     for epoch in range(num_epochs):
         model.requires_grad_(True)
-        
+
         epoch_train_loss = 0
         epoch_train_correct = 0
         epoch_train_total = 0
-        
+
         for batch_idx, (numeric, news_raw, labels) in enumerate(train_loader):
             numeric = numeric.to(device)
             news_raw = news_raw.to(device)
             labels = labels.to(device)
-            
+
             logits = model(numeric, news_raw)
             loss = F.cross_entropy(logits, labels, weight=class_weights, label_smoothing=label_smoothing)
-            
+
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
             scheduler.step()
-            
+
             with torch.no_grad():
                 preds = logits.argmax(dim=-1)
                 epoch_train_loss += loss.item() * len(labels)
                 epoch_train_correct += (preds == labels).sum().item()
                 epoch_train_total += len(labels)
-            
+
             if wandb_run and batch_idx % 50 == 0:
                 wandb_run.log({
                     'train/loss_step': loss.item(),
                     'train/lr': scheduler.get_last_lr()[0],
                     'step': epoch * len(train_loader) + batch_idx,
                 })
-        
+
         train_loss = epoch_train_loss / epoch_train_total
         train_acc = epoch_train_correct / epoch_train_total
-        
+
         # Validate
         with torch.no_grad():
             val_loss = 0
@@ -1640,24 +1640,24 @@ def train_one_fold(
                 val_total += len(labels)
             val_loss /= val_total
             val_acc = val_correct / val_total
-        
+
         if wandb_run:
             wandb_run.log({
                 'train/loss_epoch': train_loss, 'train/acc_epoch': train_acc,
                 'val/loss': val_loss, 'val/acc': val_acc,
                 'epoch': epoch,
             })
-        
+
         print(f"Epoch {epoch}: train_loss={train_loss:.4f} train_acc={train_acc:.3f} val_loss={val_loss:.4f} val_acc={val_acc:.3f}")
-        
+
         if tracker.step(model, optimizer, val_loss, epoch):
             print(f"Early stopping at epoch {epoch}")
             break
-    
+
     # Test on best checkpoint
     best_state = torch.load(tracker.best_path)
     model.load_state_dict(best_state['model_state'])
-    
+
     with torch.no_grad():
         test_loss = 0
         test_correct = 0
@@ -1674,7 +1674,7 @@ def train_one_fold(
             all_logits.append(logits.cpu())
         test_loss /= test_total
         test_acc = test_correct / test_total
-    
+
     return {
         'best_val_loss': tracker.best_val_loss,
         'test_loss': test_loss,
@@ -1689,30 +1689,30 @@ def train_one_fold(
 ```python
 def run_walk_forward(snapshot_path, embeddings_path, anchors_path, num_seeds: int = 1):
     features = build_feature_table(snapshot_path, embeddings_path, anchors_path)
-    
+
     fold_results = []
     for fold in walk_forward_splits(features.timestamp):
         for seed in range(num_seeds):
             torch.manual_seed(seed)
-            
+
             train_data = features[fold.train_start:fold.train_end]
             val_data = features[fold.val_start:fold.val_end]
             test_data = features[fold.test_start:fold.test_end]
-            
+
             train_loader = make_loader(train_data, batch_size=32, shuffle=True)
             val_loader = make_loader(val_data, batch_size=64, shuffle=False)
             test_loader = make_loader(test_data, batch_size=64, shuffle=False)
-            
+
             model = nanoGLD()
             wandb_run = wandb.init(project='nanogld', name=f'fold{fold.fold_idx}_seed{seed}')
-            
+
             result = train_one_fold(model, train_loader, val_loader, test_loader, wandb_run=wandb_run)
             result['fold'] = fold.fold_idx
             result['seed'] = seed
             fold_results.append(result)
-            
+
             wandb_run.finish()
-    
+
     return fold_results
 ```
 

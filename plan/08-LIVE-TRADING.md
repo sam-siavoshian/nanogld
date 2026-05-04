@@ -244,49 +244,49 @@ data = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
 def run_cycle():
     """One trade cycle. Idempotent: re-running mid-cycle should converge to same state."""
     cycle_id = datetime.now(timezone.utc).isoformat()
-    
+
     try:
         # 1. Get current bar (wait for close if mid-bar)
         latest_bar = fetch_latest_30min_bar('GLD')
-        
+
         # 2. Fetch live news
         news = fetch_recent_news(window_min=30)
-        
+
         # 3. Embed news (load Llama on Macbook for inference; ~5GB unified memory)
         news_embs = embed_news(news)
-        
+
         # 4. Build feature vector for current bar (using last 64 bars)
         history = fetch_last_n_bars('GLD', n=64)
         features = build_feature_window(history, news_embs)
-        
+
         # 5. Predict
         model = load_latest_model_checkpoint()
         with torch.no_grad():
             logits = model(features['numeric'].unsqueeze(0), features['news_raw'].unsqueeze(0))
             probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
-        
+
         # 6. Stage 2 size
         realized_vol = compute_realized_vol(history.close, lookback=480)
         target_size = stage2_sizing(probs, realized_vol)
-        
+
         # 7. Determine current position
         position = trading.get_open_position('GLD') if has_position('GLD') else None
         current_qty = float(position.qty) if position else 0
         target_qty = target_size_to_shares(target_size, capital=100)  # round to nearest share for $100
         delta = target_qty - current_qty
-        
+
         # 8. Submit order if delta meaningful
         if abs(delta) >= 1:
             side = OrderSide.BUY if delta > 0 else OrderSide.SELL
             order = MarketOrderRequest(symbol='GLD', qty=abs(int(delta)), side=side, time_in_force=TimeInForce.DAY)
             trading.submit_order(order)
-        
+
         # 9. Log to wandb + SQLite
         log_cycle(cycle_id, probs, target_size, current_qty, target_qty, delta)
-        
+
         # 10. Drift detection
         check_drift(probs)
-        
+
     except Exception as e:
         log_error(cycle_id, e)
         send_alert(f"Cycle {cycle_id} failed: {e}")
@@ -306,13 +306,13 @@ def check_drift(probs: np.ndarray, history_window: int = 100):
     or shifts dramatically.
     """
     recent = load_recent_probs(history_window)
-    
+
     current_entropy = -np.sum(probs * np.log(probs + 1e-9))
     historical_entropy_mean = recent.entropy.mean()
     historical_entropy_std = recent.entropy.std()
-    
+
     z = (current_entropy - historical_entropy_mean) / (historical_entropy_std + 1e-6)
-    
+
     if abs(z) > 2:
         send_alert(f"Drift: current entropy z={z:.2f} vs history")
 ```

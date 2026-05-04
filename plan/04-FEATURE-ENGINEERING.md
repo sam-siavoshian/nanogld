@@ -184,14 +184,14 @@ Channel-group count for iTransformer-lite tokenization grows from ~14 → ~25 to
 def price_features(df: pd.DataFrame) -> pd.DataFrame:
     """All features computed from PAST bars only via .shift(1).rolling(...)."""
     out = pd.DataFrame(index=df.index)
-    
+
     # Multi-horizon log returns (already shifted: return at T-1)
     log_close = np.log(df.close).shift(1)  # close lagged
     out['log_return_1']  = log_close.diff(1)
     out['log_return_4']  = log_close.diff(4)
     out['log_return_16'] = log_close.diff(16)
     out['log_return_48'] = log_close.diff(48)
-    
+
     # Technical indicators via pandas-ta-classic (verified API).
     # V4 audit: KAMA, Ichimoku (visual=True), KST, DPO, TRIX, Vortex are FORBIDDEN — confirmed look-ahead bugs (bukosabino/ta#181).
     # RSI, MACD, BBANDS proper are causal IFF min_periods respected and no bfill applied.
@@ -208,7 +208,7 @@ def price_features(df: pd.DataFrame) -> pd.DataFrame:
 # - pta.ichimoku(visual=True)  (shifts +26 forward into future)
 # - pta.kst   (mean-fills with full close mean -> uses future)
 # - pta.dpo, pta.trix, pta.vortex  (related lookahead patterns in upstream `ta`)
-    
+
     # Microstructure-ish
     out['high_low_range_8'] = (df.high.shift(1) - df.low.shift(1)).rolling(8).mean()
     out['volume_zscore_20'] = (
@@ -216,10 +216,10 @@ def price_features(df: pd.DataFrame) -> pd.DataFrame:
         / df.volume.shift(1).rolling(20).std()
     )
     out['close_open_ratio'] = (df.close.shift(1) / df.open.shift(1)) - 1
-    
+
     # Session phase (4-dim one-hot encoded later)
     out['session_phase'] = df.timestamp.shift(1).apply(_get_session)
-    
+
     return out
 ```
 
@@ -229,7 +229,7 @@ def price_features(df: pd.DataFrame) -> pd.DataFrame:
 def risk_features(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
     log_returns = np.log(df.close / df.close.shift(1)).shift(1)
-    
+
     out['realized_vol_8']    = log_returns.rolling(8).std()
     out['realized_vol_48']   = log_returns.rolling(48).std()
     out['realized_vol_240']  = log_returns.rolling(240).std()
@@ -238,7 +238,7 @@ def risk_features(df: pd.DataFrame) -> pd.DataFrame:
         (out['realized_vol_48'] - out['realized_vol_48'].rolling(480).mean())
         / out['realized_vol_48'].rolling(480).std()
     )
-    
+
     # Garman-Klass estimator (uses full OHLC, 7.4× more efficient than close-to-close)
     # CORRECTION: switched from Parkinson (high-low only) since we have full OHLC anyway.
     # Formula: 0.5 * (ln(H/L))^2 - (2*ln(2) - 1) * (ln(C/O))^2, then mean and sqrt.
@@ -247,11 +247,11 @@ def risk_features(df: pd.DataFrame) -> pd.DataFrame:
     log_co = np.log(c_lag / o_lag)
     gk_per_bar = 0.5 * log_hl**2 - (2 * np.log(2) - 1) * log_co**2
     out['garman_klass_8'] = np.sqrt(gk_per_bar.rolling(8).mean())
-    
+
     # FOMC proximity
     out['days_since_FOMC'] = compute_days_since_last_fomc(df.timestamp.shift(1)) / 100
     out['is_FOMC_week'] = compute_is_fomc_week(df.timestamp.shift(1)).astype(float)
-    
+
     return out
 ```
 
@@ -261,7 +261,7 @@ def risk_features(df: pd.DataFrame) -> pd.DataFrame:
 def macro_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
     """fred_data is dict of vintage-correct daily series, keyed by FRED ID."""
     out = pd.DataFrame(index=df.index)
-    
+
     # Forward-fill daily macro to 30min bars, using ALFRED vintage-correct values
     dxy_at_T = vintage_lookup(fred_data['DTWEXBGS'], df.timestamp.shift(1))
     dgs10_at_T = vintage_lookup(fred_data['DGS10'], df.timestamp.shift(1))
@@ -270,7 +270,7 @@ def macro_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
     # T5YIE = 5-Year Breakeven Inflation Rate (NOT forward). T5YIFR is forward expectation.
     # Verified via Nia: ALFRED has both, picking breakeven (cleaner signal for gold).
     inflation_5y_at_T = vintage_lookup(fred_data['T5YIE'], df.timestamp.shift(1))
-    
+
     # Compute features
     out['dxy_log_return_5d'] = np.log(dxy_at_T / dxy_at_T.shift(240))  # 240 30min bars = 5 trading days
     out['dgs10']             = dgs10_at_T / 10
@@ -278,7 +278,7 @@ def macro_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
     out['term_spread']       = (dgs10_at_T - dgs2_at_T)
     out['real_rate']         = dgs10_at_T - inflation_5y_at_T
     out['vix_level']         = vix_at_T / 30
-    
+
     return out
 ```
 
@@ -287,7 +287,7 @@ def macro_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
 ```python
 def geo_features(df: pd.DataFrame, brent: pd.Series, wti: pd.Series, gpr: pd.Series, gdelt: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    
+
     # Oil proxies
     out['brent_log_return_1d'] = np.log(
         vintage_lookup(brent, df.timestamp.shift(1))
@@ -297,12 +297,12 @@ def geo_features(df: pd.DataFrame, brent: pd.Series, wti: pd.Series, gpr: pd.Ser
         vintage_lookup(wti, df.timestamp.shift(1))
         / vintage_lookup(wti, df.timestamp.shift(49))
     )
-    
+
     # Oil-gold correlation (rolling 30 days = 1440 30min bars)
     gold_returns = np.log(df.close / df.close.shift(1)).shift(1)
     brent_returns = np.log(brent / brent.shift(1))  # daily, fwd-filled
     out['oil_gold_corr_30d'] = gold_returns.rolling(1440).corr(brent_returns)
-    
+
     # GDELT-derived event intensity in [T-1bar, T-news_latency)
     # Verified GDELT theme codes (canonical lookup):
     out['gdelt_goldstein_avg'] = aggregate_gdelt_field(gdelt, df.timestamp.shift(1), 'GoldsteinScale', agg='mean')
@@ -313,15 +313,15 @@ def geo_features(df: pd.DataFrame, brent: pd.Series, wti: pd.Series, gpr: pd.Ser
         themes=['ARMEDCONFLICT', 'WB_2433_CONFLICT_AND_VIOLENCE', 'TERROR', 'TAX_WEAPONS_BOMB', 'SANCTIONS'])
     out['gdelt_oil_count'] = aggregate_gdelt_themes(gdelt, df.timestamp.shift(1),
         themes=['ENV_OIL', 'FUELPRICES', 'MARITIME_INCIDENT'])
-    
+
     # GPR Index (monthly, fwd-filled)
     out['gpr_monthly'] = vintage_lookup(gpr, df.timestamp.shift(1))
     out['gpr_change_3m'] = out['gpr_monthly'] - out['gpr_monthly'].shift(2880)  # 3 months ≈ 2880 30min bars
-    
+
     # Conflict-anchor cosine (computed AFTER news embeddings, so populated post-doc-04)
     out['conflict_sim_alpaca'] = NaN  # filled in Stage 2 of feature pipeline
     out['conflict_sim_gdelt']  = NaN
-    
+
     return out
 ```
 
@@ -355,7 +355,7 @@ def equity_features(etf_bars: dict[str, pd.DataFrame], gld_bars: pd.DataFrame) -
     out = pd.DataFrame(index=gld_bars.index)
     spy_log_returns = np.log(etf_bars["SPY"].close / etf_bars["SPY"].close.shift(1)).shift(1)
     gld_log_returns = np.log(gld_bars.close / gld_bars.close.shift(1)).shift(1)
-    
+
     for sym in ETF_BASKET:
         df = etf_bars[sym]
         log_close = np.log(df.close).shift(1)
@@ -370,7 +370,7 @@ def equity_features(etf_bars: dict[str, pd.DataFrame], gld_bars: pd.DataFrame) -
         out[f"{sym}_rs_spy"] = log_returns - spy_log_returns if sym != "SPY" else 0.0
         # 30-day rolling correlation with GLD (1440 30m bars ≈ 30 trading days)
         out[f"{sym}_corr_gld_30d"] = log_returns.rolling(1440).corr(gld_log_returns)
-    
+
     return out  # 9 × 8 = 72 dims
 ```
 
@@ -380,19 +380,19 @@ def equity_features(etf_bars: dict[str, pd.DataFrame], gld_bars: pd.DataFrame) -
 def equity_ratio_features(etf_bars: dict[str, pd.DataFrame], gld_bars: pd.DataFrame) -> pd.DataFrame:
     """Cross-asset ratios known to predict gold."""
     out = pd.DataFrame(index=gld_bars.index)
-    
+
     # Gold-Silver ratio (centuries-old gold value indicator; mean-reverts ~75:1)
     gsr = (gld_bars.close.shift(1) / etf_bars["SLV"].close.shift(1))
     out["gold_silver_ratio"]     = gsr
     out["gold_silver_ratio_logret_1d"]  = np.log(gsr / gsr.shift(48))   # 1 day = 48 30m bars (RTH); use 13 if intraday-only
     out["gold_silver_ratio_logret_5d"]  = np.log(gsr / gsr.shift(48*5))
-    
+
     # GDX/GLD ratio (miners leverage gold price; spread predicts mean-reversion)
     gdx_gld = (etf_bars["GDX"].close.shift(1) / gld_bars.close.shift(1))
     out["gdx_gld_ratio"]         = gdx_gld
     out["gdx_gld_ratio_logret_1d"] = np.log(gdx_gld / gdx_gld.shift(48))
     out["gdx_gld_ratio_logret_5d"] = np.log(gdx_gld / gdx_gld.shift(48*5))
-    
+
     # Stocks-vs-gold cross-correlations (regime indicators)
     spy_ret = np.log(etf_bars["SPY"].close / etf_bars["SPY"].close.shift(1)).shift(1)
     qqq_ret = np.log(etf_bars["QQQ"].close / etf_bars["QQQ"].close.shift(1)).shift(1)
@@ -401,7 +401,7 @@ def equity_ratio_features(etf_bars: dict[str, pd.DataFrame], gld_bars: pd.DataFr
     out["spy_gld_corr_30d"] = spy_ret.rolling(1440).corr(gld_ret)
     out["qqq_gld_corr_30d"] = qqq_ret.rolling(1440).corr(gld_ret)
     out["iwm_gld_corr_30d"] = iwm_ret.rolling(1440).corr(gld_ret)
-    
+
     return out  # 9 dims
 ```
 
@@ -417,27 +417,27 @@ def treasury_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
     Real rates are the #1 gold price driver (gold pays no yield)."""
     out = pd.DataFrame(index=df.index)
     ts_lag = df.timestamp.shift(1)
-    
+
     # 11 series — levels (vintage-correct)
     levels = {}
     for series_id in TREASURY_NOMINAL + TREASURY_TIPS + BREAKEVENS:
         levels[series_id] = vintage_lookup(fred_data[series_id], ts_lag)
         out[f"{series_id}_level"] = levels[series_id] / 10  # scale roughly
         out[f"{series_id}_change_1d"] = levels[series_id] - levels[series_id].shift(48)  # 1 day in 30m bars (RTH only)
-    
+
     # Term spreads (recession + risk-on indicators)
     out["spread_10y_2y"]   = levels["DGS10"] - levels["DGS2"]    # classic recession indicator
     out["spread_30y_10y"]  = levels["DGS30"] - levels["DGS10"]   # long-end slope
     out["spread_5y_2y"]    = levels["DGS5"] - levels["DGS2"]     # belly slope
     out["spread_10y_3m"]   = levels["DGS10"] - levels["DGS3MO"]  # NY Fed recession indicator
-    
+
     # Butterfly (curve curvature)
     out["butterfly_2_5_10"] = 2 * levels["DGS5"] - levels["DGS2"] - levels["DGS10"]
-    
+
     # Real rates — both proxies (DFII10 directly + DGS10 - T10YIE) for redundancy
     out["real_rate_10y_direct"]    = levels["DFII10"]                            # direct from TIPS
     out["real_rate_10y_breakeven"] = levels["DGS10"] - levels["T10YIE"]          # nominal - breakeven
-    
+
     return out  # 11 levels + 11 1d-changes + 4 spreads + 1 butterfly + 2 real-rate = 29 dims (call it ~30)
 ```
 
@@ -453,7 +453,7 @@ def macro_bundle_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
     """Each release moves gold. All vintage-correct via ALFRED."""
     out = pd.DataFrame(index=df.index)
     ts_lag = df.timestamp.shift(1)
-    
+
     for series_id in MACRO_LABOR + MACRO_INFLATION + MACRO_GROWTH + MACRO_FED:
         level = vintage_lookup(fred_data[series_id], ts_lag)
         out[f"{series_id}_level"]    = level
@@ -467,14 +467,14 @@ def macro_bundle_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
             # Daily / weekly Fed series — use shorter horizons
             out[f"{series_id}_change_1w"]  = level - level.shift(13 * 5)   # 1 trading week
             out[f"{series_id}_change_4w"]  = level - level.shift(13 * 5 * 4)
-    
+
     # Derived signals
     out["icsa_4w_ma"] = vintage_lookup(fred_data["ICSA"], ts_lag).rolling(4).mean()
     out["real_fedfunds"] = vintage_lookup(fred_data["FEDFUNDS"], ts_lag) - (
         vintage_lookup(fred_data["CPIAUCSL"], ts_lag).pct_change(periods=12) * 100
     )  # Real Fed funds rate — Bernanke's "shadow rate" proxy
     out["m2_yoy"] = (vintage_lookup(fred_data["M2SL"], ts_lag).pct_change(periods=52) * 100)  # weekly to YoY
-    
+
     return out  # 19 × ~3 + 3 derived ≈ 60 dims
 ```
 
@@ -487,7 +487,7 @@ def cot_features(df: pd.DataFrame, cot: pd.DataFrame) -> pd.DataFrame:
     """COT data = positioning extremes predict reversals.
     Release rule: feature visible at bar T iff cot.release_ts < T_close."""
     out = pd.DataFrame(index=df.index)
-    
+
     # As-of join — find the most recent COT release strictly before each bar's close
     cot_pit = cot.sort_values("release_ts")
     bar_release_lookup = pd.merge_asof(
@@ -498,7 +498,7 @@ def cot_features(df: pd.DataFrame, cot: pd.DataFrame) -> pd.DataFrame:
         direction="backward",
         allow_exact_matches=False,  # strict <, not ≤
     )
-    
+
     out["cot_mm_net_long_pct_oi"]      = bar_release_lookup["mm_net_long_pct_oi"]
     out["cot_comm_net_long_pct_oi"]    = bar_release_lookup["comm_net_long_pct_oi"]
     out["cot_nonrep_net_long_pct_oi"]  = bar_release_lookup["nonrep_net_long_pct_oi"]
@@ -507,7 +507,7 @@ def cot_features(df: pd.DataFrame, cot: pd.DataFrame) -> pd.DataFrame:
     )
     out["cot_mm_change_2w"]            = bar_release_lookup["mm_net_long"].diff(2)
     out["cot_mm_change_12w"]           = bar_release_lookup["mm_net_long"].diff(12)
-    
+
     return out  # 6 dims
 ```
 
@@ -519,7 +519,7 @@ def cot_features(df: pd.DataFrame, cot: pd.DataFrame) -> pd.DataFrame:
 def wgc_features(df: pd.DataFrame, wgc: pd.DataFrame) -> pd.DataFrame:
     """WGC quarterly central bank net purchases. Slow signal, structurally bullish for gold."""
     out = pd.DataFrame(index=df.index)
-    
+
     # Same release-time as-of join as COT
     wgc_pit = wgc.sort_values("release_ts")
     lookup = pd.merge_asof(
@@ -530,11 +530,11 @@ def wgc_features(df: pd.DataFrame, wgc: pd.DataFrame) -> pd.DataFrame:
         direction="backward",
         allow_exact_matches=False,
     )
-    
+
     out["wgc_total_net_purchase_tonnes_q"] = lookup["net_purchase_total_tonnes"]
     out["wgc_total_net_purchase_yoy"]      = lookup["net_purchase_total_tonnes"] - lookup["net_purchase_total_tonnes"].shift(4)
     out["wgc_is_net_buyer_q"]              = (lookup["net_purchase_total_tonnes"] > 0).astype(float)
-    
+
     return out  # 3 dims
 ```
 
@@ -545,7 +545,7 @@ def calendar_features(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
     """Event proximity + cyclical encodings. NO LOOKAHEAD — event timestamps are deterministic ahead-of-time."""
     out = pd.DataFrame(index=df.index)
     ts = df.timestamp
-    
+
     # Event proximity (signed minutes to nearest event of each type, clipped to ±2 days)
     for evt_type in ["FOMC", "CPI", "NFP", "GDP", "JOLTS", "PCE"]:
         evt_times = calendar[calendar.event_type == evt_type].event_ts_utc.values
@@ -554,7 +554,7 @@ def calendar_features(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
         # Note: we do NOT include a "minutes-until-future-event" raw feature because that is technically
         # known information (calendar is published) but creates pseudo-leakage in correlation tests.
         # The window indicator suffices.
-    
+
     # Cyclical encodings (sin/cos to avoid wraparound discontinuity)
     out["dow_sin"]   = np.sin(2 * np.pi * ts.dt.dayofweek / 5.0)         # M-F
     out["dow_cos"]   = np.cos(2 * np.pi * ts.dt.dayofweek / 5.0)
@@ -562,11 +562,11 @@ def calendar_features(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
     out["hour_cos"]  = np.cos(2 * np.pi * ts.dt.hour / 24.0)
     out["month_sin"] = np.sin(2 * np.pi * ts.dt.month / 12.0)
     out["month_cos"] = np.cos(2 * np.pi * ts.dt.month / 12.0)
-    
+
     # Special days
     out["is_options_expiry_day"]    = is_third_friday(ts).astype(float)
     out["is_quarter_end_window"]    = is_last_3_days_of_quarter(ts).astype(float)
-    
+
     return out  # 6 event windows + 6 cyclical + 2 special = ~10 dims (ish; trim if collinear)
 ```
 
@@ -638,11 +638,11 @@ def make_labels(df: pd.DataFrame, threshold_bps: int) -> pd.Series:
     """Labels for bar T are based on bar T+1's return."""
     next_log_return = np.log(df.close.shift(-1) / df.close)
     threshold = threshold_bps / 10_000
-    
+
     labels = pd.Series(np.full(len(df), 1, dtype=int), index=df.index)  # default flat=1
     labels[next_log_return > threshold] = 2   # up
     labels[next_log_return < -threshold] = 0  # down
-    
+
     return labels
 ```
 
@@ -673,13 +673,13 @@ News embeddings are NOT z-scored per-feature (they're 256-dim each). They're alr
 ```python
 def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_path: str) -> pd.DataFrame:
     raw = pd.read_parquet(snapshot_path)
-    
+
     # Raw feature engineering
     price = price_features(raw)
     risk = risk_features(raw)
     macro = macro_features(raw, fred_data=...)
     geo = geo_features(raw, brent=..., wti=..., gpr=..., gdelt=...)
-    
+
     # V1 expansion (2026-05-04)
     equity = equity_features(etf_bars=..., gld_bars=raw)
     equity_ratios = equity_ratio_features(etf_bars=..., gld_bars=raw)
@@ -688,7 +688,7 @@ def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_
     cot = cot_features(raw, cot_data=...)
     wgc = wgc_features(raw, wgc_data=...)
     cal = calendar_features(raw, calendar=...)
-    
+
     # Concat
     numeric = pd.concat([
         price, risk, macro, geo,                    # existing 36 dims
@@ -697,33 +697,33 @@ def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_
         macro_full,                                  # NEW V1: ~60 dims
         cot, wgc, cal,                               # NEW V1: 6 + 3 + 10 = 19 dims
     ], axis=1)
-    
+
     # Z-score
     for col in numeric.columns:
         if col not in CATEGORICAL_COLS:
             numeric[col] = rolling_zscore(numeric[col], lookback=1000)
-    
+
     # One-hot session phase
     numeric = pd.get_dummies(numeric, columns=['session_phase'])
-    
+
     # Load precomputed news embeddings
     news_emb = pd.read_parquet(llama_embeddings_path)  # cols: alpaca_emb_<0..4095>, gdelt_emb_<0..4095>, rss_emb_<0..4095>
-    
+
     # Anchor cosines (fill conflict_sim_alpaca, conflict_sim_gdelt)
     anchors_npz = np.load(anchors_path)  # safe numpy native, not pickle
     anchors = {k: anchors_npz[k] for k in anchors_npz.files}
     geo['conflict_sim_alpaca'] = compute_cosine(news_emb['alpaca_emb_*'], anchors['conflict'])
     geo['conflict_sim_gdelt']  = compute_cosine(news_emb['gdelt_emb_*'],  anchors['conflict'])
-    
+
     # Combine: numeric + news embeddings (raw 4096-dim, projection happens in model)
     features = pd.concat([numeric, news_emb], axis=1)
-    
+
     # Labels
     features['label'] = make_labels(raw, threshold_bps=5)
-    
+
     # Drop rows with NaN (rolling features at start of dataset)
     features = features.dropna()
-    
+
     return features
 ```
 

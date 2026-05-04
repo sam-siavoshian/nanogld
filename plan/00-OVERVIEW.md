@@ -430,11 +430,11 @@ Agent(
     description="Verify [specific claim]",
     prompt="""Research [topic]. Use nia search web, nia papers, nia github,
     nia packages. Today is 2026-05-01. Find post-2025 papers/releases.
-    
+
     Specific questions:
     1. ...
     2. ...
-    
+
     Output: VERIFIED/REFUTED/NEEDS_REVISION per claim with citations.
     Mark unverified claims clearly.""",
 )
