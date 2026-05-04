@@ -69,6 +69,8 @@ def _attach_bars_lag(
     is correct: the bar that just closed is not yet "available" for decisions
     keyed at that timestamp.
     """
+    if bars.empty or "symbol" not in bars.columns:
+        return base
     sub = bars[bars["symbol"] == sym].copy()
     if sub.empty:
         return base
@@ -119,12 +121,10 @@ def _attach_news_counts(
     if news.empty:
         base[f"{source_label}_news_count"] = 0
         return base
-    closes = base["bar_close_utc"].sort_values().reset_index(drop=True)
-    counts = (
-        news.set_index("t_visible").sort_index().index.searchsorted(closes.values, side="right")
-    )
-    counts_diff = pd.Series(counts).diff().fillna(counts[0]).clip(lower=0).astype("int64")
     base = base.sort_values("bar_close_utc").reset_index(drop=True)
+    news_idx = pd.DatetimeIndex(news["t_visible"]).sort_values()
+    counts = news_idx.searchsorted(pd.DatetimeIndex(base["bar_close_utc"]), side="right")
+    counts_diff = pd.Series(counts).diff().fillna(counts[0]).clip(lower=0).astype("int64")
     base[f"{source_label}_news_count"] = counts_diff.values
     return base
 
@@ -136,16 +136,15 @@ def _attach_calendar_proximity(base: pd.DataFrame, cal: pd.DataFrame) -> pd.Data
     if cal.empty:
         base["event_within_60min"] = False
         return base
-    closes = base["bar_close_utc"].sort_values().reset_index(drop=True)
-    events = cal.sort_values("event_ts_utc")["event_ts_utc"].values
-    flag = []
-    for c in closes:
-        # any event in [c - 30min, c + 60min]?
-        window_lo = c - pd.Timedelta(minutes=30)
-        window_hi = c + pd.Timedelta(minutes=60)
-        idx = pd.Series(events).searchsorted(window_lo, side="left")
-        flag.append(bool(idx < len(events) and events[idx] <= window_hi))
     base = base.sort_values("bar_close_utc").reset_index(drop=True)
+    events = pd.DatetimeIndex(cal["event_ts_utc"]).sort_values()
+    flag = []
+    # Symmetric ±60min window (V1 hard rule §14: binary windows ONLY).
+    for c in base["bar_close_utc"]:
+        window_lo = c - pd.Timedelta(minutes=60)
+        window_hi = c + pd.Timedelta(minutes=60)
+        idx = events.searchsorted(window_lo, side="left")
+        flag.append(bool(idx < len(events) and events[idx] <= window_hi))
     base["event_within_60min"] = flag
     return base
 
