@@ -55,7 +55,7 @@ Backtest:       ░░░░░░░░░░░░░░ pending checkpoints
 
 **This README is a sketch until proven.** Numbers, claims, and architecture details get rewritten only when an implementation agent ships verified results. The journey from sketch to real artifact is the journey from `plan/` → trained checkpoints → reported metrics. Until then, treat everything below as the design we are testing, not what we are claiming.
 
-11 implementation docs live in [`plan/`](./plan). Each is owned by a single agent with Nia-verified citations, an interface contract, and acceptance criteria. The plan is the spec. Read [`plan/00-OVERVIEW.md`](./plan/00-OVERVIEW.md) first.
+8 implementation docs live in [`plan/`](./plan). Each is owned by a single agent with Nia-verified citations, an interface contract, and acceptance criteria. The plan is the spec. Read [`plan/00-OVERVIEW.md`](./plan/00-OVERVIEW.md) first.
 
 ---
 
@@ -140,7 +140,7 @@ Stage 2 must beat Stage 1 by ≥0.2 Sharpe out-of-sample to ship. Conformal cali
 ## Architecture
 
 ```python
-# Forward signature (real, from plan/03-MODEL-ARCHITECTURE.md)
+# Forward signature (real, from plan/05-MODEL-TRAINING-CALIBRATION.md)
 class nanoGLDV1(nn.Module):
     def forward(
         self,
@@ -151,7 +151,7 @@ class nanoGLDV1(nn.Module):
         return logits  # (B, 3)
 ```
 
-Default config: `D=384`, `num_heads=6` (head_dim=64), `num_layers=12`, `T_bars=64`, `dropout=0.2`, `drop_path=0.15`. ~24M params at this size; spec scales to 60M. Full math + ablation candidates (TDA, SyPE, Muon for 2D weights) in [`plan/03-MODEL-ARCHITECTURE.md`](./plan/03-MODEL-ARCHITECTURE.md).
+Default config: `D=384`, `num_heads=6` (head_dim=64), `num_layers=12`, `T_bars=64`, `dropout=0.2`, `drop_path=0.15`. ~24M params at this size; spec scales to 60M. Full math + ablation candidates (TDA, SyPE, Muon for 2D weights) in [`plan/05-MODEL-TRAINING-CALIBRATION.md`](./plan/05-MODEL-TRAINING-CALIBRATION.md).
 
 ---
 
@@ -165,7 +165,7 @@ Default config: `D=384`, `num_heads=6` (head_dim=64), `num_layers=12`, `T_bars=6
 | Alpaca News API headlines | rolling | free |
 | Public RSS (Reuters, Bloomberg, MarketWatch, SEC EDGAR) | rolling | free |
 
-Snapshots are immutable, content-addressed by SHA256, and reproducible bit-for-bit from [`plan/01-DATA-PIPELINE.md`](./plan/01-DATA-PIPELINE.md).
+Snapshots are immutable, content-addressed by SHA256, and reproducible bit-for-bit from [`plan/02-DATA-PIPELINE.md`](./plan/02-DATA-PIPELINE.md).
 
 ---
 
@@ -206,23 +206,23 @@ Fail any gate, the negative result gets reported. Cherry-picking is a fireable o
 ## Repo layout
 
 ```
-plan/                         the spec, V1 frozen
-  00-OVERVIEW.md              project context, hard rules, execution mode
-  01-DATA-PIPELINE.md         GLD bars + GDELT + macro + news → parquet
-  02-FEATURE-ENGINEERING.md   42 features + RevIN + 3-class labels
-  03-MODEL-ARCHITECTURE.md    nanoGLDV1 spec, raw PyTorch
-  04-NEWS-EMBEDDING.md        Qwen3-Embedding-4B, anchor cosines
-  05-TRAINING-PROCEDURE.md    SSL → probe → LLRD, Schedule-Free + F-SAM
-  06-BACKTEST.md              walk-forward CV, baseline ladder, DSR
-  07-SIZING-STAGE2.md         Kelly-lite × vol-target × conformal
-  09-LIVE-TRADING.md          deployment cycle (downstream)
-  10-INFRA-AND-SECURITY.md    uv, pre-commit, gitleaks, CI, secrets
-  STATUS.md                   doc tracker + execution-mode rules
+plan/                              the spec, V1 frozen (post V5 merge: 8 docs)
+  00-OVERVIEW.md                   project context, hard rules, execution mode
+  01-INFRA-AND-SECURITY.md         uv, pre-commit, gitleaks, CI, secrets
+  02-DATA-PIPELINE.md              GLD bars + ETF basket + GDELT + FRED + COT/WGC + news → parquet
+  03-NEWS-EMBEDDING.md             Qwen3-Embedding-4B per-article + LAFTR + anchor cosines
+  04-FEATURE-ENGINEERING.md        ~1000 features across 12 categories + RevIN + 3-class labels
+  05-MODEL-TRAINING-CALIBRATION.md nanoGLDV1 + 3-stage SSL→probe→LLRD + temperature + conformal
+  06-BACKTEST.md                   walk-forward CV, baseline ladder, DSR + bootstrap CI
+  07-SIZING-AND-EXITS.md           Kelly-lite × vol-target × conformal + per-trade SL + profit-take
+  08-LIVE-TRADING.md               launchd cron + Alpaca live + drift detection
+  STATUS.md                        doc tracker + execution-mode rules
 
-src/nanogld/                  (coming) the code, mirrored 1:1 with plan/
-tests/                        (coming) pytest suite per doc
-data/                         (gitignored) parquet snapshots
-checkpoints/                  (gitignored) trained models
+src/nanogld/                       (coming) the code, mirrored 1:1 with plan/
+tests/                             pytest suite (smoke today; per-doc coverage as docs ship)
+data/                              (gitignored) parquet snapshots
+checkpoints/                       (gitignored) trained models
+docs/                              SETUP.md (secrets) + REPRODUCE.md (clone-to-running)
 ```
 
 Every `src/nanogld/<module>/` directory maps 1:1 to a `plan/0X-*.md` doc. Read the doc, build the module, ship.
