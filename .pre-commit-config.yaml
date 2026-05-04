@@ -1,0 +1,26 @@
+# nanoGLD pre-commit hooks
+# Spec: plan/01-INFRA-AND-SECURITY.md (Critical Corrections section)
+# gitleaks blocks any commit containing leaked credentials BEFORE it lands.
+# ruff replaces black entirely (lint + format in one tool).
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.2
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
