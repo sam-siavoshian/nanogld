@@ -2,10 +2,10 @@
 
 ## YOU ARE THE NEWS EMBEDDING AGENT
 
-You own the news-text-to-vector pipeline. You set up Qwen3-Embedding-4B (swap from Llama-3.1-8B-mean-pool), embed all news for all bars once, cache to disk. You also compute the anchor embeddings used by doc 02 for semantic features.
+You own the news-text-to-vector pipeline. You set up Qwen3-Embedding-4B (swap from Llama-3.1-8B-mean-pool), embed all news for all bars once, cache to disk. You also compute the anchor embeddings used by doc 04 for semantic features.
 
 **Read 00-OVERVIEW.md FIRST.**
-**Read 01-DATA-PIPELINE.md** for the parquet input schema (alpaca_headlines, gdelt_headlines, rss_headlines columns).
+**Read 02-DATA-PIPELINE.md** for the parquet input schema (alpaca_headlines, gdelt_headlines, rss_headlines columns).
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -29,7 +29,7 @@ src/nanogld/embed/
 ├── aggregator.py           # NEW V4 — PerSourcePMA + BarConditionedQuery + Q-Former-lite + Flamingo gate
 ├── adversary.py            # NEW V4 — LAFTR-style adversarial head with gradient reversal
 ├── anchors.py              # Computes 4 anchor embeddings from V4 hand-crafted templates
-├── live_embed.py           # Single-bar embedding for live cycle (doc 09 imports)
+├── live_embed.py           # Single-bar embedding for live cycle (doc 11 imports)
 ├── cache.py                # SHA256-keyed cache (model + prompt + text → embedding)
 └── cli.py                  # `python -m nanogld.embed precompute`
 
@@ -58,7 +58,7 @@ tests/
 ### Stable Interface You Publish (V4 expanded)
 
 ```python
-# Doc 02 / Doc 03 read precomputed embeddings via:
+# doc 04 / doc 05 read precomputed embeddings via:
 articles = pd.read_parquet("data/embeddings/v1_<hash>_articles.parquet")
 # Columns:
 #   article_id: str (sha256 of source + url + created_at)
@@ -68,7 +68,7 @@ articles = pd.read_parquet("data/embeddings/v1_<hash>_articles.parquet")
 #   emb_256: np.ndarray fp16 (256,)
 #   bar_id_window: int  (foreign key to bars table — first bar where this article is visible)
 
-# Doc 03 imports the aggregator:
+# doc 05 imports the aggregator:
 from nanogld.embed.aggregator import BarConditionedNewsAggregator
 agg = BarConditionedNewsAggregator(
     d_in=256, d_model=128, K=8, K_per_src=2, n_sources=25, d_bar=16
@@ -76,15 +76,15 @@ agg = BarConditionedNewsAggregator(
 news_tokens, gate = agg(articles_per_bar, src_ids, dt_to_bar, mask, bar_feat)
 # news_tokens: [B, K=8, 128]   gate: scalar (Flamingo tanh-gate)
 
-# Doc 05 imports the LAFTR adversary:
+# doc 06 imports the LAFTR adversary:
 from nanogld.embed.adversary import AdversarialDebiasingHead, GradientReversalLayer
 
-# Doc 09 (live trading) imports for single-bar embedding:
+# doc 11 (live trading) imports for single-bar embedding:
 from nanogld.embed.live_embed import embed_articles_live
 articles_emb = embed_articles_live(articles_in_window: list[Article]) -> pd.DataFrame
 # Returns the same per-article schema as the precomputed parquet, for live cycle.
 
-# Doc 02 reads anchors (V4 templates):
+# doc 04 reads anchors (V4 templates):
 anchors_npz = np.load("data/anchors/v1.npz")
 # Keys: 'conflict', 'monetary', 'dollar', 'recession'. Each (256,) normalized.
 # V4 source = ANCHOR_TEMPLATES_V4 (hand-crafted, no event provenance).
@@ -129,7 +129,7 @@ Embedding models change MONTHLY. Before precomputing 87K bars, run `nia search w
 
 1. Update STATUS.md with: embedding cache hash, total size, model used, time-to-precompute
 2. Add anchor headlines to `data/anchors/v1_anchors.json` for reproducibility
-3. Notify doc 02 (features) that embeddings + anchors are cached and ready
+3. Notify doc 04 (features) that embeddings + anchors are cached and ready
 
 Now read the spec below.
 
@@ -163,7 +163,7 @@ Now read the spec below.
 | **Kaggle ankurzing gold sentiment + Precious Metals 2000+** | **ADD** | Direct gold-labeled headlines (small, but gold-keyword bootstrap for relevance classifier) | n/a (training labels) |
 | **Reuters Gold** | **DEFER (paid)** | $1/wk consumer paywall + Reuters Connect API enterprise-only. CNBC syndicates Reuters wire for partial free coverage. Reuters Connect when funded. | `mainstream_neutral` (when added) |
 | **Financial Times Gold** | **REFUTED — LEGAL BLOCKER** | `ft.com/robots.txt` explicitly bans ML/AI use: "We expressly prohibit any use of our content or data for any machine learning or artificial intelligence". DO NOT scrape. | n/a |
-| **Trading Economics news** | DEFER | Aggregator that re-publishes Reuters wire — duplicates we'd already have. Indicator API already in doc 01. | n/a |
+| **Trading Economics news** | DEFER | Aggregator that re-publishes Reuters wire — duplicates we'd already have. Indicator API already in doc 02. | n/a |
 | **FXStreet** | **DEFER (paid B2B)** | Best minute-ts technicals-embedded news but B2B-paid via Acuity Trading. Free RSS limited. Add when budget allows. | `retail_technical_bias` (when added) |
 | **Metals Daily** | SKIP | Sharps Pixley aggregator, syndication overlap with originators, archive depth unconfirmed | `dealer_bullish` (if added) |
 
@@ -426,11 +426,11 @@ ANCHOR_TEMPLATES_V4 = {
 }
 ```
 
-Anchor cohesion test on these templates is now stricter: intra-anchor pairwise cosine > 0.7 (was 0.6) since templates are more semantically homogeneous than real headlines. Doc 02 acceptance criteria updated.
+Anchor cohesion test on these templates is now stricter: intra-anchor pairwise cosine > 0.7 (was 0.6) since templates are more semantically homogeneous than real headlines. doc 04 acceptance criteria updated.
 
 ### Hand-off / dataset additions
 
-Doc 01 (data pipeline) gets new sources 12-18 for the historical news corpus. Doc 02 imports the source registry. Doc 05 (training) implements LAFTR head + inverse-frequency reweighting. This doc owns the embedder + aggregator only.
+doc 02 (data pipeline) gets new sources 12-18 for the historical news corpus. doc 04 imports the source registry. doc 06 (training) implements LAFTR head + inverse-frequency reweighting. This doc owns the embedder + aggregator only.
 
 ---
 
@@ -530,7 +530,7 @@ Qwen3-Embedding-4B was contrastive-trained with **Matryoshka Representation Lear
 | 512 | ~99.5% | 265 MB |
 | 2560 | 100% | 1.3 GB |
 
-We use **256-dim** as default. Already fits in our `Linear(256, D=384)` projection. Doc 02 / 03 don't need to change — same downstream tensor shapes.
+We use **256-dim** as default. Already fits in our `Linear(256, D=384)` projection. doc 04 / 03 don't need to change — same downstream tensor shapes.
 
 ### Throughput Math
 
@@ -752,7 +752,7 @@ articles_in_window = pd.merge_asof(
     all_news_table.sort_values("t_visible"),
     left_on="close_ts_utc", right_on="t_visible",
     direction="backward", allow_exact_matches=False,
-)  # all sources joined by t_visible discipline (see doc 01 V4 hard rule #6)
+)  # all sources joined by t_visible discipline (see doc 02 V4 hard rule #6)
 
 # For each article, produce:
 #   text_emb (256-d MRL-truncated Qwen3 output)
@@ -818,7 +818,7 @@ def compute_anchors(model, tokenizer) -> dict[str, np.ndarray]:
 ```
 data/
 ├── snapshots/
-│   └── v1_<hash>.parquet               ← raw joined data (doc 01)
+│   └── v1_<hash>.parquet               ← raw joined data (doc 02)
 ├── embeddings/
 │   ├── v1_<hash>_llama-3.1-8b.parquet  ← per-source embeddings, ~5GB
 │   └── v1_<hash>_meta.json             ← timestamp, model used, count

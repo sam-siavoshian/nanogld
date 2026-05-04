@@ -2,10 +2,10 @@
 
 ## YOU ARE THE QUANT SIZING AGENT
 
-You own the position sizing layer. You take model logits from doc 05 and produce the desired position multiplier (signed, clipped). You also implement the conformal calibration layer (V1 addition).
+You own the position sizing layer. You take model logits from doc 06 and produce the desired position multiplier (signed, clipped). You also implement the conformal calibration layer (V1 addition).
 
 **Read 00-OVERVIEW.md FIRST.**
-**Read 06-BACKTEST.md** for engine integration (Stage 2 plugs into backtest).
+**Read 08-BACKTEST.md** for engine integration (Stage 2 plugs into backtest).
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -44,7 +44,7 @@ tests/
 ### Files You DO NOT Touch
 
 - Anything outside `src/nanogld/sizing/`
-- The backtest engine (doc 06 owns) — you call its interface
+- The backtest engine (doc 08 owns) — you call its interface
 - Other doc files
 
 ### Stable Interface You Publish
@@ -54,7 +54,7 @@ from nanogld.sizing.stage2 import stage2_sizing
 from nanogld.sizing.conformal import ConformalSizer
 from nanogld.sizing.drawdown_breaker import DrawdownCircuitBreaker
 
-# Doc 06 (backtest) calls this per-bar:
+# doc 08 (backtest) calls this per-bar:
 size = stage2_sizing(
     probs: np.ndarray,                  # (3,) — softmax probs from model
     realized_vol_20d: float,            # annualized
@@ -65,7 +65,7 @@ size = stage2_sizing(
     position_limit: float = 1.0,
 ) -> float
 
-# Doc 09 (live) imports same interface
+# doc 11 (live) imports same interface
 ```
 
 ### Acceptance Criteria
@@ -86,7 +86,7 @@ size = stage2_sizing(
 
 ### V1 Critical Decisions (DO NOT REVERT)
 
-1. **bars_per_year = 3276** (propagated from doc 06). Annualization MUST be `sqrt(3276)`.
+1. **bars_per_year = 3276** (propagated from doc 08). Annualization MUST be `sqrt(3276)`.
 2. **Drawdown sign consistency** — store as NEGATIVE number (-0.15 = 15% DD). Use `<=` comparisons throughout.
 3. **Recovery rule** — exit halt mode when equity recovers above -10% line OR after 5 trading days flat (whichever first).
 4. **Probability calibration BEFORE Kelly-lite** — Guo et al. show NN's are overconfident, Kelly-lite amplifies it. Temperature scaling on val fold first.
@@ -96,8 +96,8 @@ size = stage2_sizing(
 ### Hand-off Protocol
 
 1. Update STATUS.md with: ablation table results, conformal coverage achieved, drawdown CB tested
-2. Doc 06 imports your `stage2_sizing` for backtest comparisons
-3. Doc 09 imports same function for live trading
+2. doc 08 imports your `stage2_sizing` for backtest comparisons
+3. doc 11 imports same function for live trading
 
 Now read the implementation specifics.
 
@@ -110,7 +110,7 @@ Now read the implementation specifics.
 
 ## CRITICAL CORRECTIONS (Nia verification)
 
-- ❌ `sqrt(3276)` annualization → ✅ **`sqrt(3276)`** (NYSE RTH only, NOT 24/7 calendar). Same bug as doc 06. Causes strategy to **under-bet by ~57%** if uncorrected (vol_mult comes out 2.31× too small).
+- ❌ `sqrt(3276)` annualization → ✅ **`sqrt(3276)`** (NYSE RTH only, NOT 24/7 calendar). Same bug as doc 08. Causes strategy to **under-bet by ~57%** if uncorrected (vol_mult comes out 2.31× too small).
 - ❌ Drawdown sign inconsistency (one block uses `<= -0.15`, another uses `> 0.15`) → ✅ canonicalize: drawdown stored as **negative number** (e.g. `-0.15` = 15% drawdown). Use `<=` comparisons throughout.
 - ❌ Recovery lockout at -15% halt → ✅ add explicit **re-entry rule**: resume sizing once equity recovers above the -10% line OR after 5 trading days at flat (whichever first)
 - ❌ MISSING probability calibration → ✅ **add temperature scaling** before Kelly-lite. Modern NNs systematically over-confident (Guo et al. arXiv:1706.04599). Without calibration, Kelly-lite amplifies bad probabilities. Single most important missing piece.
@@ -446,7 +446,7 @@ Run all 4 backtests with bootstrap CIs. If Stage 1.5b alone matches Stage 2, dro
 
 ## Backtest Comparison
 
-In doc 06, we compare:
+In doc 08, we compare:
 - **Stage 1** = always full size when not flat
 - **Stage 2** = formula above
 - **Vol-target only** (constant confidence weight) — to isolate Kelly-lite contribution

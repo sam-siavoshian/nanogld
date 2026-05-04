@@ -2,10 +2,10 @@
 
 ## YOU ARE THE FEATURE ENGINEER AGENT
 
-You own feature construction. You take immutable parquet snapshots from doc 01 + cached embeddings from doc 04 and produce the feature DataFrame that doc 05 (training) consumes.
+You own feature construction. You take immutable parquet snapshots from doc 02 + cached embeddings from doc 03 and produce the feature DataFrame that doc 06 (training) consumes.
 
 **Read 00-OVERVIEW.md FIRST.** Project context is there.
-**Read 01-DATA-PIPELINE.md schema section.** Your input is its output.
+**Read 02-DATA-PIPELINE.md schema section.** Your input is its output.
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -53,14 +53,14 @@ tests/
 
 ### Files You DO NOT Touch
 
-- `src/nanogld/data/` — doc 01 owns
-- `src/nanogld/embed/` — doc 04 owns
-- `src/nanogld/model/` — doc 03
+- `src/nanogld/data/` — doc 02 owns
+- `src/nanogld/embed/` — doc 03 owns
+- `src/nanogld/model/` — doc 05
 - Anything else in src/nanogld/
 
 ### Stable Interface You Publish
 
-`build_feature_table(snapshot_path, embeddings_path, anchors_path) -> pd.DataFrame` — returns DataFrame with columns specified in this doc's "Per-Bar Input Vector" section. Total **~1000 dims per bar after V1 dataset expansion (2026-05-04)** (was ~804). Channel-group count grows from ~14 → ~25 — model architecture (doc 03) absorbs this with a wider input projection layer; no arch change needed.
+`build_feature_table(snapshot_path, embeddings_path, anchors_path) -> pd.DataFrame` — returns DataFrame with columns specified in this doc's "Per-Bar Input Vector" section. Total **~1000 dims per bar after V1 dataset expansion (2026-05-04)** (was ~804). Channel-group count grows from ~14 → ~25 — model architecture (doc 05) absorbs this with a wider input projection layer; no arch change needed.
 
 ### Acceptance Criteria
 
@@ -98,13 +98,13 @@ Specifically:
 
 ### V1 Updates (May 2026)
 
-- News embedding dim changed: 4096 (earlier Llama-3.1-8B) → 256 (V1 Qwen3-Embedding-4B truncated via MRL). See doc 04 for details.
+- News embedding dim changed: 4096 (earlier Llama-3.1-8B) → 256 (V1 Qwen3-Embedding-4B truncated via MRL). See doc 03 for details.
 - Add 3 multi-dim sentiment features per news source (polarity / intensity / uncertainty) per arXiv:2603.11408.
 - Anchor-cosine pattern unchanged but now uses Qwen3 embeddings.
 
 ### V4 Leakage Audit Corrections (2026-05-04 — MANDATORY)
 
-5 Nia subagents verified every source. **Every fix below is a hard rule.** Read 01-DATA-PIPELINE.md "Verification Round 4" for the full list. Highlights for feature engineering:
+5 Nia subagents verified every source. **Every fix below is a hard rule.** Read 02-DATA-PIPELINE.md "Verification Round 4" for the full list. Highlights for feature engineering:
 
 1. **Bar visibility = bar END.** All `df.shift(1)` patterns in this doc assume bar-end indexing. With Alpaca's bar-START convention, the visibility column is `t_visible = bar.timestamp + 30min`. Re-read every `.shift(1)` in this doc as "shift to t_visible", not "shift to bar timestamp".
 2. **Replace `FEDFUNDS` with `DFF` for DAILY features.** FEDFUNDS is monthly. Doc references using `FEDFUNDS` as a daily series are wrong — switch to `DFF`. Keep `FEDFUNDS` only for monthly aggregates.
@@ -124,7 +124,7 @@ Specifically:
 When done:
 1. Update STATUS.md with feature DataFrame stats (rows, columns, class balance)
 2. Document any deviations from the spec in this doc's "Deviations" section
-3. Notify doc 05 (training) that feature pipeline is stable
+3. Notify doc 06 (training) that feature pipeline is stable
 
 Now read the implementation specifics below.
 
@@ -167,16 +167,16 @@ NUMERIC FEATURES (~232 dims):
 ├── WGC central bank flows          (~3 dims — total + YoY + isPositive)
 └── Calendar event features         (~10 dims — event proximity + cyclical sin/cos)
 
-NEWS EMBEDDINGS (V4: 1024 dims = 8 latent tokens × 128, see doc 04):
+NEWS EMBEDDINGS (V4: 1024 dims = 8 latent tokens × 128, see doc 03):
 └── Bar-conditioned aggregation of per-article embeddings from 12+ sources
     via Per-source PMA pre-pool → FiLM Q-Former (K=8) → Flamingo gate
 ```
 
 Sequence shape after stacking 64 bars: `(T=64, ~1000)`.
 
-After learned input projection `Linear(~1000, 384)`: `(T=64, 384)`. Then transformer (doc 03 unchanged — projection layer just gets ~75K extra params, trivial).
+After learned input projection `Linear(~1000, 384)`: `(T=64, 384)`. Then transformer (doc 05 unchanged — projection layer just gets ~75K extra params, trivial).
 
-Channel-group count for iTransformer-lite tokenization grows from ~14 → ~25 tokens (one token per channel group). Doc 03's `~14 channel-group tokens` line should be read as "≥14"; agents owning doc 03 may resize without architectural change.
+Channel-group count for iTransformer-lite tokenization grows from ~14 → ~25 tokens (one token per channel group). doc 05's `~14 channel-group tokens` line should be read as "≥14"; agents owning doc 05 may resize without architectural change.
 
 ## Category 1 — Price Features (12 dims)
 
@@ -325,7 +325,7 @@ def geo_features(df: pd.DataFrame, brent: pd.Series, wti: pd.Series, gpr: pd.Ser
     return out
 ```
 
-## Category 5 — News Embeddings (V4: 8 fused tokens × 128 dim = 1024 dims, see doc 04)
+## Category 5 — News Embeddings (V4: 8 fused tokens × 128 dim = 1024 dims, see doc 03)
 
 **V4 refactor (2026-05-04):** news pipeline expanded from 3 sources mean-pooled to 12+ sources per-article-embedded with bias-aware aggregation.
 
@@ -342,7 +342,7 @@ Per article, Qwen3-Embedding-4B (4-bit MLX, frozen) produces a 2560-dim vector �
 
 Plus the LAFTR adversarial head fights per-source bias (industry-bullish Kitco / dealer-bullish BullionVault / etc. don't trick the model).
 
-Doc 04 owns the source registry + aggregator. Doc 02 imports the aggregator and wires its output into the bar-level feature stream.
+doc 03 owns the source registry + aggregator. doc 04 imports the aggregator and wires its output into the bar-level feature stream.
 
 ## Category 6 — Equity ETF Basket (~72 dims) — V1 expansion 2026-05-04
 

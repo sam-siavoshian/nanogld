@@ -139,10 +139,10 @@ A from-scratch encoder-only transformer (~24-60M params) that predicts next-30mi
 
 **Still build from scratch** (the learning core):
 
-- The nanoGLD transformer architecture itself (RMSNorm, SwiGLU, attention, RoPE, channel-group tokens, news fuser) — doc 03
-- The vectorized backtest engine — doc 06
-- The sizing math (Kelly-lite × vol-target × conformal) — doc 07
-- The Live trading cycle (Alpaca SDK is fine; cycle orchestration is yours) — doc 09
+- The nanoGLD transformer architecture itself (RMSNorm, SwiGLU, attention, RoPE, channel-group tokens, news fuser) — doc 05
+- The vectorized backtest engine — doc 08
+- The sizing math (Kelly-lite × vol-target × conformal) — doc 09
+- The Live trading cycle (Alpaca SDK is fine; cycle orchestration is yours) — doc 11
 
 **Why this split:** the model architecture is what people will read on the X thread. They want to see transformer math written cleanly. Training infrastructure is plumbing — use the best library, document the choice.
 
@@ -160,7 +160,7 @@ A from-scratch encoder-only transformer (~24-60M params) that predicts next-30mi
 ## Architecture Spec (V1, locked May 2026)
 
 ```
-DATA PIPELINE (doc 01) — V1 expanded 2026-05-04
+DATA PIPELINE (doc 02) — V1 expanded 2026-05-04
 ├── Alpaca historical 30min GLD × 5y (free Basic tier, IEX feed since 2016)
 ├── Alpaca historical 30min ETF basket × 5y: SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU
 ├── Alpaca News API (Benzinga only — Reuters paywalled 2024)
@@ -181,7 +181,7 @@ DATA PIPELINE (doc 01) — V1 expanded 2026-05-04
 ├── Calendar event schedule (deterministic FOMC/CPI/NFP/GDP/JOLTS/PCE)
 └── Joined parquet with point-in-time discipline + 15min news latency
 
-FEATURE ENGINEERING (doc 02) — V1 expanded 2026-05-04
+FEATURE ENGINEERING (doc 04) — V1 expanded 2026-05-04
 ├── Existing: Price (12) + Risk/Vol (8) + Macro short (12) + Geo (10) = 42
 ├── NEW: Equity ETF features (~72) + Equity ratios incl. gold/silver, GDX/GLD (~9) = 81
 ├── NEW: Treasury curve features (~30) — levels + spreads + butterfly + real rates
@@ -197,7 +197,7 @@ FEATURE ENGINEERING (doc 02) — V1 expanded 2026-05-04
 ├── Labels: 3-class via 5bps threshold
 └── Z-score with rolling 1000-bar lookback + clip(-10, 10) — extended to 3276 for YoY-bearing macro features
 
-NEWS EMBEDDING (doc 04) — V4 expanded news pipeline + bias-aware aggregator
+NEWS EMBEDDING (doc 03) — V4 expanded news pipeline + bias-aware aggregator
 ├── Qwen3-Embedding-4B 4-bit MLX (Apache 2.0, ~18K tok/s on M4 mini)
 │   ├── 45× faster than Llama-3.1-8B mean-pool (earlier draft)
 │   ├── MTEB-en avg 74.6 (+10pts vs LLM2Vec)
@@ -214,7 +214,7 @@ NEWS EMBEDDING (doc 04) — V4 expanded news pipeline + bias-aware aggregator
 ├── Anchor-cosine semantic features — V4 anchors are HAND-CRAFTED TEMPLATES (no event provenance, fixes leakage)
 └── Per-article parquet storage (~500MB - 2GB depending on volume)
 
-MODEL ARCHITECTURE (doc 03)
+MODEL ARCHITECTURE (doc 05)
 ├── ENCODER-only (no causal mask — bidirectional context for classification)
 ├── ~14 channel-group tokens (NOT 64 per-bar tokens — iTransformer pattern)
 ├── 12 layers, D=384, num_heads=6, head_dim=64 (Llama 3 / Qwen 3 sweet spot)
@@ -226,7 +226,7 @@ MODEL ARCHITECTURE (doc 03)
 ├── A/B candidates: TDA (arXiv:2601.12145) + SyPE (arXiv:2602.08983)
 └── Mean-pool over tokens → Linear(D, 3) → softmax
 
-TRAINING (doc 05)
+TRAINING (doc 06)
 ├── Stage 1: SSL pretrain (MAE on masked bars, 10 epochs)
 │   [A/B Phase 2: MTS-JEPA arXiv:2602.04643 — replaces MAE]
 ├── Stage 2: Linear-probe (frozen encoder, 5-10 epochs head-only)
@@ -241,7 +241,7 @@ TRAINING (doc 05)
 ├── Cross-asset transfer (bonus): SPY → GLD via LLRD
 └── PyTorch 2.11.0, FP32, num_workers=0 (macOS fork issues)
 
-BACKTEST (doc 06)
+BACKTEST (doc 08)
 ├── Cost model: 5bps round-trip (sensitivity test 3/5/7/10 bps)
 ├── bars_per_year = 3276 (NYSE RTH only — NOT 17500)
 ├── Baselines: buy-hold, MA crossover, Donchian, DLinear, TSMixer, TimeMixer,
@@ -254,7 +254,7 @@ BACKTEST (doc 06)
 └── Hard rule: if 24-60M Transformer can't beat all baselines by ≥0.2 Sharpe,
     SHIP THE BASELINE (TLOB lesson: "MLP can match transformer")
 
-SIZING + EXITS (doc 08 supersedes doc 07 math, 2026-05-04)
+SIZING + EXITS (doc 10 supersedes doc 09 math, 2026-05-04)
 ├── Stage 1: fixed (1 share when argmax ≠ flat)
 ├── Stage 2: signed-score × quarter-Kelly × vol-target(cap=3.0) × conformal
 │   ├── signed score: s = P_up − P_down  (NOT max_prob − 0.33)
@@ -265,14 +265,14 @@ SIZING + EXITS (doc 08 supersedes doc 07 math, 2026-05-04)
 │   ├── continuous conformal shrinkage: set_size {1,2,3} → λ_conf {1.0, 0.5, 0.0}
 │   └── min_signed_signal = 0.05  (skip noise bars)
 │   GATE: full V1 stack must beat Stage 1 by ≥0.2 Sharpe OOS at 7bp cost
-├── Per-trade stop-loss (NEW, doc 08)
+├── Per-trade stop-loss (NEW, doc 10)
 │   ├── Hard ATR stop: 2.0 × ATR(14)_at_entry (frozen at entry)
 │   ├── Trailing ATR stop: 1.5 × ATR(14)_live, ratchet only
 │   ├── Time stop: 390 bars (30 RTH days × 13 30-min bars)
 │   ├── Re-entry gate: cooldown 1 bar + max_prob ≥ 0.55 OR argmax flipped
 │   ├── Session-flat at 15:55 ET, re-eligible 09:35 ET
 │   └── News blackout ±15 min around FOMC / CPI / NFP / GDP / JOLTS / PCE
-├── Profit-taking (NEW, doc 08)
+├── Profit-taking (NEW, doc 10)
 │   ├── NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate)
 │   ├── Model re-decision IS the TP (continuous re-rebalance)
 │   └── OPTIONAL signal-decay exit (gated: ship only if val A/B ≥30bp lift)
@@ -280,7 +280,7 @@ SIZING + EXITS (doc 08 supersedes doc 07 math, 2026-05-04)
 ├── Drawdown circuit-breaker (portfolio-level): -5% halve / -10% quarter / -15% halt
 └── Stage 3 (RL) deferred — gated, only built if Stage 2 leaves Sharpe on table
 
-LIVE TRADING (doc 09)
+LIVE TRADING (doc 11)
 ├── Macbook M4 Pro runs cron via launchd every 30min
 ├── StartCalendarInterval (NOT StartInterval=1800) — fires only RTH M-F
 ├── pmset -c sleep 0 disablesleep 1 (#1 prod risk if skipped)
@@ -291,7 +291,7 @@ LIVE TRADING (doc 09)
 ├── Idempotent reconciliation via get_all_positions
 └── Drift detection (entropy z-score + KL on argmax distribution)
 
-INFRA + SECURITY (doc 10)
+INFRA + SECURITY (doc 01)
 ├── PyTorch 2.11.0 pinned, uv.lock committed
 ├── gitleaks v8.24.2 pre-commit hook (BEFORE first commit)
 ├── ruff v0.11+ (replaces black entirely)
@@ -307,56 +307,42 @@ INFRA + SECURITY (doc 10)
 ## Doc Index
 
 
-| #   | Doc                 | Status                           | Owner agent role           | Implementation effort            |
-| --- | ------------------- | -------------------------------- | -------------------------- | -------------------------------- |
-| 00  | OVERVIEW (this)     | ✅                                | n/a (read-first reference) | n/a                              |
-| 01  | DATA-PIPELINE       | ✅ Complete + Nia-verified        | Data engineer              | 2-3 days                         |
-| 02  | FEATURE-ENGINEERING | ✅ Complete + Nia-verified        | Feature engineer           | 1 day                            |
-| 03  | MODEL-ARCHITECTURE  | ✅ V1                  | ML systems engineer        | 1 day                            |
-| 04  | NEWS-EMBEDDING      | ✅ V1 (Qwen3-Embedding-4B) | ML engineer                | 0.5 day setup + 30min precompute |
-| 05  | TRAINING-PROCEDURE  | ✅ V1 (Schedule-Free + F-SAM)     | ML engineer                | 1 day                            |
-| 06  | BACKTEST            | ✅ Complete + Nia-verified        | Quant engineer             | 1 day                            |
-| 07  | SIZING-STAGE2       | ⚠️ Sizing math superseded by doc 08 (kept as public-facing entry) | Quant engineer | 0.5 day |
-| 08  | EXITS-AND-RISK      | ✅ V1 spec (4 research agents, 2026-05-04) — sizing V2 + per-trade SL + profit-take logic | Quant risk engineer | 1.5 days |
-| 09  | LIVE-TRADING        | ✅ Complete (line 198 SL superseded by doc 08 client-side polling) | Production engineer        | 1.5 days                         |
-| 10  | INFRA-AND-SECURITY  | ✅ Complete + Nia-verified        | DevOps                     | 0.5 day (day 1 setup)            |
-| --  | STATUS              | ✅ Live tracker                   | n/a (anyone can update)    | n/a                              |
+| #   | Doc                 | Owner agent role           | Implementation effort            |
+| --- | ------------------- | -------------------------- | -------------------------------- |
+| 00  | OVERVIEW (this)     | n/a (read-first reference) | n/a                              |
+| 01  | INFRA-AND-SECURITY  | DevOps                     | 0.5 day (START HERE)             |
+| 02  | DATA-PIPELINE       | Data engineer              | 4-5 days                         |
+| 03  | NEWS-EMBEDDING      | ML engineer                | 1.5 day setup + ~120min precompute |
+| 04  | FEATURE-ENGINEERING | Feature engineer           | 1.5 days                         |
+| 05  | MODEL-ARCHITECTURE  | ML systems engineer        | 1 day                            |
+| 06  | TRAINING-PROCEDURE  | ML engineer                | 1 day                            |
+| 07  | CALIBRATION         | Calibration engineer       | 1 day                            |
+| 08  | BACKTEST            | Quant engineer             | 1 day                            |
+| 09  | SIZING-STAGE2       | Quant engineer             | 0.5 day                          |
+| 10  | EXITS-AND-RISK      | Quant risk engineer        | 1.5 days                         |
+| 11  | LIVE-TRADING        | Production engineer        | 1.5 days                         |
+| --  | STATUS              | n/a (anyone can update)    | n/a                              |
 
+**Reorder note (2026-05-04):** docs renumbered for sequential execution (one agent per doc, hand off when done). Old → new mapping: 10→01, 01→02, 04→03, 02→04, 03→05, 05→06, 11→07 (CALIBRATION new), 06→08, 07→09, 08→10, 09→11. Old `08-RL-STAGE3.md` was deleted May 1 (RL deferred to V2). Old `11-X-THREAD-AND-BLOG.md` deleted (owner writes himself).
 
-**Slot 08 reused 2026-05-04:** previously ear-marked `08-RL-STAGE3.md` (deleted May 1, speculative). Now hosts `08-EXITS-AND-RISK.md` covering the three pieces owner flagged May 4 (confidence sizing V2, per-trade stop-loss, profit-taking). RL deferred to V2. **Slot 11 still deleted** (X-thread + blog content — user writes himself).
+## Implementation Order — Sequential, One Agent Per Doc
 
-## Implementation Order (concurrent-friendly)
+Each agent starts only when previous agent has handed off. No overlap.
 
 ```
-Day 1 (single agent — DevOps):
-└── doc 10: repo setup + gitleaks + uv + pre-commit + .env structure
-    → unblocks everything
+Agent 01 → doc 01 INFRA-AND-SECURITY               (0.5 day)
+Agent 02 → doc 02 DATA-PIPELINE                    (4-5 days)
+Agent 03 → doc 03 NEWS-EMBEDDING                   (1.5 days + ~120min precompute)
+Agent 04 → doc 04 FEATURE-ENGINEERING              (1.5 days)
+Agent 05 → doc 05 MODEL-ARCHITECTURE               (1 day)
+Agent 06 → doc 06 TRAINING-PROCEDURE               (1 day)
+Agent 07 → doc 07 CALIBRATION                      (1 day)
+Agent 08 → doc 08 BACKTEST                         (1 day)
+Agent 09 → doc 09 SIZING-STAGE2                    (0.5 day)
+Agent 10 → doc 10 EXITS-AND-RISK                   (1.5 days)
+Agent 11 → doc 11 LIVE-TRADING                     (1.5 days)
 
-Day 2-4 (concurrent if 4 agents):
-├── doc 01: data pipeline (data eng — Alpaca + GDELT + FRED setup, 2-3 days)
-├── doc 03: model architecture skeleton (ML systems eng — code only, no training)
-├── doc 04: news embedder setup + first 1K bar A/B test (ML eng)
-└── doc 06: backtest engine on synthetic data (quant eng — verify math)
-
-Day 4-5 (depends on 01 + 04):
-├── doc 02: feature engineering on real cached data
-└── Continue 04: full 87K-bar embedding precompute (~30 min on M4 mini)
-
-Day 5-6 (depends on 02 + 03):
-└── doc 05: training procedure end-to-end on cached features
-
-Day 7-8 (depends on 03, 05, 06):
-├── Run all baselines (DLinear, TSMixer, TimeMixer, xLSTMTime, XGBoost)
-├── Run nanoGLD Stage 1 + Stage 2 sizing
-└── doc 06: full backtest report + bootstrap CIs + DSR
-
-Day 9-10 (depends on 03, 05, 07):
-├── doc 07: Stage 2 sizing + conformal calibration
-└── doc 09: live trading loop on Macbook (paper trading)
-
-Day 11-12: paper-trade soak, debug, polish
-
-Day 13-14: fund $100, switch to live, build-in-public X thread
+Total: ~17-19 days end-to-end. Detailed per-agent description in STATUS.md.
 ```
 
 ## Verification History
@@ -365,7 +351,7 @@ Day 13-14: fund $100, switch to live, build-in-public X thread
 - **Round 2 (architecture v3):** 7 Nia agents on transformer SOTA / time-series / multimodal / attention / small-data / empirical SOTA / MPS. Found 12 critical bugs (bars_per_year=17500 → 3276, decoder→encoder pivot, head_dim=32 too small, etc).
 - **Round 3 (2026 SOTA):** 6 Nia agents on May 2026 releases (Llama 4, Gemma 4, Qwen 3.5, embedding leaderboard, TS foundation models, architecture innovations, finance papers, training optimization). Major pivot: Llama-3.1-8B → Qwen3-Embedding-4B (45× faster). Schedule-Free AdamW replaces cosine + warmup. Forecast-collapse hard rule (NEVER MSE).
 - **Round 4 (V1 dataset expansion + leakage audit, 2026-05-04):** 5 Nia agents verified all sources for the V1 expansion AND audited every existing source for leakage. Found **17 high-severity issues**: bar timestamp = START not END, Alpaca News field = `created_at` not `published_at`, FEDFUNDS is monthly (need DFF), 6 GDELT theme codes refuted, GDELT buffer 30min not 15min, WGC URL was wrong (correct: gold.org/download/8052), WGC is monthly not quarterly, AI-GPR not real-time (30-day lag), GPR no vintage archive, pandas-ta look-ahead bugs (KAMA/Ichimoku/KST/DPO/TRIX/Vortex forbidden), CFTC 2025 shutdown gap, multi-symbol pagination interleaves, `adjustment="all"` is retroactive, WALCL Thursday 4:30pm release-time gating, ICSA Thursday 8:30am release-time gating, anchor-cosine source must precede train period, no `minutes_until_event` features. All fixes encoded as 17 hard rules + 28 mandatory tests in `tests/test_no_leakage.py`.
-- **Round 5 (news pipeline expansion + ML aggregation refactor, 2026-05-04):** 5 Nia agents verified the user's 10-source list (Kitco / Metals Daily / BullionVault / Investing.com / CNBC / Reuters / FT / Trading Economics / FXStreet / WGC) against live URLs + ToS + 10y archive depth, audited bias profiles, surveyed free 10y datasets, and researched multi-document aggregation SOTA from 2024-2026. **Key findings:** FT robots.txt explicitly bans ML training (legal blocker — skip). Reuters paywall + Reuters Connect enterprise-only (defer paid). FNSPID dataset (15.7M articles, 1999-2023, CC BY 4.0, on HF) is the biggest free win for filling pre-2021 gap. Kitco/BullionVault/Investing.com are all free-scrape with 10y depth. Central bank speeches (Fed/ECB/BIS) + government press (Treasury/CFTC) are public-domain (US 17 USC §105). Reddit Arctic Shift dumps free through 2026-04. Aggregation SOTA: per-source PMA + bar-conditioned FiLM Q-Former (K=8) + Flamingo gate is 2025-26 sweet spot (CMTF arXiv:2504.13522, FiCoTS arXiv:2512.00293). Bias debiasing recipe: LAFTR adversarial head (arXiv:1802.06309) + gradient reversal (arXiv:1505.07818) + inverse-frequency reweighting. Plan: 12+ news sources + 12 bias tiers + LAFTR head + new aggregator. Doc 04 effort 0.5d → 1.5d.
+- **Round 5 (news pipeline expansion + ML aggregation refactor, 2026-05-04):** 5 Nia agents verified the user's 10-source list (Kitco / Metals Daily / BullionVault / Investing.com / CNBC / Reuters / FT / Trading Economics / FXStreet / WGC) against live URLs + ToS + 10y archive depth, audited bias profiles, surveyed free 10y datasets, and researched multi-document aggregation SOTA from 2024-2026. **Key findings:** FT robots.txt explicitly bans ML training (legal blocker — skip). Reuters paywall + Reuters Connect enterprise-only (defer paid). FNSPID dataset (15.7M articles, 1999-2023, CC BY 4.0, on HF) is the biggest free win for filling pre-2021 gap. Kitco/BullionVault/Investing.com are all free-scrape with 10y depth. Central bank speeches (Fed/ECB/BIS) + government press (Treasury/CFTC) are public-domain (US 17 USC §105). Reddit Arctic Shift dumps free through 2026-04. Aggregation SOTA: per-source PMA + bar-conditioned FiLM Q-Former (K=8) + Flamingo gate is 2025-26 sweet spot (CMTF arXiv:2504.13522, FiCoTS arXiv:2512.00293). Bias debiasing recipe: LAFTR adversarial head (arXiv:1802.06309) + gradient reversal (arXiv:1505.07818) + inverse-frequency reweighting. Plan: 12+ news sources + 12 bias tiers + LAFTR head + new aggregator. doc 03 effort 0.5d → 1.5d.
 
 ## Empirical Bar (what success looks like)
 
@@ -477,44 +463,44 @@ If you spawn an agent and it disagrees with the doc, document the disagreement I
 | 2026-05-01 | Hard rule: NEVER MSE on returns                         | Forecast collapse, arXiv:2604.00064                                 |
 | 2026-05-01 | Add conformal prediction sizing                         | 30% lower decision loss, Wright 2026                                |
 | 2026-05-01 | Add xLSTMTime baseline                                  | Won 2026 finance benchmark                                          |
-| 2026-05-01 | Delete docs 08 (RL) + 11 (content)                      | Speculative + non-implementation                                    |
-| 2026-05-04 | Dataset expansion — 9 equity ETFs (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU), full Treasury curve + TIPS + breakevens (11 FRED), full macro bundle (19 FRED), CFTC COT weekly, WGC quarterly, calendar events | Owner directive — capture more market drivers (real rates, risk-on/off, sector rotation, gold-silver ratio, positioning extremes). Per-bar feature dim grows ~804 → ~1000. Doc 01 effort 2-3d → 4-5d. No model arch change. |
-| 2026-05-04 | Wrote `08-EXITS-AND-RISK.md` (4 parallel research agents — sizing / SL / TP / Forecast-to-Fill + Alpaca constraints). Supersedes doc 07 sizing math and doc 09 line 198 stop-loss. | Owner flagged 3 missing pieces. Findings: (1) Sizing formula in doc 07 was magnitude-only (`max_prob-0.33`), discards signed info, fragile `confidence_scale=3` guess, fabricated "30% lower decision loss" Wright 2026 citation. Replaced with signed score `s = P_up - P_down`, quarter-Kelly default, `vol_mult` capped at 3.0, EWMA+20d-floor σ_t, continuous conformal shrinkage. (2) Per-trade SL absent; literature (Kaminski-Lo, Han-Zhou-Zhu, F2F arXiv:2511.08571) and 5%-of-bars-with-news-tail-risk argue for wide ATR stop. Match F2F: 2.0×ATR14 hard + 1.5×ATR14 trail + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + news blackout. (3) NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit gated on val A/B ≥30bp lift. (4) Live: Alpaca rejects bracket orders for fractional positions (error 42210000); at $100 + GLD ~$200 every position is fractional, so stops enforced client-side via `cycle.py` polling. |
+| 2026-05-01 | Delete doc 10 (RL) + 11 (content)                      | Speculative + non-implementation                                    |
+| 2026-05-04 | Dataset expansion — 9 equity ETFs (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU), full Treasury curve + TIPS + breakevens (11 FRED), full macro bundle (19 FRED), CFTC COT weekly, WGC quarterly, calendar events | Owner directive — capture more market drivers (real rates, risk-on/off, sector rotation, gold-silver ratio, positioning extremes). Per-bar feature dim grows ~804 → ~1000. doc 02 effort 2-3d → 4-5d. No model arch change. |
+| 2026-05-04 | Wrote `10-EXITS-AND-RISK.md` (4 parallel research agents — sizing / SL / TP / Forecast-to-Fill + Alpaca constraints). Supersedes doc 09 sizing math and doc 11 line 198 stop-loss. | Owner flagged 3 missing pieces. Findings: (1) Sizing formula in doc 09 was magnitude-only (`max_prob-0.33`), discards signed info, fragile `confidence_scale=3` guess, fabricated "30% lower decision loss" Wright 2026 citation. Replaced with signed score `s = P_up - P_down`, quarter-Kelly default, `vol_mult` capped at 3.0, EWMA+20d-floor σ_t, continuous conformal shrinkage. (2) Per-trade SL absent; literature (Kaminski-Lo, Han-Zhou-Zhu, F2F arXiv:2511.08571) and 5%-of-bars-with-news-tail-risk argue for wide ATR stop. Match F2F: 2.0×ATR14 hard + 1.5×ATR14 trail + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + news blackout. (3) NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit gated on val A/B ≥30bp lift. (4) Live: Alpaca rejects bracket orders for fractional positions (error 42210000); at $100 + GLD ~$200 every position is fractional, so stops enforced client-side via `cycle.py` polling. |
 | 2026-05-04 | Verification Round 4 — 17 leakage findings encoded as hard rules + 28 mandatory tests | 5 Nia agents audited every source. Bar timestamp=START leakage, FEDFUNDS→DFF, 6 GDELT codes refuted, GDELT 30min buffer, WGC URL fix (monthly not quarterly), AI-GPR not real-time, anchor leakage rule, pandas-ta forbidden indicators, CFTC release-time gate, calendar-binary-only, etc. CI gate via `test_release_ts_lte_t_visible_all_rows`. |
-| 2026-05-04 | News pipeline expansion — 3 sources → 12+ sources + bias-aware LAFTR debiasing + V4 aggregator (per-source PMA + bar-conditioned FiLM Q-Former K=8 + Flamingo gate) | 5 Nia agents verified user's 10-source list + free-news datasets + multi-doc aggregation SOTA. Add Kitco/Investing.com/BullionVault/CNBC/FNSPID/central bank speeches/government press/Reddit/Kaggle. Forbid FT (robots.txt bans ML — legal). Defer Reuters/FXStreet/TE (paid). Skip Metals Daily (syndication dup). Source registry with 12 bias tiers + LAFTR adversarial head fights per-source prior. Aggregator upgrade (CMTF + FiCoTS 2025-26 papers): K=16→8, add bar-conditioned FiLM, add per-source PMA pre-pool. Per-article embedding (was per-source mean-pool). Doc 04 effort 0.5d → 1.5d. |
+| 2026-05-04 | News pipeline expansion — 3 sources → 12+ sources + bias-aware LAFTR debiasing + V4 aggregator (per-source PMA + bar-conditioned FiLM Q-Former K=8 + Flamingo gate) | 5 Nia agents verified user's 10-source list + free-news datasets + multi-doc aggregation SOTA. Add Kitco/Investing.com/BullionVault/CNBC/FNSPID/central bank speeches/government press/Reddit/Kaggle. Forbid FT (robots.txt bans ML — legal). Defer Reuters/FXStreet/TE (paid). Skip Metals Daily (syndication dup). Source registry with 12 bias tiers + LAFTR adversarial head fights per-source prior. Aggregator upgrade (CMTF + FiCoTS 2025-26 papers): K=16→8, add bar-conditioned FiLM, add per-source PMA pre-pool. Per-article embedding (was per-source mean-pool). doc 03 effort 0.5d → 1.5d. |
 
 
 ## File Layout (when implementation begins)
 
 ```
 ml-trading/  (gh repo create nanogld --public)
-├── pyproject.toml          (uv-managed, locked deps per doc 10)
+├── pyproject.toml          (uv-managed, locked deps per doc 01)
 ├── uv.lock
-├── .gitignore              (per doc 10 template)
-├── .pre-commit-config.yaml (gitleaks, ruff, hooks per doc 10)
-├── .github/workflows/      (CI smoke test per doc 10)
+├── .gitignore              (per doc 01 template)
+├── .pre-commit-config.yaml (gitleaks, ruff, hooks per doc 01)
+├── .github/workflows/      (CI smoke test per doc 01)
 ├── README.md               (project overview + reproduce instructions)
 ├── data/
-│   ├── raw/                (.gitignored, per doc 01)
+│   ├── raw/                (.gitignored, per doc 02)
 │   ├── snapshots/          (immutable hashed parquets)
-│   ├── embeddings/         (memmap fp16 .npy, per doc 04)
-│   └── anchors/            (.npz, per doc 02)
+│   ├── embeddings/         (memmap fp16 .npy, per doc 03)
+│   └── anchors/            (.npz, per doc 04)
 ├── src/nanogld/
-│   ├── data/               (doc 01: pipeline + joiner + golden fixture test)
-│   ├── features/           (doc 02: feature engineering + RevIN)
-│   ├── embed/              (doc 04: Qwen3 embedder + anchor cosines)
-│   ├── model/              (doc 03: tiny_trader_v4.py + baselines)
-│   ├── training/           (doc 05: walk-forward + Schedule-Free + F-SAM)
-│   ├── backtest/           (doc 06: vectorized engine + bootstrap)
-│   ├── sizing/             (doc 07: stage2 + conformal)
-│   ├── live/               (doc 09: Alpaca cron + drift detection)
+│   ├── data/               (doc 02: pipeline + joiner + golden fixture test)
+│   ├── features/           (doc 04: feature engineering + RevIN)
+│   ├── embed/              (doc 03: Qwen3 embedder + anchor cosines)
+│   ├── model/              (doc 05: tiny_trader_v4.py + baselines)
+│   ├── training/           (doc 06: walk-forward + Schedule-Free + F-SAM)
+│   ├── backtest/           (doc 08: vectorized engine + bootstrap)
+│   ├── sizing/             (doc 09: stage2 + conformal)
+│   ├── live/               (doc 11: Alpaca cron + drift detection)
 │   └── utils/              (shared: snapshot hashing, point-in-time helpers)
 ├── tests/
-│   ├── test_pit.py         (golden fixture for joiner — doc 01)
-│   ├── test_features.py    (no-leakage tests — doc 02)
-│   ├── test_model.py       (forward pass shapes — doc 03)
-│   ├── test_backtest.py    (cost model arithmetic — doc 06)
-│   └── test_sizing.py      (Kelly-lite formula — doc 07)
+│   ├── test_pit.py         (golden fixture for joiner — doc 02)
+│   ├── test_features.py    (no-leakage tests — doc 04)
+│   ├── test_model.py       (forward pass shapes — doc 05)
+│   ├── test_backtest.py    (cost model arithmetic — doc 08)
+│   └── test_sizing.py      (Kelly-lite formula — doc 09)
 ├── notebooks/
 │   ├── 01_explore_data.ipynb
 │   ├── 02_baseline_xgboost.ipynb
@@ -532,7 +518,7 @@ If two docs depend on each other:
 - Agent Y reads the interface from doc X, codes against it
 - If interface changes mid-implementation, agent who changes notifies via STATUS.md update + AskUserQuestion to user
 
-Example: doc 02 (features) consumes parquet from doc 01. Schema documented in doc 01 — doc 02 codes against it. If doc 01 changes schema, doc 02 must be notified.
+Example: doc 04 (features) consumes parquet from doc 02. Schema documented in doc 02 — doc 04 codes against it. If doc 02 changes schema, doc 04 must be notified.
 
 ## When Implementation Diverges from Doc
 

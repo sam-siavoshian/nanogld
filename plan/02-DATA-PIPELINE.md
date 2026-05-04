@@ -58,7 +58,7 @@ Owner directed expanding dataset to capture more market drivers. Approved scope:
 
 These are documented in "Open Questions / TODOs" at the bottom. Re-ask after V1 baseline lands.
 
-**New per-bar feature dim:** ~1000 (was ~804). Channel-group count grows from ~14 → ~25. Model architecture (doc 03) unchanged — input projection layer just gets wider (~75K extra params, trivial).
+**New per-bar feature dim:** ~1000 (was ~804). Channel-group count grows from ~14 → ~25. Model architecture (doc 05) unchanged — input projection layer just gets wider (~75K extra params, trivial).
 
 ---
 
@@ -185,7 +185,7 @@ V1 default: pull `adjustment="all"` for training (single split-adjusted history)
 
 ### Mandatory Test Suite for Leakage (`tests/test_no_leakage.py`)
 
-Doc 02 owns the implementation. The test list is the contract:
+doc 04 owns the implementation. The test list is the contract:
 
 ```python
 def test_bar_visibility_is_bar_end()                # §1
@@ -210,8 +210,8 @@ def test_cot_t_visible_is_friday_330pm_et()         # §15
 def test_cot_holiday_friday_uses_monday_release()   # §15
 def test_walcl_thursday_visibility_after_1630_et()  # §16
 def test_icsa_thursday_visibility_after_0830_et()   # §17
-def test_anchor_dates_precede_train_period()        # doc 02
-def test_no_minutes_until_event_features()          # doc 02
+def test_anchor_dates_precede_train_period()        # doc 04
+def test_no_minutes_until_event_features()          # doc 04
 def test_features_never_reference_close_t_plus_1()  # label hygiene
 def test_release_ts_lte_t_visible_all_rows()        # universal — catches §3, §4, §7, §15, §16, §17 simultaneously
 def test_shuffled_label_baseline_auc_near_50()      # global sanity check
@@ -340,16 +340,16 @@ tests/
 
 ### Files You DO NOT Touch
 
-- `src/nanogld/features/` — doc 02
-- `src/nanogld/embed/` — doc 04
-- `src/nanogld/model/` — doc 03
-- `src/nanogld/training/` — doc 05
+- `src/nanogld/features/` — doc 04
+- `src/nanogld/embed/` — doc 03
+- `src/nanogld/model/` — doc 05
+- `src/nanogld/training/` — doc 06
 - Any doc-NN.md other than this one
-- `.pre-commit-config.yaml`, `pyproject.toml`, `.gitignore` — doc 10 owns these (you can ASK them to add a dep, don't edit yourself)
+- `.pre-commit-config.yaml`, `pyproject.toml`, `.gitignore` — doc 01 owns these (you can ASK them to add a dep, don't edit yourself)
 
 ### Stable Interface You Publish (other docs read against this)
 
-`data/snapshots/v1_<hash>.parquet` with the schema documented in this doc's "Dataset Schema" section. Doc 02 reads this. Doc 04 reads this. If you change the schema, update this doc, ping STATUS.md, AskUserQuestion before shipping.
+`data/snapshots/v1_<hash>.parquet` with the schema documented in this doc's "Dataset Schema" section. doc 04 reads this. doc 03 reads this. If you change the schema, update this doc, ping STATUS.md, AskUserQuestion before shipping.
 
 ### Acceptance Criteria
 
@@ -368,7 +368,7 @@ You're done when:
 11. ✅ Calendar events parquet covers all 7 event types over 2021-2026
 12. ✅ A README in `data/` explains how another developer reproduces the pipeline
 
-Hand off to doc 02 (feature engineering) by updating STATUS.md with the snapshot hash + meta.json path.
+Hand off to doc 04 (feature engineering) by updating STATUS.md with the snapshot hash + meta.json path.
 
 ### Spawn Nia Agents When You Need To
 
@@ -1040,7 +1040,7 @@ CALENDAR_EVENTS = {
     "FOMC_minutes": load_fomc_minutes_dates(2021, 2026),  # ~40 events × 5y
 }
 
-# For each bar, compute event proximity features (doc 02 owns the feature side; doc 01 just persists the schedule).
+# For each bar, compute event proximity features (doc 04 owns the feature side; doc 02 just persists the schedule).
 calendar = build_calendar_dataframe(CALENDAR_EVENTS)
 calendar.to_parquet("data/raw/calendar_events_v1.parquet")
 ```
@@ -1073,7 +1073,7 @@ relevant = fnspid.filter(lambda x: x["symbol"] in {"GLD", "GDX", "SLV", "NEM", "
 relevant.to_parquet("data/raw/fnspid_gold_relevant.parquet")
 ```
 
-**Schema:** `[symbol, date, title, body, source, url, sentiment]`. Source field is one of `{Reuters, NASDAQ, Benzinga, Lenta, Cnnmoney, FT_unverified, Marketwatch, Yahoo}`. Map to `SOURCE_REGISTRY` (see doc 04).
+**Schema:** `[symbol, date, title, body, source, url, sentiment]`. Source field is one of `{Reuters, NASDAQ, Benzinga, Lenta, Cnnmoney, FT_unverified, Marketwatch, Yahoo}`. Map to `SOURCE_REGISTRY` (see doc 03).
 
 **License:** CC BY 4.0 — free with attribution. Cite arXiv:2402.06698 in README.
 
@@ -1124,7 +1124,7 @@ INVESTING_GOLD_URL = "https://www.investing.com/commodities/gold-news"
 # - GitHub: alvarobartt/investpy (Pandas-style historical lib)
 # - Apify: glitch_404/investing-scraper (commercial, 250K archive claim)
 
-# Cloudflare anti-bot is aggressive — use curl_cffi browser impersonation (already pinned in doc 01)
+# Cloudflare anti-bot is aggressive — use curl_cffi browser impersonation (already pinned in doc 02)
 def scrape_investing_gold(...):
     # Article schema: title, body, author, asset_tags (XAU/USD, GLD), pub_ts (minute precision)
     ...
@@ -1230,7 +1230,7 @@ Direct gold-labeled headlines. Small N but useful for training a gold-relevance 
 |---|---|
 | **Reuters Gold** | $1/wk paywall + Reuters Connect API enterprise-only ($5K-$50K+/yr). Plan: revisit when funded. CNBC syndicates Reuters wire for partial free coverage in the meantime. |
 | **Financial Times Gold** | **LEGAL BLOCKER** — `ft.com/robots.txt` explicitly prohibits ML/AI use. DO NOT scrape. Revisit only if FT Datamining License is licensed formally. |
-| **Trading Economics news** | News content is shallow + leaks Reuters wire (which we'd already have via CNBC syndication). Indicator API already in doc 01. |
+| **Trading Economics news** | News content is shallow + leaks Reuters wire (which we'd already have via CNBC syndication). Indicator API already in doc 02. |
 | **FXStreet** | Best minute-ts technicals-embedded news but B2B-paid via Acuity Trading. Add when budget allows. |
 | **Metals Daily** | Sharps Pixley aggregator — heavy syndication overlap with primary sources. Skip unless archive depth confirmed past 2-3y. |
 | **ACLED conflict events** | Geopolitical supplement to GDELT. Free for non-commercial only — Arena is commercial in V2+. Skip until license review. |
@@ -1414,7 +1414,7 @@ Total: **4-5 days** realistic (was 4 days pre-expansion; +1 day for ETF basket p
 
 - [ ] After `pip install`, verify `alpaca-py>=0.43,<1.0`, `yfinance==1.3.0`, `fredapi==0.5.2`, `google-cloud-bigquery>=3.40`
 - [ ] After GCP setup, verify dry-run estimate matches reality on a 1-month GKG slice (catches partition-prune mistakes early)
-- [x] Confirm `T5YIE` (breakeven) is what we want — V1 expansion settles this: pull BOTH T5YIE + T10YIE + T5YIFR. Doc 02 builds derived features from all three.
+- [x] Confirm `T5YIE` (breakeven) is what we want — V1 expansion settles this: pull BOTH T5YIE + T10YIE + T5YIFR. doc 04 builds derived features from all three.
 - [ ] Decide: do we backfill Brent/WTI 30m at all? Probably no — daily ffill is fine at our scale. Leave as 30m TODO if model regresses on smoothing.
 - [ ] AI-GPR daily index (https://www.matteoiacoviello.com/ai_gpr.html) — worth fetching as additional feature?
 - [ ] Verify all 9 ETFs in the basket (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU) return clean 5y of 30m bars on Alpaca free IEX feed before continuing — spawn Nia subagent if any fails.

@@ -2,11 +2,11 @@
 
 ## YOU ARE THE TRAINING ENGINEER AGENT
 
-You own the training loop. You take the model class from doc 03, the feature DataFrame from doc 02, and produce trained model checkpoints + walk-forward validation results.
+You own the training loop. You take the model class from doc 05, the feature DataFrame from doc 04, and produce trained model checkpoints + walk-forward validation results.
 
 **Read 00-OVERVIEW.md FIRST.**
-**Read 02-FEATURE-ENGINEERING.md** schema (input shape).
-**Read 03-MODEL-ARCHITECTURE.md** model class signature.
+**Read 04-FEATURE-ENGINEERING.md** schema (input shape).
+**Read 05-MODEL-ARCHITECTURE.md** model class signature.
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -51,19 +51,19 @@ checkpoints/                # gitignored
 
 ### Files You DO NOT Touch
 
-- `src/nanogld/model/` — doc 03 owns the architecture; you wire it into the training loop
-- `src/nanogld/embed/` — doc 04
-- `src/nanogld/features/` — doc 02
+- `src/nanogld/model/` — doc 05 owns the architecture; you wire it into the training loop
+- `src/nanogld/embed/` — doc 03
+- `src/nanogld/features/` — doc 04
 - `src/nanogld/backtest/`, `sizing/`, `live/` — downstream consumers
 
 ### Stable Interface You Publish
 
 ```python
-# Doc 06 (backtest) loads your checkpoints:
+# doc 08 (backtest) loads your checkpoints:
 checkpoint = torch.load("checkpoints/fold_3_seed_42_ema.pt", weights_only=True)
 model.load_state_dict(checkpoint['ema_state_dict'])
 
-# Doc 09 (live) loads the SAME format
+# doc 11 (live) loads the SAME format
 ```
 
 ### Acceptance Criteria
@@ -108,7 +108,7 @@ A/B gate: ≥0.1 Sharpe improvement OOS (val), seed-averaged 5 seeds.
 ### Hand-off Protocol
 
 1. Update STATUS.md with: best fold val accuracy, EMA checkpoint paths, training time, wandb workspace URL
-2. Notify doc 06 (backtest) that checkpoints are ready
+2. Notify doc 08 (backtest) that checkpoints are ready
 3. Document any deviations IN this doc
 
 Now read the implementation specifics.
@@ -237,13 +237,13 @@ For us: Earlier plan used MAE (reconstruct masked OHLCV). JEPA produces smoother
 
 Add as bonus experiment after baseline ships.
 
-#### 6. Conformal Prediction for sizing (deployment-side, see doc 07)
+#### 6. Conformal Prediction for sizing (deployment-side, see doc 09)
 
-Wrap softmax probabilities with split-conformal calibration on a held-out slice. Produces calibrated prediction intervals. Use **interval width** to size positions. See doc 07 for full implementation.
+Wrap softmax probabilities with split-conformal calibration on a held-out slice. Produces calibrated prediction intervals. Use **interval width** to size positions. See doc 09 for full implementation.
 
 #### 7. Multi-Dimensional Sentiment (per arXiv:2603.11408, March 2026)
 
-Paper found on WTI crude (gold-adjacent commodity): **intensity + uncertainty matter MORE than polarity.** Currently doc 02 conflates these — embed news, project, done.
+Paper found on WTI crude (gold-adjacent commodity): **intensity + uncertainty matter MORE than polarity.** Currently doc 04 conflates these — embed news, project, done.
 
 Update: extract THREE sentiment scores per news item using LLM prompts:
 - Polarity: -1 (bearish) to +1 (bullish)
@@ -268,8 +268,8 @@ SSL pretrain:   MAE on masked bars
                 [A/B with MTS-JEPA — Phase 2, higher ceiling]
 Linear-probe → LLRD fine-tune: 
 Cross-asset transfer: SPY→GLD as bonus experiment after baseline
-Conformal calibration: split-CP on val fold for sizing (deploy-side, see doc 07)
-Loss:           3-class CE + label smoothing 0.1 (NEVER MSE on returns — forecast-collapse rule from doc 03)
+Conformal calibration: split-CP on val fold for sizing (deploy-side, see doc 09)
+Loss:           3-class CE + label smoothing 0.1 (NEVER MSE on returns — forecast-collapse rule from doc 05)
 Mixed precision: FP32 weights (; FP8 H100-only, unstable for small models)
 ```
 
@@ -278,7 +278,7 @@ Mixed precision: FP32 weights (; FP8 H100-only, unstable for small models)
 - Sophia optimizer — at <150M scale ties Signum, barely beats AdamW
 - FP8 mixed precision — H100-only, unstable for small models per NVIDIA + Axolotl 2025-2026 docs
 - Knowledge distillation from foundation model — no useful teacher available yet
-- Pure Mamba / xLSTM as backbone — covered in doc 03 (skip at our scale)
+- Pure Mamba / xLSTM as backbone — covered in doc 05 (skip at our scale)
 
 ## SMALL-DATA TRAINING STACK V1 (kept for reference)
 

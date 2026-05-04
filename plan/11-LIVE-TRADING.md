@@ -5,7 +5,7 @@
 You own the live trading cycle. You build the launchd cron + Alpaca integration that actually runs the trained model on real money on the Macbook M4 Pro every 30 minutes during market hours.
 
 **Read 00-OVERVIEW.md FIRST.**
-**Read 03-MODEL-ARCHITECTURE.md** + **05-TRAINING-PROCEDURE.md** + **07-SIZING-STAGE2.md** — you load checkpoints, call sizer.
+**Read 05-MODEL-ARCHITECTURE.md** + **06-TRAINING-PROCEDURE.md** + **09-SIZING-STAGE2.md** — you load checkpoints, call sizer.
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -31,7 +31,7 @@ src/nanogld/live/
 ├── alerts.py               # Pushover or Telegram or email
 ├── alpaca_client.py        # Wrappers around alpaca-py for orders + positions + news
 ├── reconcile.py            # Pre-cycle: cancel pending orders + compute delta from current
-├── feature_window.py       # Build feature vector for current bar (uses doc 02 funcs)
+├── feature_window.py       # Build feature vector for current bar (uses doc 04 funcs)
 ├── runtime.py              # Caffeinate + sleep prevention helpers
 └── cli.py                  # `python -m nanogld.live cycle`
 
@@ -56,19 +56,19 @@ tests/
 ### Stable Interface You Consume
 
 ```python
-# From doc 03/05:
+# From doc 05/05:
 from nanogld.model.tiny_trader import nanoGLDV1
 model = nanoGLDV1(...)
 model.load_state_dict(torch.load("checkpoints/fold_3_seed_42_ema.pt")['ema_state_dict'])
 
-# From doc 07:
+# From doc 09:
 from nanogld.sizing.stage2 import stage2_sizing
 from nanogld.sizing.conformal import ConformalSizer
 
-# From doc 04:
+# From doc 03:
 from nanogld.embed.live_embed import embed_news_live
 
-# From doc 02:
+# From doc 04:
 from nanogld.features.build import build_feature_window_for_bar
 ```
 

@@ -254,9 +254,9 @@ python_version = "3.11"
 
 1. **`.gitignore` is the FIRST commit.** Before any code, before any test, before any data.
 2. **`gitleaks` pre-commit MUST be installed before first commit.** Verify by trying to commit a fake key.
-3. **`.env.live` NEVER appears in dev shell.** Sourced ONLY by launchd (doc 09).
+3. **`.env.live` NEVER appears in dev shell.** Sourced ONLY by launchd (doc 11).
 4. **GCP service account JSON keys are FORBIDDEN.** Use `gcloud auth application-default login` for dev (ADC), Workload Identity Federation for CI.
-5. **`maximum_bytes_billed` cap on every BigQuery query** (doc 01).
+5. **`maximum_bytes_billed` cap on every BigQuery query** (doc 02).
 6. **Custom BigQuery quota: 1024 GiB/day per user** (Google Console).
 7. **Pin every dep version.** No `>=` without upper bound.
 8. **`uv.lock` committed**, no manual `requirements.txt`.
@@ -449,7 +449,7 @@ Future-you reproducing in 12 months runs `uv sync` and gets identical environmen
 
 ## Snapshot Hashing Discipline
 
-Per docs 01 and 02, every dataset/embedding artifact gets a SHA256 hash in its filename. Schema:
+Per doc 02 and 02, every dataset/embedding artifact gets a SHA256 hash in its filename. Schema:
 
 ```
 data/snapshots/v1_<sha256_first_16>.parquet
@@ -521,7 +521,7 @@ Catches yfinance / Alpaca API breakage before you find out via a failed live cyc
 
 - ✅ CI workflow YAMLs designed (above)
 - ✅ Stay 100% local — Modal/cloud rejected per pivot
-- ✅ State store: SQLite at `~/.config/nanogld/state.sqlite` (designed in doc 09)
+- ✅ State store: SQLite at `~/.config/nanogld/state.sqlite` (designed in doc 11)
 - ✅ Checkpoint backup: weekly cron uploads best checkpoint to HF Hub (private repo, ~30MB compressed)
 - ✅ Monitoring: wandb workspace (public for X-thread), `~/Library/Logs/nanogld.log` for ops, weekly manual review
 

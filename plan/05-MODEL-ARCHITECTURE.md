@@ -5,7 +5,7 @@
 You own the nanoGLD transformer code itself. You write the model from scratch in raw PyTorch (Karpathy mode — NO HuggingFace `Trainer`, NO Unsloth, NO TRL). You implement the V1 architecture spec locked below.
 
 **Read 00-OVERVIEW.md FIRST.** Project context.
-**You DO NOT train.** That's doc 05. You build the model class + verify forward pass shapes.
+**You DO NOT train.** That's doc 06. You build the model class + verify forward pass shapes.
 **Also read 00-OVERVIEW.md "Execution Mode" section before coding.**
 
 ### Execution Mode (short — full rules in 00-OVERVIEW.md)
@@ -32,7 +32,7 @@ src/nanogld/model/
 ├── revin.py                # Reversible Instance Norm per channel-group (Kim ICLR 2022)
 ├── news_fuser.py           # Perceiver-Resampler-lite + Flamingo-gated cross-attn
 ├── tiny_trader.py          # Main nanoGLDV1 class wiring everything together
-├── baselines.py            # DLinear, TSMixer, TimeMixer, xLSTMTime stubs (full impls in doc 06)
+├── baselines.py            # DLinear, TSMixer, TimeMixer, xLSTMTime stubs (full impls in doc 08)
 └── cli.py                  # `python -m nanogld.model summary` prints param count + arch table
 
 tests/
@@ -46,12 +46,12 @@ tests/
 
 - Anything in `src/nanogld/data/`, `features/`, `embed/`, `training/`, `backtest/`, `sizing/`, `live/`
 - Doc files other than this one
-- Training scripts (you provide the model class; doc 05 writes the loop)
+- Training scripts (you provide the model class; doc 06 writes the loop)
 
 ### Stable Interface You Publish
 
 ```python
-# Other docs (esp. doc 05) instantiate:
+# Other docs (esp. doc 06) instantiate:
 model = nanoGLDV1(
     numeric_dim: int = 36,
     n_news_queries: int = 8,
@@ -102,14 +102,14 @@ Especially:
 6. **head_dim = 64** (D=384, num_heads=6). NOT head_dim=32 (Llama 3 / Qwen consensus).
 7. **dropout = 0.2** (small data regime). NOT 0.1.
 8. **Param count math: ~24-60M depending on D and num_layers.** Don't over-engineer; verify with summary.
-9. **Loss is set in doc 05 (3-class CE).** Your model outputs raw logits — never apply softmax in forward.
+9. **Loss is set in doc 06 (3-class CE).** Your model outputs raw logits — never apply softmax in forward.
 
 ### A/B Candidates (post-baseline)
 
 These are coded as alternative components but NOT used in the default V1 build:
 - **TDA in 1 attention block** — replace `CausalSelfAttention` middle block, compare val Sharpe
 - **SyPE replaces RoPE** — single hyperparameter swap
-- **Muon optimizer** for 2D weights (doc 05 owns this — model code unchanged)
+- **Muon optimizer** for 2D weights (doc 06 owns this — model code unchanged)
 
 If your default model fails to converge, before going A/B, first verify:
 - Param count within 5% of spec
@@ -119,7 +119,7 @@ If your default model fails to converge, before going A/B, first verify:
 ### Hand-off Protocol
 
 1. Update STATUS.md with: model param count, forward pass benchmark, MPS dtype, any deviations
-2. Notify doc 05 (training) that model class is stable
+2. Notify doc 06 (training) that model class is stable
 3. Document A/B candidate results IN this doc once they're tested
 
 Now read the architecture spec below.
@@ -146,7 +146,7 @@ Paper proves: on weak-conditional-structure data (financial returns), Transforme
 - Quantile regression loss (alternative for continuous magnitude estimation)
 - NEVER squared loss on raw returns
 
-This is now a hard rule across docs 03, 05, 06. Loss-function choice is no longer up for debate.
+This is now a hard rule across doc 05, doc 06, doc 08. Loss-function choice is no longer up for debate.
 
 #### B. **per-head gating + value residuals** (IMU-1 paper, arXiv:2602.02522, Jan 2026) — adopt
 
@@ -248,7 +248,7 @@ def apply_partial_rope(x, cos, sin, frac: float = 0.10):
 
 **Most nanoGLD-relevant 2026 finding.** Large-scale benchmark on 2010-2025 daily futures across commodities, equities, bonds, FX. **xLSTM has highest breakeven transaction cost buffer and best downside-adjusted Sharpe** of all sequence models tested. Pure Transformer underperforms.
 
-**Implication:** add xLSTM (xLSTMTime — separate paper, code released 2025) as a **mandatory baseline** alongside DLinear, TSMixer, TimeMixer. Doc 06 update.
+**Implication:** add xLSTM (xLSTMTime — separate paper, code released 2025) as a **mandatory baseline** alongside DLinear, TSMixer, TimeMixer. doc 08 update.
 
 If our 24-60M Transformer can't beat xLSTM at ~10M params on val Sharpe, ship xLSTM. Same logic as TLOB's "MLP matches transformer" finding from earlier draft.
 
@@ -287,7 +287,7 @@ Optimizer:       SAM ρ=0.05 wrapping AdamW
                  [A/B candidate] NorMuon — IMU-1 paper, free at our scale
 EMA weights:     decay=0.999 
 Regularization:  Dropout 0.2 + stochastic depth 0.15 + label smoothing 0.1 
-Mandatory baselines (doc 06 — UPDATED):
+Mandatory baselines (doc 08 — UPDATED):
   • DLinear (~10K params)
   • TSMixer (~2M)
   • TimeMixer (~5M)
@@ -301,7 +301,7 @@ Mandatory baselines (doc 06 — UPDATED):
 > 
 > Per arXiv:2604.00064 (March 2026): on weak-conditional-structure data, Transformer expressivity increases variance without reducing bias. Squared-loss training is provably worse than linear baselines on majority of windows in noisy financial regimes.
 
-This rule propagates to docs 05 and 06. Already aligned (we use 3-class CE).
+This rule propagates to doc 06 and 06. Already aligned (we use 3-class CE).
 
 ### A/B Test Hierarchy (when implementation begins)
 
@@ -333,7 +333,7 @@ The 5 corrections from previous Nia rounds stand. PLUS major architecture pivots
 
 6. **RevIN instance norm per channel-group on input** — Kim et al. ICLR 2022. ~half of PatchTST's empirical gains came from this single trick.
 
-7. **Two-stage training**: SSL pretrain (MLM on same 5y unlabeled) → linear-probe → LLRD fine-tune. Documented 25-50% gain on small-data classification. See doc 05.
+7. **Two-stage training**: SSL pretrain (MLM on same 5y unlabeled) → linear-probe → LLRD fine-tune. Documented 25-50% gain on small-data classification. See doc 06.
 
 8. **Skip Time-LLM / Chronos / Lag-Llama / TimesFM as backbone** — Tan et al. NeurIPS 2024 (arXiv:2406.16964) ablation showed ablating the LLM matches Time-LLM. None of the foundation models cleanly ingest 804-dim multivariate input with news embeddings.
 
@@ -341,7 +341,7 @@ The 5 corrections from previous Nia rounds stand. PLUS major architecture pivots
    - DLinear (1-layer linear) — sanity floor
    - TSMixer (~2M MLP-mixer) — TLOB paper showed MLP can match transformer
    - TimeMixer (~5M, multi-scale MLP)
-   - XGBoost (committed config, doc 06)
+   - XGBoost (committed config, doc 08)
 
    **If nanoGLD 24M doesn't beat all 4 by ≥0.2 Sharpe OOS, SHIP THE BASELINE.**
 
