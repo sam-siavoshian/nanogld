@@ -34,6 +34,10 @@ LONDON: Final = ZoneInfo("Europe/London")
 START_DATE_UTC: Final = datetime(2021, 4, 24, tzinfo=UTC)
 END_DATE_UTC: Final = datetime(2026, 4, 24, tzinfo=UTC)
 
+# Naive variants for SDKs (Alpaca/yfinance) that want tz-unaware defaults.
+START_DATE_NAIVE: Final = START_DATE_UTC.replace(tzinfo=None)
+END_DATE_NAIVE: Final = END_DATE_UTC.replace(tzinfo=None)
+
 # Bar interval = 30 minutes RTH. 13 bars per RTH session; ~3276 per year.
 BAR_INTERVAL_MIN: Final = 30
 
