@@ -23,6 +23,34 @@ You were assigned ONE doc in this folder. You will:
 
 ---
 
+## README Update Rule (READ THIS — owner explicitly demanded)
+
+The repo `README.md` is **AI slop until proven otherwise.** It was written before any code shipped. Treat every claim, number, architecture detail, and bullet inside it as a hypothesis, not a fact.
+
+**You MAY update README.md if and ONLY if ALL of these are true:**
+
+1. You shipped a real, runnable artifact (code, checkpoint, report, benchmark) that the README references or should reference.
+2. You have a finding, number, or fact that is **10000% verified** — reproducible from the codebase, with a test or report producing it, with a citation if it depends on external sources.
+3. The current README claim about that thing is **wrong, missing, or outdated** in a way that misleads a reader.
+4. Your update **replaces a hypothesis with a measured truth**, not a hypothesis with a different hypothesis.
+
+**You MAY NOT update README.md to:**
+
+- Reword for vibes, tone, or "polish"
+- Add features you have not built yet
+- Add metrics you have not measured (no Sharpe numbers, no accuracy numbers, no hit rates until they exist in a committed report file)
+- Add decorative diagrams, headings, or sections
+- Change the architecture description because the spec evolved on paper — the spec lives in `plan/`, not the README
+- Insert your own marketing voice
+
+**The README's journey from slop to real artifact = the journey from `plan/` → trained checkpoints → reported, reproducible numbers.** Each verified finding earns its line in the README. No findings, no edits.
+
+**Format rule when you do update:** every numerical claim cites the file path or report that produced it (e.g. `Sharpe 1.23 — see reports/v1_<sha>_backtest.md`). Every architectural claim cites the file path that implements it (e.g. `RMSNorm — src/nanogld/model/rms_norm.py`). If you cannot point at a file, the claim is not ready for the README.
+
+**One commit per real finding.** Commit message format: `docs(readme): replace <hypothesis> with verified <finding> — see <evidence path>`.
+
+If unsure whether your finding clears the bar, AskUserQuestion before editing the README. The owner would rather see five short verified lines than fifty unverified ones.
+
 ---
 
 ## Execution Mode (Every Agent — Read Before Coding)
