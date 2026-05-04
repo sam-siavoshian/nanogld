@@ -46,7 +46,175 @@ Owner directed expanding dataset to capture more market drivers. Approved scope:
 
 These are documented in "Open Questions / TODOs" at the bottom. Re-ask after V1 baseline lands.
 
-**New per-bar feature dim:** ~1700-1800 (was ~804). Channel-group count grows from ~14 → ~25-30. Model architecture (doc 03) unchanged — input projection layer just gets wider (~1M extra params, trivial).
+**New per-bar feature dim:** ~1000 (was ~804). Channel-group count grows from ~14 → ~25. Model architecture (doc 03) unchanged — input projection layer just gets wider (~75K extra params, trivial).
+
+---
+
+## Verification Round 4 (2026-05-04) — Source Corrections + Leakage Audit
+
+**5 Nia subagents** verified every source against live APIs/docs. Found **17 high-severity issues** that would silently leak future information into the model. **Every issue below MUST be implemented.** Hard rules.
+
+### CRITICAL CORRECTIONS (silent killers)
+
+**1. Alpaca bar `t` is bar START not bar END.** Bar with `t=09:30:00` covers half-open interval `[09:30, 10:00)`. OHLCV reflects all trades in that window. **A 30m bar at `t=09:30` is NOT safe to use as a feature for any decision before `t + 30min = 10:00`.**
+
+```python
+# WRONG — leaks 30 min of future
+features.iloc[T] = bars.iloc[T].close   # bar `t=09:30` close knows trades through 10:00
+
+# RIGHT — define visibility
+bars["t_visible"] = bars["timestamp"] + pd.Timedelta(minutes=30)
+features = features.merge_asof(bars, left_on="t_visible", direction="backward",
+                               allow_exact_matches=False)
+```
+
+Apply identically to GLD AND all 9 ETFs.
+
+**2. Alpaca News field is `created_at` (NOT `published_at`).** The `published_at` field does not exist. Use `created_at` only. Never join on `updated_at` (drifts forward on edits — guaranteed leak).
+
+```python
+NEWS_LATENCY_MIN = 1   # 60s safety buffer
+news["t_visible"] = news["created_at"] + pd.Timedelta(minutes=NEWS_LATENCY_MIN)
+# NEVER join on news["updated_at"]
+```
+
+**3. FEDFUNDS is MONTHLY, not daily.** Replace with `DFF` (Effective Federal Funds Rate, daily) for any daily PIT signal. Keep FEDFUNDS only for monthly aggregates.
+
+**4. FRED `realtime_start` is DATE-PRECISE, not timestamp-precise.** Need static `release_tod_et` lookup per series. Bar at 07:00 ET on date D MUST NOT use a series that publishes at 08:30 ET on date D, even though both have `realtime_start = D`.
+
+```python
+# Static release-time table — built from BLS/BEA/Fed schedules
+FRED_RELEASE_TOD_ET = {
+    "DGS3MO": time(16, 15),  # H.15 daily ~4:15 PM ET
+    "DGS6MO": time(16, 15),
+    "DGS2":   time(16, 15),
+    "DGS5":   time(16, 15),
+    "DGS10":  time(16, 15),
+    "DGS30":  time(16, 15),
+    "DFII5":  time(16, 15),
+    "DFII10": time(16, 15),
+    "T5YIE":  time(16, 15),
+    "T10YIE": time(16, 15),
+    "T5YIFR": time(16, 15),
+    "DTWEXBGS": time(16, 15),  # H.10
+    "VIXCLS": time(8, 37),     # CBOE close + FRED next-morning ingest (defensive)
+    "DCOILBRENTEU": time(16, 0),  # EIA spot
+    "DCOILWTICO": time(16, 0),
+    "UNRATE": time(8, 30),     # BLS Employment Situation, 1st Friday
+    "PAYEMS": time(8, 30),
+    "ICSA":   time(8, 30),     # DOL Thursday
+    "CCSA":   time(8, 30),
+    "JTSJOL": time(10, 0),     # BLS JOLTS
+    "CPIAUCSL": time(8, 30),   # BLS CPI mid-month
+    "CPILFESL": time(8, 30),
+    "PCEPI":  time(8, 30),     # BEA Personal Income
+    "PCEPILFE": time(8, 30),
+    "GDPC1":  time(8, 30),     # BEA GDP — QUARTERLY!
+    "INDPRO": time(9, 15),     # Fed G.17 mid-month
+    "RSAFS":  time(8, 30),     # Census mid-month
+    "HOUST":  time(8, 30),
+    "UMCSENT": time(10, 0),    # UMich
+    "M2SL":   time(13, 0),     # H.6 ~1:00 PM ET
+    "WALCL":  time(16, 30),    # H.4.1 Thursday — CRITICAL: a Thursday RTH-close 16:00 bar must NOT use this week's level
+    "RRPONTSYD": time(13, 30), # NY Fed TOMO
+    "DFF":    time(9, 0),      # NY Fed next-business-day
+    "FEDFUNDS": time(9, 0),    # Monthly aggregate, posted ~1st BD of next month
+    "SOFR":   time(8, 0),      # NY Fed previous-BD
+}
+
+def feature_visible_at(series_id: str, observation_date: date, now_et: datetime) -> bool:
+    """Returns True iff the value is publicly available at now_et."""
+    release_dt = datetime.combine(observation_date + timedelta(days=1), FRED_RELEASE_TOD_ET[series_id], tzinfo=ZoneInfo("America/New_York"))
+    return now_et >= release_dt
+```
+
+**5. CPI/PCE annual seasonal-factor revisions silently rewrite 5y of history.** Every February (CPI) and August (PCE), BLS/BEA rebenchmarks seasonal factors. ALFRED captures revision rows with distinct `realtime_start`. **MUST use vintage queries** (`get_series_all_releases`), NEVER current snapshot. Same applies to UNRATE annual revision and PAYEMS annual benchmark (Q1).
+
+**6. GDELT theme codes — 6 REFUTED, must remove or fix:**
+
+| Original code | Status | Fix |
+|---|---|---|
+| `EPU_CATS_MONETARY_POLICY` | REFUTED | Remove — not in GKG-MASTER-THEMELIST |
+| `EPU_POLICY_FEDERAL_RESERVE` | REFUTED | Remove |
+| `EPU_UNCERTAINTY` | REFUTED | Remove |
+| `EPU_ECONOMY_HISTORIC` | REFUTED | Remove |
+| `TAX_WEAPONS_BOMB` | REFUTED | Replace with `TAX_WEAPONS` (canonical) |
+| `WB_2432_FRAGILITY` | REFUTED | Replace with `WB_2432_FRAGILITY_CONFLICT_AND_VIOLENCE` |
+
+**7. GDELT publication latency = 30min, not 15min.** GDELT 2.0 publishes every 15 min, but slot `15:00-15:15` lands ~15:30 UTC and timestamps reflect article scrape times within the slot. Use `news.DATE <= T_close - 30min` (was 15min). Bump `NEWS_LATENCY_MIN = 30` for GDELT.
+
+**8. WGC URL was WRONG.** Actual:
+- Quarterly time series since 2000: `https://www.gold.org/download/8052`
+- Latest official reserves: `https://www.gold.org/download/7739`
+
+WGC is **MONTHLY**, not quarterly. ~2-month IMF reporting lag. **NO PUBLIC VINTAGE ARCHIVE** — must self-snapshot weekly into immutable store.
+
+**9. AI-GPR daily index is NOT real-time** — 30-day lag confirmed (today=2026-05-04, latest row = 2026-03-31). Treat as monthly with ~30-day lag, NOT same-day.
+
+**10. GPR monthly has no vintage archive** — Caldara/Iacoviello revise history when methodology updates (e.g., 2026-04-24 revision). Self-snapshot weekly with fetch-date keying for honest backtests.
+
+**11. pandas-ta has confirmed look-ahead bugs** (`bukosabino/ta#181`): KAMA, Ichimoku (`visual=True`), KST, DPO, TRIX, Vortex. Forbid these. RSI / MACD / BBANDS proper are causal IF `min_periods` respected and no `bfill`. Add growing-window-stability test for every indicator: `f(close[:N])[-1] == f(close[:N+k])[N-1]` for k in [1, 5, 50].
+
+**12. Multi-symbol Alpaca pagination INTERLEAVES symbols.** Returned page is sorted by symbol first, then timestamp. A partial page is NOT all-symbols-up-to-T. **MUST drain all pages before constructing time-aligned panel.**
+
+**13. `adjustment="all"` is retroactive.** Today's split-adjusted history embeds future split knowledge into past dates. For BACKTESTING:
+- Either use `asof=<as_of_date>` parameter to retrieve historically-adjusted snapshots, OR
+- Pull `raw` prices + corporate actions feed and apply adjustments forward only up to simulated decision time.
+
+V1 default: pull `adjustment="all"` for training (single split-adjusted history) but acknowledge in DEVIATION section. Real fix is forward-only adjustment.
+
+**14. CFTC 2025 government shutdown.** Caused multi-month gap in COT publication (announcements 9138-25 + 9147-25). Some 2025 weeks have irregular release cadence. Either skip those weeks in training OR explicitly flag with `irregular_release=True`. Verify each row's release date against CFTC Special Announcements page.
+
+**15. CFTC contract identifier**: `GOLD - COMMODITY EXCHANGE INC.`, contract code `088691`. Confirmed exact string. Holiday-Friday → Monday release.
+
+**16. WALCL Thursday 4:30 PM ET release.** A Thursday RTH-close (16:00) bar MUST NOT use that week's level. Use prior week's. Strict timestamp comparator, not date.
+
+**17. ICSA Thursday 8:30 AM ET embargoed release.** Bar at 09:30 RTH open OK, bar at 08:00 pre-market NOT.
+
+### Mandatory Test Suite for Leakage (`tests/test_no_leakage.py`)
+
+Doc 02 owns the implementation. The test list is the contract:
+
+```python
+def test_bar_visibility_is_bar_end()                # §1
+def test_news_uses_created_at_not_updated_at()      # §2
+def test_news_t_visible_buffer_60s()                # §2
+def test_dff_replaces_fedfunds_for_daily()          # §3
+def test_fred_release_tod_table_complete()          # §4
+def test_fred_uses_alfred_realtime_period()         # §5
+def test_fred_pit_cache_matches_alfred_api()        # §5
+def test_gdelt_theme_codes_in_master_list()         # §6
+def test_gdelt_buffer_30min_not_15()                # §7
+def test_gdelt_uses_file_publish_ts()               # §7
+def test_wgc_url_is_correct_self_snapshot()         # §8
+def test_aigpr_treated_as_monthly_lag()             # §9
+def test_gpr_uses_self_snapshot_not_live()          # §10
+def test_no_pandas_ta_kama_ichimoku_kst_dpo_trix()  # §11
+def test_indicators_growing_window_stability()      # §11
+def test_multisymbol_pagination_drained()           # §12
+def test_no_split_adjusted_leakage_in_backtest()    # §13
+def test_cftc_2025_shutdown_gap_handled()           # §14
+def test_cot_t_visible_is_friday_330pm_et()         # §15
+def test_cot_holiday_friday_uses_monday_release()   # §15
+def test_walcl_thursday_visibility_after_1630_et()  # §16
+def test_icsa_thursday_visibility_after_0830_et()   # §17
+def test_anchor_dates_precede_train_period()        # doc 02
+def test_no_minutes_until_event_features()          # doc 02
+def test_features_never_reference_close_t_plus_1()  # label hygiene
+def test_release_ts_lte_t_visible_all_rows()        # universal — catches §3, §4, §7, §15, §16, §17 simultaneously
+def test_shuffled_label_baseline_auc_near_50()      # global sanity check
+def test_universe_static_no_delistings()            # survivorship
+```
+
+**Highest-leverage test:** `test_release_ts_lte_t_visible_all_rows` — single assertion catches §3, §4, §7, §15, §16, §17 simultaneously if every source carries an explicit `release_ts` column.
+
+### Hard Rule (V1)
+
+> Every feature row carries a `t_visible: pd.Timestamp` column representing "earliest moment this row was publicly available." Every join uses `t_visible <= prediction_time` with strict `<` (no exact matches). Any source that does not produce `t_visible` is forbidden.
+
+This rule is enforced by `test_release_ts_lte_t_visible_all_rows` and is a CI gate.
+
+---
 
 **Decision rule (re-run before you start coding):**
 ```bash
@@ -293,8 +461,10 @@ bars = bars.loc["GLD"] if "GLD" in bars.index.get_level_values(0) else bars
 **Schema validation (must run before using):**
 - Columns: `[open, high, low, close, volume, trade_count, vwap]`
 - Timestamps strictly monotonic UTC
+- **CRITICAL: `timestamp` is bar START — bar at `t=09:30:00Z` covers `[09:30, 10:00)` half-open interval**
 - ~13 RTH bars/day × 252 days/yr × 5 yr ≈ **16K rows** (not 87K — yfinance/futures math doesn't apply)
 - Expect occasional NaN/missing bars on IEX feed (low volume)
+- **Visibility rule (V1 hard rule):** `t_visible = timestamp + 30min`. Use `t_visible` everywhere downstream, never `timestamp`.
 
 **Free Basic tier limits:**
 - Historical depth: back to **2016** (5y from 2026 is fine)
@@ -329,6 +499,8 @@ news_df = news_client.get_news(req).df
 - Historical depth: back to **2015**
 - Real-time on free tier (no 15-min gate — only PRICE data has the gate)
 - Symbol-filtered query works for GLD
+- **CRITICAL: field is `created_at` (NOT `published_at` — does not exist).** Never join on `updated_at` (drifts forward on edits → guaranteed leak).
+- **Visibility rule (V1 hard rule):** `t_visible = created_at + 60s` (safety buffer for wire-clock skew).
 
 ## Source 3 — GDELT 2.0 GKG via BigQuery (NOT events table)
 
@@ -367,14 +539,14 @@ FROM `gdelt-bq.gdeltv2.gkg_partitioned` AS g
 WHERE g._PARTITIONTIME BETWEEN TIMESTAMP('2021-04-24') AND TIMESTAMP('2026-04-24')
   AND TranslationInfo = ''                         -- English-only v1
   AND (
-    -- GOLD-related (CORRECTED theme codes)
+    -- GOLD-related (verified against GKG-MASTER-THEMELIST.TXT, 2026-05-04)
     REGEXP_CONTAINS(g.V2Themes, r'WB_2936_GOLD|ECON_GOLDPRICE|WB_2937_SILVER|SLFID_MINERAL_RESOURCES')
-    -- MONETARY (verified)
-    OR REGEXP_CONTAINS(g.V2Themes, r'ECON_INTEREST_RATES|ECON_INFLATION|ECON_CENTRALBANK|EPU_CATS_MONETARY_POLICY|EPU_POLICY_FEDERAL_RESERVE|WB_1235_CENTRAL_BANKS|WB_444_MONETARY_POLICY|EPU_UNCERTAINTY')
-    -- CONFLICT (CORRECTED — original codes don't exist)
-    OR REGEXP_CONTAINS(g.V2Themes, r'ARMEDCONFLICT|WB_2433_CONFLICT_AND_VIOLENCE|WB_2432_FRAGILITY|TERROR|SANCTIONS|TAX_WEAPONS_BOMB|MARITIME_INCIDENT')
-    -- ECONOMIC STRESS (replacement for non-existent ECON_RECESSION)
-    OR REGEXP_CONTAINS(g.V2Themes, r'EPU_ECONOMY_HISTORIC|ECON_BANKRUPTCY|ECON_TRADE_DISPUTE|ECON_DEBT')
+    -- MONETARY (verified — 4 EPU codes REFUTED in V4 audit; removed)
+    OR REGEXP_CONTAINS(g.V2Themes, r'ECON_INTEREST_RATES|ECON_INFLATION|ECON_CENTRALBANK|WB_1235_CENTRAL_BANKS|WB_444_MONETARY_POLICY')
+    -- CONFLICT (V4 corrections: WB_2432_FRAGILITY -> WB_2432_FRAGILITY_CONFLICT_AND_VIOLENCE; TAX_WEAPONS_BOMB -> TAX_WEAPONS)
+    OR REGEXP_CONTAINS(g.V2Themes, r'ARMEDCONFLICT|WB_2433_CONFLICT_AND_VIOLENCE|WB_2432_FRAGILITY_CONFLICT_AND_VIOLENCE|TERROR|SANCTIONS|TAX_WEAPONS|MARITIME_INCIDENT')
+    -- ECONOMIC STRESS (V4: EPU_ECONOMY_HISTORIC REFUTED — removed)
+    OR REGEXP_CONTAINS(g.V2Themes, r'ECON_BANKRUPTCY|ECON_TRADE_DISPUTE|ECON_DEBT')
   );
 ```
 
@@ -417,11 +589,13 @@ WHERE pub_ts_utc BETWEEN TIMESTAMP('2024-01-01') AND TIMESTAMP('2024-12-31');
 
 1. **UTC only.** All GDELT timestamps UTC. Convert in pandas only AFTER pulling, never in SQL on the partition column (kills pruning).
 2. **`_PARTITIONTIME` filter required for partition pruning.** Filter on `DATE` column does NOT prune.
-3. **15-min batching delay.** GDELT publishes every 15 minutes; events appear in BigQuery ~15-45 min after wall clock.
+3. **30-min batching delay (V4 update).** GDELT 2.0 publishes every 15 minutes, but slot `15:00-15:15` lands ~15:30 UTC and timestamps inside reflect article scrape times within the slot. **Use 30-min buffer, not 15-min.** `news.DATE <= T_close - 30min`.
 4. **Multiple events per article.** ONE `SOURCEURL` → many event rows (one per Actor1-action-Actor2 dyad). Dedupe on URL in features.
 5. **`V2Themes` is semicolon-delimited with comma char-offsets.** Use `REGEXP_CONTAINS`, not equality.
 6. **Single accidental `SELECT * FROM gkg` (non-partitioned) = 21 TB scan = $130 if billing on.** Always set `maximum_bytes_billed`.
-7. **Multilingual.** Filter `TranslationInfo = ''` for English-only v1.
+7. **Multilingual.** Filter `TranslationInfo = ''` (empty string for English-only originals — `IS NULL` is wrong, column is populated).
+8. **DATE field semantics (V4):** `DATE` is the article's published date per V2.1 codebook, NOT URL crawl time and NOT BigQuery availability time. Article was on the open web at `DATE`. BigQuery row appears 15-60 min later. Conservative: gate on `t_visible = DATE + 30min` AND require `_PARTITIONTIME <= bar_close_utc` for the BigQuery-availability semantic.
+9. **Visibility rule (V1 hard rule):** `t_visible = max(DATE + 30min, _PARTITIONTIME)`. Use this everywhere.
 
 ## Source 4 — FRED + ALFRED (vintage-correct macro)
 
@@ -485,16 +659,17 @@ Growth + sentiment (5):
 | `HOUST` | Housing Starts | Monthly | ~mid-month |
 | `UMCSENT` | University of Michigan Consumer Sentiment | Monthly | ~end of month, prelim mid-month |
 
-Money + Fed (5):
-| Series ID | Description | Frequency | Release lag |
-|-----------|-------------|-----------|-------------|
-| `M2SL` | M2 Money Supply | Weekly Tuesday | ~2 weeks |
-| `WALCL` | Total Fed Assets (Fed balance sheet) | Weekly Wednesday | ~1 day |
-| `RRPONTSYD` | Overnight Reverse Repo Outstanding | Daily | ~1 day |
-| `FEDFUNDS` | Effective Federal Funds Rate (monthly avg) | Monthly | ~1 day after month |
-| `SOFR` | Secured Overnight Financing Rate | Daily | ~1 day |
+Money + Fed (6 — V4 added DFF, kept FEDFUNDS for monthly aggregates):
+| Series ID | Description | Frequency | Release time | Notes |
+|-----------|-------------|-----------|--------------|-------|
+| `M2SL` | M2 Money Supply | Monthly (NOT weekly — V4 correction) | ~1:00 PM ET 4th Tuesday | H.6 release |
+| `WALCL` | Total Fed Assets (Fed balance sheet) | Weekly Wednesday level | Thursday ~4:30 PM ET | H.4.1 — Thu RTH-close 16:00 bar must NOT use this week's level |
+| `RRPONTSYD` | Overnight Reverse Repo | Daily | ~1:30 PM ET | NY Fed TOMO |
+| `DFF` | **Daily** Effective Fed Funds Rate (V4 — replaces FEDFUNDS for daily features) | Daily BD | Next BD ~9:00 AM ET | H.15 |
+| `FEDFUNDS` | Monthly avg Fed Funds Rate (kept for monthly aggregates ONLY) | Monthly | ~1st BD next month | DO NOT use as daily — would silently use a value that does not exist until first BD of next month |
+| `SOFR` | Secured Overnight Financing Rate | Daily | Next BD ~8:00 AM ET | NY Fed |
 
-**Total: 34 FRED series (vs 7 in pre-expansion plan).** Breakdown: 6 nominal curve + 5 TIPS/breakevens + 2 FX/vol + 2 oil + 5 labor + 4 inflation + 5 growth + 5 money/Fed = 34.
+**Total: 35 FRED series (V4 update; vs 7 in pre-expansion plan).** Breakdown: 6 nominal curve + 5 TIPS/breakevens + 2 FX/vol + 2 oil + 5 labor + 4 inflation + 5 growth + 6 money/Fed = 35.
 
 **Critical:** ALL series use ALFRED `get_series_all_releases` → groupby tail(1) for vintage discipline. Inflation/GDP/labor monthly prints get heavily revised; using non-vintage data = look-ahead leak that destroys validity.
 
@@ -549,11 +724,11 @@ FRED_SERIES_V1 = [
     "CPIAUCSL", "CPILFESL", "PCEPI", "PCEPILFE",
     # Growth + sentiment
     "GDPC1", "INDPRO", "RSAFS", "HOUST", "UMCSENT",
-    # Money + Fed
-    "M2SL", "WALCL", "RRPONTSYD", "FEDFUNDS", "SOFR",
+    # Money + Fed (V4: DFF added — daily fed funds; FEDFUNDS kept for monthly aggregates only)
+    "M2SL", "WALCL", "RRPONTSYD", "DFF", "FEDFUNDS", "SOFR",
 ]
 
-# 34 series total. 34 calls × 0.5s sleep = ~17s wall. ALFRED cubes ~3 MB each = ~100-120 MB.
+# 35 series total. 35 calls × 0.5s sleep = ~18s wall. ALFRED cubes ~3 MB each = ~100-120 MB.
 for series_id in FRED_SERIES_V1:
     df_all = fred.get_series_all_releases(series_id)
     df_all.to_parquet(f"data/raw/fred_{series_id.lower()}_all_releases.parquet")
@@ -597,29 +772,47 @@ brent_daily = yf.Ticker("BZ=F", session=session).history(period="5y", interval="
 wti_daily = yf.Ticker("CL=F", session=session).history(period="5y", interval="1d")
 ```
 
-**Pin: `yfinance==1.3.0`** in `pyproject.toml`. v1.3.0 fixed an April 2026 dividends breakage; do not auto-upgrade.
+**Pin: `yfinance==1.3.0`** in `pyproject.toml`. v1.3.0 fixed an April 2026 dividends breakage; do not auto-upgrade. (V4 verified: 1.4.x not yet released.)
 
-**Pitfalls:**
+**Pitfalls (V4 audit):**
 - 30m bars **capped at 60 days** by Yahoo — never going to work for 5y. We don't try.
-- BZ=F and CL=F are continuous front-month futures. Yahoo handles rolls but injects phantom returns at roll dates. For our use (daily features only, ffilled to 30min), the noise is acceptable.
-- Brent trades on ICE (UK calendar), WTI on NYMEX (US calendar). Different holidays. Use `pandas_market_calendars` to align sessions.
+- BZ=F and CL=F are continuous front-month futures. Yahoo handles rolls but injects phantom returns at roll dates. yfinance does NOT mitigate this. Either use back-adjusted contracts or filter roll-day returns yourself.
+- Brent trades on ICE (UK calendar, close 8:00 PM London = 15:00/16:00 ET), WTI on NYMEX (US calendar, close 5:00 PM CT = 17:00/18:00 ET). Different holidays. Use `pandas_market_calendars` to align sessions.
+- **`period="5y"` includes today's PARTIAL bar.** Live test: returns last index = `2026-05-04 13:00 ET` for queries before close. For training, drop today's row. For inference, mark current-day OHLC `provisional=True` and use yesterday's settled close as the lagged feature.
+- **`.history()` returns timezone `America/New_York`** (NOT UTC, NOT exchange-local). Yahoo pre-converts to ET. So a 14:00 ET 30m bar for BZ=F covers 14:00-14:30 ET = 19:00-19:30 London time. Document and convert to UTC immediately on ingest.
+- **Lag Brent by ≥1 bar** when used as a feature for US RTH sessions — Brent close lands AFTER GLD close, so same-bar joining leaks future Brent info into past US bars.
+- **Visibility rule (V1 hard rule):** `t_visible = settlement_ts_per_contract` (CL ~14:30 ET, BZ ~15:00 ET in summer). Daily settlements only. No 30m treatment.
 
-## Source 6 — GPR Index (Caldara & Iacoviello, monthly)
+## Source 6 — GPR Index (Caldara & Iacoviello, monthly) — V4 CORRECTED
 
 ```python
 import pandas as pd
 
-# Live download URL (verified Apr 2026)
+# Live download URL (V4 verified 2026-05-04 — file has 1516 rows, 1900-01 to 2026-04, 115 columns)
 GPR_URL = "https://www.matteoiacoviello.com/gpr_files/data_gpr_export.xls"
 
-# Cache locally — only updates monthly
-gpr = pd.read_excel(GPR_URL)
-gpr.to_parquet("data/raw/gpr_monthly.parquet")
+# AI-GPR DAILY URL (V4 verified — but data lags ~30 days, NOT real-time)
+AIGPR_DAILY_URL = "https://www.matteoiacoviello.com/ai_gpr_files/ai_gpr_data_daily.csv"
+
+# Cache locally with FETCH-DATE keying (no public vintage archive — methodology revisions
+# silently rewrite history; e.g. 2026-04-24 revision expanded bilateral index)
+def fetch_and_snapshot_gpr():
+    fetch_ts = datetime.utcnow().isoformat()
+    for name, url in [("monthly", GPR_URL), ("aigpr_daily", AIGPR_DAILY_URL)]:
+        content = requests.get(url, timeout=60).content
+        sha = hashlib.sha256(content).hexdigest()[:16]
+        path = f"data/raw/gpr/{name}_{fetch_ts}_{sha}.bin"
+        Path(path).write_bytes(content)
 ```
 
-Update cadence: monthly batch, daily resolution within batch, ~1 month publication lag. Plan feature pipeline around this lag.
+**Update cadence and visibility (V4):**
+- **Monthly GPR:** ~3-7 days lag into new month. Visibility = day 7 of month t+1.
+- **AI-GPR daily: NOT real-time. ~30-day lag.** Today (2026-05-04) latest = 2026-03-31. Treat as monthly with ~30-day lag, OR contact authors for live feed.
+- **No public vintage archive.** Caldara/Iacoviello revise history when methodology updates. Self-snapshot weekly with fetch-date keying. For backtests, key features by snapshot fetch date — never by current download.
 
-Bonus: AI-GPR daily index (LLM-generated, 1960-present) at https://www.matteoiacoviello.com/ai_gpr.html. Worth using as higher-resolution feature.
+**Pitfalls (V4):**
+- "AI-GPR daily" name is misleading — it's a CSV updated infrequently, not a daily feed. Do NOT use as same-day feature.
+- Treat both files as needing weekly self-snapshot for vintage discipline.
 
 ## Source 7 — RSS Feeds (live trading cycle ONLY, no historical)
 
@@ -698,11 +891,18 @@ for sym in ETF_BASKET:
 - Same row count as GLD (~16K bars per 5y).
 - Aligned on the same NYSE 30min calendar — joins cleanly without resampling.
 
-## Source 9 — CFTC COT (Commitments of Traders, weekly gold futures)
+## Source 9 — CFTC COT (Commitments of Traders, weekly gold futures) — V4 CORRECTED
+
+**V4 corrections:**
+- Contract code confirmed `088691`, contract name = `GOLD - COMMODITY EXCHANGE INC.`
+- Historical zip URL pattern is NOT stable — must parse `cftc.gov/MarketReports/CommitmentsofTraders/HistoricalCompressed/index.htm` at build time to extract per-year zip filenames. Do NOT hardcode `com_disagg_txt_{year}.zip`.
+- Backup data path (Socrata): `https://publicreporting.cftc.gov/Commitments-of-Traders/Disaggregated-Futures-Only/72hh-3qpy` if zip URLs break.
+- **2025 government shutdown caused multi-month publication gap.** Non-Friday catch-up cadence through early 2026. Verify each row's release date against CFTC Special Announcements page; flag irregular releases with `irregular_release=True`.
+- Holiday-Friday → Monday release. Read schedule, do NOT compute Friday-from-report-date.
 
 Source: https://www.cftc.gov/dea/futures/deacmesf.htm — weekly CSV/TXT, free, public.
 
-Every Friday 3:30 PM ET, CFTC publishes positions as of the previous Tuesday 4:00 PM ET. Disaggregated COT report gives non-commercial (large speculator) net longs, commercials, and open interest. For COMEX gold futures, the contract identifier is `GOLD - COMMODITY EXCHANGE INC.` (CFTC market code 088691).
+Every Friday 3:30 PM ET (sharp; empirically file write often lags 5-15 min), CFTC publishes positions as of the previous Tuesday 4:00 PM ET. Disaggregated COT report gives managed money / commercial / nonreportable net longs and open interest.
 
 ```python
 import pandas as pd
@@ -735,17 +935,20 @@ cot.to_parquet("data/raw/cftc_cot_gold_weekly.parquet")
 ```
 
 **Critical fields to extract (per arXiv:2305.05186 + CFTC docs):**
-- `oi_total` — open interest in contracts
-- `mm_net_long` — managed money net long (large spec extreme = contrarian signal)
-- `mm_pct_oi_long`, `mm_pct_oi_short` — % of OI by category
-- `comm_net_long` — commercial (producer/hedger) net long
-- `nonrep_net_long` — non-reportable (small spec) net long
-- `report_date_ts` — Tuesday 4 PM ET reference date (UTC = Tue 21:00)
-- `release_ts` — Friday 3:30 PM ET publication time (UTC = Fri 19:30 / 20:30 DST-dependent)
+- `Open_Interest_All` — open interest in contracts
+- `M_Money_Positions_Long_All`, `M_Money_Positions_Short_All` — managed money longs/shorts
+- `Prod_Merc_Positions_Long_All`, `Prod_Merc_Positions_Short_All` — commercial (producer/merchant)
+- `NonRept_Positions_Long_All`, `NonRept_Positions_Short_All` — non-reportable (small spec)
+- `Report_Date_as_YYYY-MM-DD` — Tuesday 4 PM ET reference date
+- Derived `release_ts` — Friday 3:30 PM ET (or next BD if Friday is a holiday) + 30min safety buffer
+
+(Field names contain UNDERSCORES, not spaces — V4 correction.)
 
 **Point-in-time discipline for COT:**
-- Feature visible at bar T must satisfy `release_ts < T_close`. NOT `report_date_ts < T_close` (that leaks ~3 days).
-- For Tue afternoon prints to be visible, the next bar to consume them is the one closing AFTER Fri 3:30 PM ET (so first US RTH bar Mon 09:30 onward, since Fri 15:30 < 16:00 close).
+- Feature visible at bar T must satisfy `release_ts < T_close`. NOT `report_date < T_close` (that leaks ~3 trading days).
+- Conservative gate: `release_ts = next_friday_after(report_date_tuesday).at(20:00 UTC)` (3:30 PM ET + 30 min buffer; UTC = 19:30 winter / 20:30 summer; pick conservative 20:00 UTC).
+- Holiday-Friday: roll to next BD's 20:00 UTC.
+- 2025 shutdown gap: rows in that window get `irregular_release=True`; either drop or train with explicit indicator.
 
 **Pitfalls:**
 - File format changed format in 2017 (legacy → disaggregated). Use disaggregated for full 5y.
@@ -755,33 +958,51 @@ cot.to_parquet("data/raw/cftc_cot_gold_weekly.parquet")
 
 **Storage: ~260 weekly rows × 5y × ~20 fields = <1 MB.**
 
-## Source 10 — World Gold Council (central bank quarterly flows)
+## Source 10 — World Gold Council (central bank flows) — V4 CORRECTED
 
-Source: https://www.gold.org/goldhub/data/quarterly-central-bank-statistics — free CSV/Excel quarterly download. Country-level central bank net gold purchases.
+**V4 corrections (2026-05-04 audit):**
+- WGC is **MONTHLY**, not quarterly (V1 plan was wrong)
+- Direct URLs (no form gate):
+  - Quarterly time series since 2000: `https://www.gold.org/download/8052`
+  - Latest official reserves: `https://www.gold.org/download/7739`
+- Release lag is ~2 months (IMF IFS reporting cascade)
+- **NO PUBLIC VINTAGE ARCHIVE** — WGC overwrites the latest snapshot in place. Each release contains REVISIONS of prior months as more countries report to IMF. Without self-snapshotting we leak future revisions into past dates.
 
 ```python
-WGC_CENTRAL_BANK_URL = "https://www.gold.org/download/file/XXXX/cb-flows.csv"  # verify exact URL via /browse before coding
+WGC_QUARTERLY_TIMESERIES = "https://www.gold.org/download/8052"
+WGC_LATEST_RESERVES      = "https://www.gold.org/download/7739"
 
-# Slow signal — quarterly, ~6-week release lag
-wgc = pd.read_csv(WGC_CENTRAL_BANK_URL)
-# Aggregate to total + top-N countries (China, Russia, India, Turkey, Singapore, Poland — verified largest buyers 2020-2025)
-wgc.to_parquet("data/raw/wgc_central_bank_quarterly.parquet")
+def fetch_and_snapshot_wgc():
+    """Pull both files, store with retrieval timestamp into immutable cache.
+    Run weekly via cron. Each downloaded file becomes a vintage row.
+    """
+    fetch_ts = datetime.utcnow().isoformat()
+    for name, url in [("quarterly_ts", WGC_QUARTERLY_TIMESERIES),
+                      ("latest_reserves", WGC_LATEST_RESERVES)]:
+        content = requests.get(url, timeout=60).content
+        sha = hashlib.sha256(content).hexdigest()[:16]
+        path = f"data/raw/wgc/{name}_{fetch_ts}_{sha}.xlsx"
+        Path(path).write_bytes(content)
+    # Maintain index keyed by fetch_ts for vintage lookups during backtests
 ```
 
-**Schema:**
-- `quarter_end` (YYYY-Qn)
-- `release_ts` (estimated +6 weeks from quarter end — verify via WGC press release dates)
-- `country` (per-country net purchase, tonnes)
-- `net_purchase_total_tonnes` (global aggregate)
+**Vintage discipline (mandatory):**
+- For training, key each WGC feature to the snapshot file that existed at `t_visible`.
+- Self-snapshot WEEKLY — fast-reporters reveal data within days, slow-reporters within months.
+- Conservative gate: `release_ts = first_business_day(report_month + 2_months) at 12:00 UTC` (London noon).
 
-**Point-in-time discipline:** feature visible at bar T must satisfy `release_ts < T_close`. WGC publishes the quarterly data in mid-Q+1 (e.g., Q4 2024 data released ~mid-Feb 2025). Hard-code release dates from WGC's archive or use `+6 weeks` heuristic.
+**Schema (latest_reserves file):**
+- Country
+- Holdings (tonnes)
+- % of total reserves
+- Net purchases derived as Δ vs prior period
 
 **Pitfalls:**
-- WGC URL changes — verify with `/browse` (gstack skill) before pulling.
-- Some country data is reported with a 1-quarter lag from IMF source data — WGC consolidates. Trust WGC's column.
-- Net purchases can flip negative (selling) — don't clip.
+- IMF cascade: a "March 2026" WGC release contains China-Mar (timely), US-Feb (US reports later), Russia-Jan (sanctioned, irregular). Treat each (country, period) cell as having its own as-of date if you can; else gate the entire row by the slowest reporter (~2 months conservative).
+- Net purchases flip negative when central banks sell — do NOT clip.
+- Press release vs file refresh: same morning London time (~09:00 UTC), within the same day.
 
-**Storage: ~20 quarters × ~50 countries = <1 MB.**
+**Storage: weekly snapshots × 5y × 2 files × ~500 KB each ≈ 250 MB if kept indefinitely. V1 keep last 12 weeks = ~12 MB.**
 
 ## Source 11 — Calendar Event Schedule (deterministic, no API)
 

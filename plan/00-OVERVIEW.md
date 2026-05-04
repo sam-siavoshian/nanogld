@@ -339,6 +339,7 @@ Day 13-14: fund $100, switch to live, build-in-public X thread
 - **Round 1 (data pipeline):** 4 Nia agents verified Alpaca / GDELT / yfinance / FRED claims against live APIs. Found ~10 critical bugs (TimeFrame.Minute_30 doesn't exist, GDELT theme codes wrong, get_series_as_of_date returns DataFrame).
 - **Round 2 (architecture v3):** 7 Nia agents on transformer SOTA / time-series / multimodal / attention / small-data / empirical SOTA / MPS. Found 12 critical bugs (bars_per_year=17500 → 3276, decoder→encoder pivot, head_dim=32 too small, etc).
 - **Round 3 (2026 SOTA):** 6 Nia agents on May 2026 releases (Llama 4, Gemma 4, Qwen 3.5, embedding leaderboard, TS foundation models, architecture innovations, finance papers, training optimization). Major pivot: Llama-3.1-8B → Qwen3-Embedding-4B (45× faster). Schedule-Free AdamW replaces cosine + warmup. Forecast-collapse hard rule (NEVER MSE).
+- **Round 4 (V1 dataset expansion + leakage audit, 2026-05-04):** 5 Nia agents verified all sources for the V1 expansion AND audited every existing source for leakage. Found **17 high-severity issues**: bar timestamp = START not END, Alpaca News field = `created_at` not `published_at`, FEDFUNDS is monthly (need DFF), 6 GDELT theme codes refuted, GDELT buffer 30min not 15min, WGC URL was wrong (correct: gold.org/download/8052), WGC is monthly not quarterly, AI-GPR not real-time (30-day lag), GPR no vintage archive, pandas-ta look-ahead bugs (KAMA/Ichimoku/KST/DPO/TRIX/Vortex forbidden), CFTC 2025 shutdown gap, multi-symbol pagination interleaves, `adjustment="all"` is retroactive, WALCL Thursday 4:30pm release-time gating, ICSA Thursday 8:30am release-time gating, anchor-cosine source must precede train period, no `minutes_until_event` features. All fixes encoded as 17 hard rules + 28 mandatory tests in `tests/test_no_leakage.py`.
 
 ## Empirical Bar (what success looks like)
 
@@ -361,11 +362,18 @@ Per Agent 6 (empirical SOTA research) + 2026 finance papers (Agent E):
 3. **MANDATORY MLP/xLSTM baselines.** Ship simpler model if it ties. (TLOB lesson)
 4. **Apply peer-benchmark discount.** Backtests capture launch-period regime, not skill. (arXiv:2604.18821)
 5. **bars_per_year = 3276** (NYSE RTH only). NEVER 17500.
-6. **Point-in-time discipline.** Every feature uses .shift(1).rolling(...). News timestamps shifted forward by 15min latency.
+6. **Point-in-time discipline.** Every feature uses `.shift(1).rolling(...)`. **News buffer = 30min for GDELT, 60s for Alpaca News.** **Bar visibility = `bar.timestamp + bar_duration` (Alpaca bar `t` = bar START).**
 7. **gitleaks before first commit.** Verify by trying to commit a fake key — must fail.
 8. **PyTorch 2.11.0 pinned.** Has SDPA fix #174945 for MPS.
 9. **FP32 weights everywhere.** No autocast, no torch.compile, no quantization at our scale.
-10. `**.contiguous()` Q/K/V before SDPA.** PyTorch #181133.
+10. **`.contiguous()` Q/K/V before SDPA.** PyTorch #181133.
+11. **Every feature row carries `t_visible: pd.Timestamp` column.** Every join uses `t_visible <= prediction_time` with strict `<`. CI gate: `test_release_ts_lte_t_visible_all_rows`.
+12. **Use ALFRED `get_series_all_releases` for ALL FRED series.** Never current snapshot. CPI/PCE annual revisions silently rewrite 5y of history.
+13. **`pandas-ta` KAMA / Ichimoku / KST / DPO / TRIX / Vortex are FORBIDDEN** (look-ahead bugs, bukosabino/ta#181). Every indicator passes growing-window stability test.
+14. **Calendar features = binary windows ONLY.** No `minutes_until_event` raw features (calendar memorization risk).
+15. **Anchor-cosine anchors must be hand-crafted templates OR pre-train-period samples.** Otherwise anchor set encodes future events.
+16. **News field is `created_at` (Alpaca News).** `published_at` does NOT exist. Never join on `updated_at`.
+17. **Use `DFF` for daily Fed Funds.** `FEDFUNDS` is monthly — using it as daily silently leaks values that don't exist until next month.
 
 ## Key Citations Driving the Design
 
@@ -445,6 +453,7 @@ If you spawn an agent and it disagrees with the doc, document the disagreement I
 | 2026-05-01 | Add xLSTMTime baseline                                  | Won 2026 finance benchmark                                          |
 | 2026-05-01 | Delete docs 08 (RL) + 11 (content)                      | Speculative + non-implementation                                    |
 | 2026-05-04 | Dataset expansion — 9 equity ETFs (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU), full Treasury curve + TIPS + breakevens (11 FRED), full macro bundle (19 FRED), CFTC COT weekly, WGC quarterly, calendar events | Owner directive — capture more market drivers (real rates, risk-on/off, sector rotation, gold-silver ratio, positioning extremes). Per-bar feature dim grows ~804 → ~1000. Doc 01 effort 2-3d → 4-5d. No model arch change. |
+| 2026-05-04 | Verification Round 4 — 17 leakage findings encoded as hard rules + 28 mandatory tests | 5 Nia agents audited every source. Bar timestamp=START leakage, FEDFUNDS→DFF, 6 GDELT codes refuted, GDELT 30min buffer, WGC URL fix (monthly not quarterly), AI-GPR not real-time, anchor leakage rule, pandas-ta forbidden indicators, CFTC release-time gate, calendar-binary-only, etc. CI gate via `test_release_ts_lte_t_visible_all_rows`. |
 
 
 ## File Layout (when implementation begins)

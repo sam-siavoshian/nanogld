@@ -102,6 +102,23 @@ Specifically:
 - Add 3 multi-dim sentiment features per news source (polarity / intensity / uncertainty) per arXiv:2603.11408.
 - Anchor-cosine pattern unchanged but now uses Qwen3 embeddings.
 
+### V4 Leakage Audit Corrections (2026-05-04 — MANDATORY)
+
+5 Nia subagents verified every source. **Every fix below is a hard rule.** Read 01-DATA-PIPELINE.md "Verification Round 4" for the full list. Highlights for feature engineering:
+
+1. **Bar visibility = bar END.** All `df.shift(1)` patterns in this doc assume bar-end indexing. With Alpaca's bar-START convention, the visibility column is `t_visible = bar.timestamp + 30min`. Re-read every `.shift(1)` in this doc as "shift to t_visible", not "shift to bar timestamp".
+2. **Replace `FEDFUNDS` with `DFF` for DAILY features.** FEDFUNDS is monthly. Doc references using `FEDFUNDS` as a daily series are wrong — switch to `DFF`. Keep `FEDFUNDS` only for monthly aggregates.
+3. **GDELT theme codes — 6 REFUTED:** drop `EPU_CATS_MONETARY_POLICY`, `EPU_POLICY_FEDERAL_RESERVE`, `EPU_UNCERTAINTY`, `EPU_ECONOMY_HISTORIC`, `TAX_WEAPONS_BOMB`. Replace `WB_2432_FRAGILITY` → `WB_2432_FRAGILITY_CONFLICT_AND_VIOLENCE`. Replace `TAX_WEAPONS_BOMB` → `TAX_WEAPONS`.
+4. **GDELT buffer 30min not 15min.**
+5. **News field is `created_at` (NOT `published_at`).** Use `t_visible = created_at + 60s`. Never join on `updated_at`.
+6. **Anchor-cosine leakage:** anchor headlines must be either (a) hand-crafted templates with no event provenance, OR (b) sampled only from BEFORE train period. Otherwise the anchor set itself encodes future events.
+7. **`pandas-ta` indicator audit:** KAMA, Ichimoku (`visual=True`), KST, DPO, TRIX, Vortex are **FORBIDDEN** (confirmed look-ahead bugs, `bukosabino/ta#181`). RSI, MACD, BBANDS proper are causal IFF `min_periods` respected and no `bfill`. Add growing-window stability test for every indicator: `f(close[:N])[-1] == f(close[:N+k])[N-1]` for k in [1, 5, 50]. Any indicator that fails is forward-looking.
+8. **Calendar features must be BINARY windows only.** No `minutes_until_FOMC`, no `minutes_since_FOMC` raw features — only `is_within_30min_window` flags. Prevents calendar-pattern memorization that inflates CV.
+9. **CPI/PCE annual seasonal revisions** silently rewrite 5y of history every Feb (CPI) and Aug (PCE). MUST use ALFRED `get_series_all_releases`, never current snapshot. UNRATE annual revision and PAYEMS Q1 benchmark have same risk.
+10. **WALCL Thursday 4:30 PM ET** — a Thursday RTH-close 16:00 bar must NOT use that week's level. Use prior week's via release-time-aware as-of join.
+11. **WGC monthly** (was thought quarterly) — self-snapshot weekly, no public vintage archive.
+12. **AI-GPR is NOT real-time** — has ~30-day lag. Treat as monthly.
+
 ### Hand-off Protocol
 
 When done:
@@ -176,15 +193,22 @@ def price_features(df: pd.DataFrame) -> pd.DataFrame:
     out['log_return_16'] = log_close.diff(16)
     out['log_return_48'] = log_close.diff(48)
     
-    # Technical indicators via pandas-ta-classic (verified API)
-    # CORRECTION: original `ta` lib pseudocode was wrong — that API doesn't exist.
-    # Use pandas-ta-classic==0.5.44 (active fork, Apr 2026).
-    closed_lag = df.close.shift(1)  # all features use lagged close to avoid current-bar leakage
+    # Technical indicators via pandas-ta-classic (verified API).
+    # V4 audit: KAMA, Ichimoku (visual=True), KST, DPO, TRIX, Vortex are FORBIDDEN — confirmed look-ahead bugs (bukosabino/ta#181).
+    # RSI, MACD, BBANDS proper are causal IFF min_periods respected and no bfill applied.
+    # Every indicator must pass growing-window stability test in tests/test_no_leakage.py.
+    closed_lag = df.close.shift(1)  # all features use lagged close (= bar end) to avoid current-bar leakage
     out['rsi_14']      = pta.rsi(closed_lag, length=14)
     macd_df = pta.macd(closed_lag, fast=12, slow=26, signal=9)
     out['macd_signal'] = macd_df['MACDs_12_26_9']
     bbands_df = pta.bbands(closed_lag, length=20, std=2.0)
     out['bbands_pct']  = bbands_df['BBP_20_2.0']  # %B column
+
+# FORBIDDEN INDICATORS (V4):
+# - pta.kama  (np.roll wraps last value to front -> look-ahead)
+# - pta.ichimoku(visual=True)  (shifts +26 forward into future)
+# - pta.kst   (mean-fills with full close mean -> uses future)
+# - pta.dpo, pta.trix, pta.vortex  (related lookahead patterns in upstream `ta`)
     
     # Microstructure-ish
     out['high_low_range_8'] = (df.high.shift(1) - df.low.shift(1)).rolling(8).mean()
@@ -564,11 +588,32 @@ def compute_anchor_cosines(news_emb_normalized: np.ndarray, anchors_dict: dict) 
     return {name: float(news_emb_normalized @ anchor) for name, anchor in anchors_dict.items()}
 ```
 
-**Anchor sets (each ~20 historical headlines):**
-- `conflict`: military / war / sanctions / Middle East / Strait of Hormuz / etc.
-- `monetary`: Fed / rate cut / rate hike / FOMC / Powell speech / inflation print
-- `dollar`: DXY / USD strength / currency intervention
-- `recession`: recession / unemployment / GDP contraction / yield curve inversion
+**Anchor sets — V4 LEAKAGE FIX (mandatory):** anchor texts MUST be either:
+- **(a) hand-crafted templated phrases with no event provenance** (preferred V1 default), OR
+- **(b) sampled exclusively from BEFORE the training window** (e.g., 2015-2020 for a 2021-2026 train window).
+
+If anchors are sampled from the full corpus, the anchor set itself encodes future events and leaks 2024+ semantics into 2017 cosine values. Detection: `assert max(anchor.pub_ts) < min(train.pub_ts)`. If hand-crafted, no provenance check needed.
+
+V1 default: hand-crafted templates.
+
+```python
+ANCHOR_TEMPLATES = {
+    "conflict":  ["central banks face geopolitical tensions",
+                  "military escalation in resource-rich region",
+                  "sanctions imposed on commodity exporter",
+                  ...],  # 20 templated phrases, no event-specific names
+    "monetary":  ["central bank tightens policy rate",
+                  "inflation print exceeds expectations",
+                  "Federal Reserve signals dovish pivot",
+                  ...],
+    "dollar":    ["US dollar strengthens against major currencies",
+                  "currency intervention announced",
+                  ...],
+    "recession": ["yield curve inversion deepens",
+                  "unemployment claims rise sharply",
+                  ...],
+}
+```
 
 Each gets ONE anchor vector per news source (computed once, frozen). Per bar = 4 cheap cosine features per source = potentially 12 extra features. Currently included as 2 of the 10 geo features (conflict_sim_alpaca, conflict_sim_gdelt). Can expand later if useful.
 

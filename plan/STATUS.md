@@ -130,8 +130,9 @@ Owner lifted "raw PyTorch only / no HuggingFace" restriction. Researched modern 
 | 1 | 2026-04-30 | 4 (Alpaca, GDELT, yfinance, FRED) | ~10 critical bugs in data layer (TimeFrame.Minute_30 fake, GDELT theme codes wrong, yfinance 30m cap real) |
 | 2 | 2026-04-30 | 7 (LLM SOTA, TS, multimodal, attention, small-data, empirical SOTA, MPS) | 12 critical bugs (bars_per_year=17500 → 3276 fatal, decoder→encoder pivot, head_dim=32 too small, fold count off) |
 | 3 | 2026-05-01 | 6 (2026 LLMs, embedders, TS foundation, architecture, finance, training) | 8+ critical (Qwen3-Embedding-4B 45× faster, Schedule-Free AdamW, F-SAM, NEVER MSE on returns hard rule) |
+| 4 | 2026-05-04 | 5 (Alpaca + bars/news/IEX leakage, FRED+ALFRED full audit, CFTC+WGC verify, GDELT+yfinance+GPR verify, cross-source leakage taxonomy) | **17 silent killers**: bar `t`=START leak, `created_at` field correction, FEDFUNDS→DFF, 6 GDELT codes refuted, GDELT 30min buffer, WGC URL was wrong + monthly, AI-GPR has 30-day lag, GPR no vintage archive, pandas-ta KAMA/Ichimoku/KST/DPO/TRIX/Vortex forbidden, CFTC 2025 shutdown gap, multi-symbol pagination interleaves, `adjustment="all"` retroactive, WALCL/ICSA release-time gating, anchor-cosine pre-train-period rule, no minutes-until-event features. All encoded as 17 hard rules + 28 mandatory tests. |
 
-**Total: 17 specialized Nia agents, ~30 critical findings absorbed.**
+**Total: 22 specialized Nia agents, ~50 critical findings absorbed.**
 
 ---
 
@@ -183,11 +184,18 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 3. **SHIP THE SIMPLER MODEL IF IT TIES** (TLOB lesson)
 4. **APPLY PEER-BENCHMARK DISCOUNT** to backtests (arXiv:2604.18821)
 5. **bars_per_year = 3276** (NYSE RTH only)
-6. **Point-in-time correctness** on every feature (`.shift(1).rolling(...)`)
+6. **Point-in-time correctness on every feature** (`.shift(1).rolling(...)`, news buffer = 30min for GDELT, 60s for Alpaca News, bar visibility = `bar.timestamp + bar_duration`)
 7. **gitleaks BEFORE first commit** (verify with fake key)
 8. **PyTorch 2.11.0 pinned** (SDPA fix #174945 for MPS)
 9. **FP32 weights everywhere** (no autocast, no torch.compile, no quantization)
 10. **`.contiguous()` Q/K/V before SDPA** (PyTorch #181133)
+11. **Every feature row carries `t_visible`** column. CI gate: `test_release_ts_lte_t_visible_all_rows`.
+12. **ALFRED `get_series_all_releases` for ALL FRED series** (CPI/PCE annual revisions silently rewrite 5y of history)
+13. **pandas-ta KAMA/Ichimoku/KST/DPO/TRIX/Vortex FORBIDDEN** (look-ahead bugs, bukosabino/ta#181)
+14. **Calendar features = binary windows ONLY** (no `minutes_until_event`)
+15. **Anchor-cosine anchors = hand-crafted templates OR pre-train-period samples**
+16. **Alpaca News field = `created_at`** (`published_at` does NOT exist; never join on `updated_at`)
+17. **`DFF` for daily Fed Funds, NOT `FEDFUNDS`** (FEDFUNDS is monthly)
 
 ---
 
