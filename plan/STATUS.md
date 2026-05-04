@@ -24,8 +24,8 @@ Estimated implementation: **10-14 days** end-to-end (concurrent-friendly with 4 
 | Doc | Owner role | Status | Effort | Blocked by |
 |-----|-----------|--------|--------|-----------|
 | 00 OVERVIEW | n/a | ✅ Read-first reference | n/a | n/a |
-| 01 DATA-PIPELINE | Data engineer | ✅ Spec ready | 2-3 days | doc 10 (repo + uv) |
-| 02 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready | 1 day | doc 01 + doc 04 |
+| 01 DATA-PIPELINE | Data engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **4-5 days** | doc 10 (repo + uv) |
+| 02 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **1.5 days** | doc 01 + doc 04 |
 | 03 MODEL-ARCHITECTURE | ML systems engineer | ✅ Spec ready (V1) | 1 day | doc 10 |
 | 04 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3) | 0.5 day setup + 30min precompute | doc 01 |
 | 05 TRAINING-PROCEDURE | ML engineer | ✅ Spec ready (V1 Schedule-Free + F-SAM) | 1 day | docs 02, 03, 04 |
@@ -208,6 +208,7 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 | 2026-05-01 | Add xLSTMTime baseline | 2026 finance benchmark winner |
 | 2026-05-01 | Delete docs 08 + 11 | Speculative + non-implementation |
 | 2026-05-01 | Add agent-isolation headers to all docs | Concurrent multi-agent implementation phase |
+| 2026-05-04 | Dataset expansion (V1, owner directive): 9-ETF basket + full Treasury curve + 19-series macro bundle + CFTC COT + WGC + calendar | Capture real-rate / risk-on-off / sector rotation / positioning drivers. Per-bar dim ~804 → ~1000. Doc 01 effort 2-3d → 4-5d, doc 02 1d → 1.5d. No model arch change. |
 
 ---
 
@@ -216,10 +217,14 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 These need user decisions OR Nia verification BEFORE implementation begins:
 
 - [ ] Verify Alpaca paper account actually returns 5y of 30min GLD on YOUR account (small chance of region restriction)
+- [ ] Verify Alpaca returns 5y of 30min for ALL 9 ETFs in V1 basket (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU) — most likely SPY/QQQ are fine; SLV/GDX low-volume IEX may have gaps
 - [ ] Verify GCP billing approval if non-US card (may have day-delay)
 - [ ] Confirm GDELT BigQuery dry-run estimate matches reality on YOUR query phrasing (±10% expected)
-- [ ] T5YIE vs T5YIFR final choice (breakeven vs forward inflation expectation)
+- [x] T5YIE vs T5YIFR — V1 expansion settles: pull both + T10YIE + use as separate features. Doc 02 builds derived features from all three.
 - [ ] Do we A/B test TDA + SyPE , before or after baseline?
+- [ ] CFTC disaggregated COT historical zip URL verify (path rotated in past — confirm 2021-2026 still live with `/browse`)
+- [ ] WGC central-bank-quarterly direct download URL — needs `/browse` to extract (form-based)
+- [ ] Owner re-decision (after V1 baseline lands): include the deferred specialty bundles (GVZ + credit spreads + bond vol) and (USD cross-rates + crypto + industrial metals)?
 
 ---
 

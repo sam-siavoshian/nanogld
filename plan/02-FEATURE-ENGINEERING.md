@@ -25,9 +25,15 @@ src/nanogld/features/
 ├── __init__.py
 ├── price.py                # 12 price features (log returns, RSI, MACD, BB%B, etc.)
 ├── risk.py                 # 8 risk features (Garman-Klass vol, FOMC proximity)
-├── macro.py                # 6 macro features (DXY, DGS10, DGS2, etc.)
+├── macro.py                # ~12 short macro features (FX broad, oil, VIX, GPR)
 ├── geo.py                  # 10 geopolitical features (oil, GPR, GDELT aggregation)
 ├── sentiment.py            # 3 multi-dim sentiment scores (polarity + intensity + uncertainty)
+├── equity.py               # NEW V1 expansion — 9-ETF basket features + cross-correlations + ratios
+├── treasury.py             # NEW V1 expansion — full curve + TIPS + breakevens + spreads + butterfly
+├── macro_bundle.py         # NEW V1 expansion — full 19-series macro (labor + inflation + growth + Fed)
+├── cot.py                  # NEW V1 expansion — CFTC COT positioning features
+├── wgc.py                  # NEW V1 expansion — WGC central bank flow features
+├── calendar.py             # NEW V1 expansion — event proximity + cyclical (sin/cos) features
 ├── labels.py               # 3-class label construction with threshold sweep
 ├── normalize.py            # Rolling z-score with clip(-10, 10)
 ├── revin.py                # RevIN instance norm per channel-group
@@ -54,17 +60,22 @@ tests/
 
 ### Stable Interface You Publish
 
-`build_feature_table(snapshot_path, embeddings_path, anchors_path) -> pd.DataFrame` — returns DataFrame with columns specified in this doc's "Per-Bar Input Vector" section. Total ~804 dims per bar (V1: ~803 with multi-dim sentiment replacing single).
+`build_feature_table(snapshot_path, embeddings_path, anchors_path) -> pd.DataFrame` — returns DataFrame with columns specified in this doc's "Per-Bar Input Vector" section. Total **~1000 dims per bar after V1 dataset expansion (2026-05-04)** (was ~804). Channel-group count grows from ~14 → ~25 — model architecture (doc 03) absorbs this with a wider input projection layer; no arch change needed.
 
 ### Acceptance Criteria
 
 1. ✅ `python -m nanogld.features build` produces feature DataFrame from snapshot + cached embeddings
-2. ✅ All 4 leakage tests pass
+2. ✅ All 4 leakage tests pass — including new ones for equity ETFs, COT release-time, WGC release-time, calendar event windows
 3. ✅ Class distribution at 5bps threshold roughly 28/44/28 (DOWN/FLAT/UP)
 4. ✅ Z-scored features have mean ≈ 0, std ≈ 1, range bounded by `clip(-10, 10)`
 5. ✅ Anchor cosines distribution looks reasonable (conflict_sim spikes during known events — verify on Russia/Ukraine 2022, Iran tensions 2024-25)
-6. ✅ Feature build runs in <2 min for 16K bars (parquet I/O dominates)
-7. ✅ No NaN in final DataFrame except for the first ~1000 rows (rolling features warm-up)
+6. ✅ Feature build runs in <3 min for 16K bars (parquet I/O dominates; budget grew with expansion)
+7. ✅ No NaN in final DataFrame except for the first ~3300 rows (rolling features warm-up grew from ~1000 due to YoY macro change features needing 1 year of history)
+8. ✅ Equity feature sanity: GDX-GLD 30d corr in [0.4, 0.95], gold-silver ratio in [50, 100] historically
+9. ✅ Treasury feature sanity: spread_10y_2y matches FRED's plot, real_rate_10y_direct matches DFII10 directly
+10. ✅ Macro feature sanity: UNRATE_yoy spikes in March 2020 + 2022, CPI_yoy spikes 2021-2022
+11. ✅ COT feature sanity: mm_net_long_pct_oi range [10%, 70%] historically
+12. ✅ Calendar feature sanity: is_FOMC_release_window=1 on FOMC days only; cyclical encoders are continuous
 
 ### Spawn Nia Agents When You Need To
 
@@ -121,23 +132,35 @@ Now read the implementation specifics below.
 **Owner:** samsiavoshian
 **Implementation effort:** 1 day after data pipeline lands
 
-## Per-Bar Input Vector (final)
+## Per-Bar Input Vector (V1 expanded 2026-05-04)
 
 ```
-Total: ~804 dims per bar
+Total: ~1000 dims per bar (was ~804 pre-expansion)
 
-├── Price features            (12 dims)
-├── Risk/volatility features  (8 dims)
-├── Macro features            (6 dims)
-├── Geopolitical/event feats  (10 dims)
-├── Alpaca news embedding     (256 dims, projected from 4096 via learned linear)
-├── GDELT news embedding      (256 dims, projected from 4096 via learned linear)
-└── RSS news embedding        (256 dims, projected from 4096 via learned linear)
+NUMERIC FEATURES (~232 dims):
+├── Price features                  (12 dims)
+├── Risk/volatility features        (8 dims)
+├── Macro short (FX/VIX/oil/GPR)    (12 dims)
+├── Geopolitical/GDELT events       (10 dims)
+├── Equity ETF basket               (~72 dims — 9 ETFs × 8 features each)
+├── Equity-derived ratios           (~9 dims — gold/silver, GDX/GLD, cross-correlations)
+├── Treasury curve + TIPS           (~30 dims — 11 levels + 11 changes + 4 spreads + butterfly + 2 real-rate)
+├── Macro bundle                    (~60 dims — 19 series × 3 features + 3 derived)
+├── COT positioning                 (~6 dims — managed money / commercial / OI z-score / changes)
+├── WGC central bank flows          (~3 dims — total + YoY + isPositive)
+└── Calendar event features         (~10 dims — event proximity + cyclical sin/cos)
+
+NEWS EMBEDDINGS (768 dims):
+├── Alpaca news embedding           (256 dims, projected from Qwen3-Embedding-4B 2560-dim via MRL truncation + learned Linear)
+├── GDELT news embedding            (256 dims, same projection)
+└── RSS news embedding              (256 dims, same projection — used for live cycle, zeros during historical backfill)
 ```
 
-Sequence shape after stacking 64 bars: `(T=64, 804)`.
+Sequence shape after stacking 64 bars: `(T=64, ~1000)`.
 
-After learned input projection `Linear(804, 384)`: `(T=64, 384)`. Then transformer.
+After learned input projection `Linear(~1000, 384)`: `(T=64, 384)`. Then transformer (doc 03 unchanged — projection layer just gets ~75K extra params, trivial).
+
+Channel-group count for iTransformer-lite tokenization grows from ~14 → ~25 tokens (one token per channel group). Doc 03's `~14 channel-group tokens` line should be read as "≥14"; agents owning doc 03 may resize without architectural change.
 
 ## Category 1 — Price Features (12 dims)
 
@@ -281,9 +304,237 @@ def geo_features(df: pd.DataFrame, brent: pd.Series, wti: pd.Series, gpr: pd.Ser
 
 ## Category 5 — News Embeddings (768 dims, see doc 04)
 
-Per source per bar, Llama-3.1-8B-4bit produces a 4096-dim mean-pooled vector. A learned `Linear(4096, 256)` (inside the TinyTransformer, not the LLM) projects it down. 3 sources × 256 = 768 dims.
+Per source per bar, Qwen3-Embedding-4B (4-bit MLX, frozen) produces a 2560-dim mean-pooled vector that is MRL-truncated to 256-dim and projected via a learned `Linear(2560, 256)` (inside nanoGLD, not the embedder). 3 sources × 256 = 768 dims.
 
 Computation lives in doc 04.
+
+## Category 6 — Equity ETF Basket (~72 dims) — V1 expansion 2026-05-04
+
+```python
+ETF_BASKET = ["SPY", "QQQ", "IWM", "GDX", "SLV", "XLF", "XLE", "XLK", "XLU"]
+
+def equity_features(etf_bars: dict[str, pd.DataFrame], gld_bars: pd.DataFrame) -> pd.DataFrame:
+    """Per-ETF features + cross-correlations + ratios.
+    All inputs are 30m bars on the same NYSE calendar — no resampling needed."""
+    out = pd.DataFrame(index=gld_bars.index)
+    spy_log_returns = np.log(etf_bars["SPY"].close / etf_bars["SPY"].close.shift(1)).shift(1)
+    gld_log_returns = np.log(gld_bars.close / gld_bars.close.shift(1)).shift(1)
+    
+    for sym in ETF_BASKET:
+        df = etf_bars[sym]
+        log_close = np.log(df.close).shift(1)
+        log_returns = log_close.diff(1)
+        out[f"{sym}_logret_1"]  = log_returns
+        out[f"{sym}_logret_4"]  = log_close.diff(4)
+        out[f"{sym}_logret_16"] = log_close.diff(16)
+        out[f"{sym}_logret_48"] = log_close.diff(48)
+        out[f"{sym}_vol_8"]     = log_returns.rolling(8).std()
+        out[f"{sym}_vol_48"]    = log_returns.rolling(48).std()
+        # Relative strength vs SPY (skip self for SPY)
+        out[f"{sym}_rs_spy"] = log_returns - spy_log_returns if sym != "SPY" else 0.0
+        # 30-day rolling correlation with GLD (1440 30m bars ≈ 30 trading days)
+        out[f"{sym}_corr_gld_30d"] = log_returns.rolling(1440).corr(gld_log_returns)
+    
+    return out  # 9 × 8 = 72 dims
+```
+
+## Category 7 — Equity-Derived Ratios (~9 dims) — V1 expansion 2026-05-04
+
+```python
+def equity_ratio_features(etf_bars: dict[str, pd.DataFrame], gld_bars: pd.DataFrame) -> pd.DataFrame:
+    """Cross-asset ratios known to predict gold."""
+    out = pd.DataFrame(index=gld_bars.index)
+    
+    # Gold-Silver ratio (centuries-old gold value indicator; mean-reverts ~75:1)
+    gsr = (gld_bars.close.shift(1) / etf_bars["SLV"].close.shift(1))
+    out["gold_silver_ratio"]     = gsr
+    out["gold_silver_ratio_logret_1d"]  = np.log(gsr / gsr.shift(48))   # 1 day = 48 30m bars (RTH); use 13 if intraday-only
+    out["gold_silver_ratio_logret_5d"]  = np.log(gsr / gsr.shift(48*5))
+    
+    # GDX/GLD ratio (miners leverage gold price; spread predicts mean-reversion)
+    gdx_gld = (etf_bars["GDX"].close.shift(1) / gld_bars.close.shift(1))
+    out["gdx_gld_ratio"]         = gdx_gld
+    out["gdx_gld_ratio_logret_1d"] = np.log(gdx_gld / gdx_gld.shift(48))
+    out["gdx_gld_ratio_logret_5d"] = np.log(gdx_gld / gdx_gld.shift(48*5))
+    
+    # Stocks-vs-gold cross-correlations (regime indicators)
+    spy_ret = np.log(etf_bars["SPY"].close / etf_bars["SPY"].close.shift(1)).shift(1)
+    qqq_ret = np.log(etf_bars["QQQ"].close / etf_bars["QQQ"].close.shift(1)).shift(1)
+    iwm_ret = np.log(etf_bars["IWM"].close / etf_bars["IWM"].close.shift(1)).shift(1)
+    gld_ret = np.log(gld_bars.close / gld_bars.close.shift(1)).shift(1)
+    out["spy_gld_corr_30d"] = spy_ret.rolling(1440).corr(gld_ret)
+    out["qqq_gld_corr_30d"] = qqq_ret.rolling(1440).corr(gld_ret)
+    out["iwm_gld_corr_30d"] = iwm_ret.rolling(1440).corr(gld_ret)
+    
+    return out  # 9 dims
+```
+
+## Category 8 — Treasury Curve + TIPS + Breakevens (~30 dims) — V1 expansion 2026-05-04
+
+```python
+TREASURY_NOMINAL = ["DGS3MO", "DGS6MO", "DGS2", "DGS5", "DGS10", "DGS30"]   # 6 nominal points
+TREASURY_TIPS    = ["DFII5", "DFII10"]                                       # 2 TIPS points
+BREAKEVENS       = ["T5YIE", "T10YIE", "T5YIFR"]                             # 3 inflation expectation series
+
+def treasury_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
+    """Full curve + TIPS + breakevens + spreads + butterfly + real rates.
+    Real rates are the #1 gold price driver (gold pays no yield)."""
+    out = pd.DataFrame(index=df.index)
+    ts_lag = df.timestamp.shift(1)
+    
+    # 11 series — levels (vintage-correct)
+    levels = {}
+    for series_id in TREASURY_NOMINAL + TREASURY_TIPS + BREAKEVENS:
+        levels[series_id] = vintage_lookup(fred_data[series_id], ts_lag)
+        out[f"{series_id}_level"] = levels[series_id] / 10  # scale roughly
+        out[f"{series_id}_change_1d"] = levels[series_id] - levels[series_id].shift(48)  # 1 day in 30m bars (RTH only)
+    
+    # Term spreads (recession + risk-on indicators)
+    out["spread_10y_2y"]   = levels["DGS10"] - levels["DGS2"]    # classic recession indicator
+    out["spread_30y_10y"]  = levels["DGS30"] - levels["DGS10"]   # long-end slope
+    out["spread_5y_2y"]    = levels["DGS5"] - levels["DGS2"]     # belly slope
+    out["spread_10y_3m"]   = levels["DGS10"] - levels["DGS3MO"]  # NY Fed recession indicator
+    
+    # Butterfly (curve curvature)
+    out["butterfly_2_5_10"] = 2 * levels["DGS5"] - levels["DGS2"] - levels["DGS10"]
+    
+    # Real rates — both proxies (DFII10 directly + DGS10 - T10YIE) for redundancy
+    out["real_rate_10y_direct"]    = levels["DFII10"]                            # direct from TIPS
+    out["real_rate_10y_breakeven"] = levels["DGS10"] - levels["T10YIE"]          # nominal - breakeven
+    
+    return out  # 11 levels + 11 1d-changes + 4 spreads + 1 butterfly + 2 real-rate = 29 dims (call it ~30)
+```
+
+## Category 9 — Macro Bundle (~60 dims) — V1 expansion 2026-05-04
+
+```python
+MACRO_LABOR     = ["UNRATE", "PAYEMS", "ICSA", "CCSA", "JTSJOL"]
+MACRO_INFLATION = ["CPIAUCSL", "CPILFESL", "PCEPI", "PCEPILFE"]
+MACRO_GROWTH    = ["GDPC1", "INDPRO", "RSAFS", "HOUST", "UMCSENT"]
+MACRO_FED       = ["M2SL", "WALCL", "RRPONTSYD", "FEDFUNDS", "SOFR"]
+
+def macro_bundle_features(df: pd.DataFrame, fred_data: dict) -> pd.DataFrame:
+    """Each release moves gold. All vintage-correct via ALFRED."""
+    out = pd.DataFrame(index=df.index)
+    ts_lag = df.timestamp.shift(1)
+    
+    for series_id in MACRO_LABOR + MACRO_INFLATION + MACRO_GROWTH + MACRO_FED:
+        level = vintage_lookup(fred_data[series_id], ts_lag)
+        out[f"{series_id}_level"]    = level
+        # Monthly series: 1 month in 30m bars ≈ 21 trading days × 13 bars = 273 (use 273); approximate
+        # Choose horizons that match release cadence:
+        if series_id in MACRO_LABOR + MACRO_INFLATION + MACRO_GROWTH:
+            # Monthly — YoY change in % form. ~12 months ≈ 12 × 273 = 3276 30m RTH bars/year
+            out[f"{series_id}_yoy"] = (level / level.shift(3276)) - 1
+            out[f"{series_id}_mom"] = (level / level.shift(273)) - 1
+        else:
+            # Daily / weekly Fed series — use shorter horizons
+            out[f"{series_id}_change_1w"]  = level - level.shift(13 * 5)   # 1 trading week
+            out[f"{series_id}_change_4w"]  = level - level.shift(13 * 5 * 4)
+    
+    # Derived signals
+    out["icsa_4w_ma"] = vintage_lookup(fred_data["ICSA"], ts_lag).rolling(4).mean()
+    out["real_fedfunds"] = vintage_lookup(fred_data["FEDFUNDS"], ts_lag) - (
+        vintage_lookup(fred_data["CPIAUCSL"], ts_lag).pct_change(periods=12) * 100
+    )  # Real Fed funds rate — Bernanke's "shadow rate" proxy
+    out["m2_yoy"] = (vintage_lookup(fred_data["M2SL"], ts_lag).pct_change(periods=52) * 100)  # weekly to YoY
+    
+    return out  # 19 × ~3 + 3 derived ≈ 60 dims
+```
+
+**CRITICAL leakage trap:** the YoY shift uses `3276` only as an approximation. The vintage-correct lookup must guarantee `realtime_start ≤ ts_lag` for ALL revisions. Test this in `test_no_leakage.py` for every macro series.
+
+## Category 10 — CFTC COT Positioning (~6 dims) — V1 expansion 2026-05-04
+
+```python
+def cot_features(df: pd.DataFrame, cot: pd.DataFrame) -> pd.DataFrame:
+    """COT data = positioning extremes predict reversals.
+    Release rule: feature visible at bar T iff cot.release_ts < T_close."""
+    out = pd.DataFrame(index=df.index)
+    
+    # As-of join — find the most recent COT release strictly before each bar's close
+    cot_pit = cot.sort_values("release_ts")
+    bar_release_lookup = pd.merge_asof(
+        df[["timestamp"]].rename(columns={"timestamp": "T_close"}),
+        cot_pit,
+        left_on="T_close",
+        right_on="release_ts",
+        direction="backward",
+        allow_exact_matches=False,  # strict <, not ≤
+    )
+    
+    out["cot_mm_net_long_pct_oi"]      = bar_release_lookup["mm_net_long_pct_oi"]
+    out["cot_comm_net_long_pct_oi"]    = bar_release_lookup["comm_net_long_pct_oi"]
+    out["cot_nonrep_net_long_pct_oi"]  = bar_release_lookup["nonrep_net_long_pct_oi"]
+    out["cot_oi_zscore_52w"]           = bar_release_lookup["oi_total"].rolling(52).apply(
+        lambda x: (x.iloc[-1] - x.mean()) / (x.std() + 1e-8)
+    )
+    out["cot_mm_change_2w"]            = bar_release_lookup["mm_net_long"].diff(2)
+    out["cot_mm_change_12w"]           = bar_release_lookup["mm_net_long"].diff(12)
+    
+    return out  # 6 dims
+```
+
+**Why these 6:** academic + practitioner consensus is that managed-money net long as % of OI predicts mean-reversion at extremes (90+ %ile = bearish for gold near term). 12-week change captures positioning trend. Open interest z-score captures conviction.
+
+## Category 11 — WGC Central Bank Flows (~3 dims) — V1 expansion 2026-05-04
+
+```python
+def wgc_features(df: pd.DataFrame, wgc: pd.DataFrame) -> pd.DataFrame:
+    """WGC quarterly central bank net purchases. Slow signal, structurally bullish for gold."""
+    out = pd.DataFrame(index=df.index)
+    
+    # Same release-time as-of join as COT
+    wgc_pit = wgc.sort_values("release_ts")
+    lookup = pd.merge_asof(
+        df[["timestamp"]].rename(columns={"timestamp": "T_close"}),
+        wgc_pit,
+        left_on="T_close",
+        right_on="release_ts",
+        direction="backward",
+        allow_exact_matches=False,
+    )
+    
+    out["wgc_total_net_purchase_tonnes_q"] = lookup["net_purchase_total_tonnes"]
+    out["wgc_total_net_purchase_yoy"]      = lookup["net_purchase_total_tonnes"] - lookup["net_purchase_total_tonnes"].shift(4)
+    out["wgc_is_net_buyer_q"]              = (lookup["net_purchase_total_tonnes"] > 0).astype(float)
+    
+    return out  # 3 dims
+```
+
+## Category 12 — Calendar Event Features (~10 dims) — V1 expansion 2026-05-04
+
+```python
+def calendar_features(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
+    """Event proximity + cyclical encodings. NO LOOKAHEAD — event timestamps are deterministic ahead-of-time."""
+    out = pd.DataFrame(index=df.index)
+    ts = df.timestamp
+    
+    # Event proximity (signed minutes to nearest event of each type, clipped to ±2 days)
+    for evt_type in ["FOMC", "CPI", "NFP", "GDP", "JOLTS", "PCE"]:
+        evt_times = calendar[calendar.event_type == evt_type].event_ts_utc.values
+        signed_min = signed_minutes_to_nearest(ts, evt_times)  # negative = past, positive = future
+        out[f"is_{evt_type.lower()}_release_window"] = (signed_min.abs() <= 24 * 60).astype(float)  # within 1 day
+        # Note: we do NOT include a "minutes-until-future-event" raw feature because that is technically
+        # known information (calendar is published) but creates pseudo-leakage in correlation tests.
+        # The window indicator suffices.
+    
+    # Cyclical encodings (sin/cos to avoid wraparound discontinuity)
+    out["dow_sin"]   = np.sin(2 * np.pi * ts.dt.dayofweek / 5.0)         # M-F
+    out["dow_cos"]   = np.cos(2 * np.pi * ts.dt.dayofweek / 5.0)
+    out["hour_sin"]  = np.sin(2 * np.pi * ts.dt.hour / 24.0)
+    out["hour_cos"]  = np.cos(2 * np.pi * ts.dt.hour / 24.0)
+    out["month_sin"] = np.sin(2 * np.pi * ts.dt.month / 12.0)
+    out["month_cos"] = np.cos(2 * np.pi * ts.dt.month / 12.0)
+    
+    # Special days
+    out["is_options_expiry_day"]    = is_third_friday(ts).astype(float)
+    out["is_quarter_end_window"]    = is_last_3_days_of_quarter(ts).astype(float)
+    
+    return out  # 6 event windows + 6 cyclical + 2 special = ~10 dims (ish; trim if collinear)
+```
+
+**Why event windows beat raw "minutes-to-event":** the model can learn higher vol + reversion patterns around CPI/NFP/FOMC; but `minutes_until_NFP` injects deterministic future-time information that breaks point-in-time discipline in subtle ways (it's "information about when the future is", which the model could exploit to memorize calendar artifacts). Window indicators are simpler and safer.
 
 ## Conflict-Anchor Cosine (semantic features beyond raw embeddings)
 
@@ -372,8 +623,23 @@ def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_
     macro = macro_features(raw, fred_data=...)
     geo = geo_features(raw, brent=..., wti=..., gpr=..., gdelt=...)
     
+    # V1 expansion (2026-05-04)
+    equity = equity_features(etf_bars=..., gld_bars=raw)
+    equity_ratios = equity_ratio_features(etf_bars=..., gld_bars=raw)
+    treasury = treasury_features(raw, fred_data=...)
+    macro_full = macro_bundle_features(raw, fred_data=...)
+    cot = cot_features(raw, cot_data=...)
+    wgc = wgc_features(raw, wgc_data=...)
+    cal = calendar_features(raw, calendar=...)
+    
     # Concat
-    numeric = pd.concat([price, risk, macro, geo], axis=1)
+    numeric = pd.concat([
+        price, risk, macro, geo,                    # existing 36 dims
+        equity, equity_ratios,                       # NEW V1: 72 + 9 = 81 dims
+        treasury,                                    # NEW V1: ~30 dims
+        macro_full,                                  # NEW V1: ~60 dims
+        cot, wgc, cal,                               # NEW V1: 6 + 3 + 10 = 19 dims
+    ], axis=1)
     
     # Z-score
     for col in numeric.columns:
@@ -428,3 +694,12 @@ def test_z_score_no_global_leakage(features, raw):
 - [x] ✅ Confirmed via Nia: T5YIE has ALFRED vintage data back to 2006. T5YIE = 5-Year Breakeven (NOT forward — that's T5YIFR). Doc updated.
 - [x] ✅ Confirmed via Nia: all 7 FRED series (DTWEXBGS, DGS10, DGS2, T5YIE, VIXCLS, DCOILBRENTEU, DCOILWTICO) have ALFRED vintage from 2006+
 - [x] ✅ Corrected GDELT theme codes — original codes (MIL_CONFLICT, ECON_RECESSION, WB_654, TAX_FNCACT_BOMBING) don't exist; replaced with verified canonical codes
+
+### V1 Expansion TODOs (2026-05-04)
+
+- [ ] Verify ALL 27 newly added FRED series have ALFRED vintage cubes back to 2021 (DGS3MO, DGS6MO, DGS5, DGS30, DFII5, DFII10, T10YIE, T5YIFR + 19 macro). Spawn Nia subagent on day 2.
+- [ ] Re-baseline rolling z-score lookback for monthly macro features — 1000-bar default (≈ 3 months) is too short for series with quarterly cadence. Use 3276 (1 year) for macro YoY features.
+- [ ] Decide channel-group binning when count grows from ~14 → ~25: (a) split to ~25 fine-grained groups, OR (b) keep ~14 by merging similar series into wider groups. Affects model token count + speed. Default V1 = (a) finer = better, eat the modest compute cost.
+- [ ] Validate that `merge_asof` with `allow_exact_matches=False` is actually strict-`<`. Some pandas versions handle exact equality differently. Add explicit assertion in golden fixture test.
+- [ ] Calendar event windows for emergency FOMC dates (e.g., March 15 2020, March 23 2020). Hard-code those dates explicitly.
+- [ ] Consider adding "minutes_until_next_FOMC" with the assertion that the calendar is fully published >2 weeks before each meeting (so the feature is genuinely PIT-correct). Default: skip per leakage-conservatism principle.

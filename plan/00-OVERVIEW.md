@@ -160,24 +160,42 @@ A from-scratch encoder-only transformer (~24-60M params) that predicts next-30mi
 ## Architecture Spec (V1, locked May 2026)
 
 ```
-DATA PIPELINE (doc 01)
+DATA PIPELINE (doc 01) — V1 expanded 2026-05-04
 ├── Alpaca historical 30min GLD × 5y (free Basic tier, IEX feed since 2016)
+├── Alpaca historical 30min ETF basket × 5y: SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU
 ├── Alpaca News API (Benzinga only — Reuters paywalled 2024)
 ├── GDELT 2.0 GKG_partitioned via BigQuery (themes — events table has no themes)
-├── FRED + ALFRED for vintage-correct DXY/DGS10/DGS2/T5YIE/VIXCLS/oil
+├── FRED + ALFRED — 34 series total (vintage-correct):
+│   ├── Treasury curve (6): DGS3MO/6MO/2/5/10/30
+│   ├── TIPS + breakevens (5): DFII5/10, T5YIE/T10YIE/T5YIFR
+│   ├── FX + vol (2): DTWEXBGS, VIXCLS
+│   ├── Oil (2): DCOILBRENTEU, DCOILWTICO
+│   ├── Labor (5): UNRATE, PAYEMS, ICSA, CCSA, JTSJOL
+│   ├── Inflation (4): CPIAUCSL, CPILFESL, PCEPI, PCEPILFE
+│   ├── Growth (5): GDPC1, INDPRO, RSAFS, HOUST, UMCSENT
+│   └── Money/Fed (5): M2SL, WALCL, RRPONTSYD, FEDFUNDS, SOFR
 ├── yfinance for Brent/WTI daily (NOT 30min — 60d cap is real)
 ├── GPR Index monthly (matteoiacoviello.com)
+├── CFTC COT weekly disaggregated for COMEX gold (free CSV)
+├── WGC quarterly central bank net purchases (free CSV)
+├── Calendar event schedule (deterministic FOMC/CPI/NFP/GDP/JOLTS/PCE)
 └── Joined parquet with point-in-time discipline + 15min news latency
 
-FEATURE ENGINEERING (doc 02)
-├── Price (12) + Risk/Vol (8) + Macro (6) + Geopolitical (10) = 36 numeric
+FEATURE ENGINEERING (doc 02) — V1 expanded 2026-05-04
+├── Existing: Price (12) + Risk/Vol (8) + Macro short (12) + Geo (10) = 42
+├── NEW: Equity ETF features (~72) + Equity ratios incl. gold/silver, GDX/GLD (~9) = 81
+├── NEW: Treasury curve features (~30) — levels + spreads + butterfly + real rates
+├── NEW: Macro bundle (~60) — labor/inflation/growth/Fed YoY+MoM
+├── NEW: COT positioning (~6) — managed money net long, OI z-score
+├── NEW: WGC central bank (~3) — quarterly net purchases
+├── NEW: Calendar events (~10) — event proximity windows + sin/cos cyclicals
 ├── + Multi-dim sentiment: polarity + intensity + uncertainty (per arXiv:2603.11408)
-├── Channel-group tokenization (iTransformer-lite, ~14 group tokens)
+├── Channel-group tokenization (iTransformer-lite, now ~25 group tokens, was ~14)
 ├── RevIN per channel-group (Kim ICLR 2022)
 ├── pandas-ta-classic for indicators (NOT stale `ta`)
 ├── Garman-Klass volatility (NOT Parkinson — same OHLC, more efficient)
 ├── Labels: 3-class via 5bps threshold
-└── Z-score with rolling 1000-bar lookback + clip(-10, 10)
+└── Z-score with rolling 1000-bar lookback + clip(-10, 10) — extended to 3276 for YoY-bearing macro features
 
 NEWS EMBEDDING (doc 04)
 ├── Qwen3-Embedding-4B 4-bit MLX (Apache 2.0, ~18K tok/s on M4 mini)
@@ -426,6 +444,7 @@ If you spawn an agent and it disagrees with the doc, document the disagreement I
 | 2026-05-01 | Add conformal prediction sizing                         | 30% lower decision loss, Wright 2026                                |
 | 2026-05-01 | Add xLSTMTime baseline                                  | Won 2026 finance benchmark                                          |
 | 2026-05-01 | Delete docs 08 (RL) + 11 (content)                      | Speculative + non-implementation                                    |
+| 2026-05-04 | Dataset expansion — 9 equity ETFs (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU), full Treasury curve + TIPS + breakevens (11 FRED), full macro bundle (19 FRED), CFTC COT weekly, WGC quarterly, calendar events | Owner directive — capture more market drivers (real rates, risk-on/off, sector rotation, gold-silver ratio, positioning extremes). Per-bar feature dim grows ~804 → ~1000. Doc 01 effort 2-3d → 4-5d. No model arch change. |
 
 
 ## File Layout (when implementation begins)

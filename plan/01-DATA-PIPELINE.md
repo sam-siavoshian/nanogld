@@ -22,8 +22,31 @@ You own data ingestion, joining, and snapshot artifacts. You will build the pipe
 - Total: 494 GB Mac internal
 - Free: ~67-72 GB
 - 60% of free (storage budget): **~40 GB**
-- Estimated data footprint: **~7-8 GB**
-- Utilization: 8 / 40 = **20% of budget** → KEEP LOCAL
+- Estimated data footprint: **~10-12 GB** (post-2026-05-04 dataset expansion)
+- Utilization: 12 / 40 = **30% of budget** → KEEP LOCAL
+
+### Dataset Expansion (2026-05-04 — owner directive)
+
+Owner directed expanding dataset to capture more market drivers. Approved scope:
+
+| Bundle | Added | Reason |
+|---|---|---|
+| **Equity ETFs (Source 8)** | SPY, QQQ, IWM, GDX, SLV, XLF, XLE, XLK, XLU — 30m bars via Alpaca | Risk-on/off, sector rotation, GDX (gold miners) + SLV (silver) = direct gold cross-correlation |
+| **Treasury curve (Source 4 expansion)** | DGS3MO, DGS6MO, DGS5, DGS30, DFII5, DFII10, T10YIE, T5YIFR | Real rates = #1 gold driver. Full curve + TIPS direct + 5Y forward inflation. |
+| **Macro economic (Source 4 expansion)** | UNRATE, PAYEMS, ICSA, CCSA, JTSJOL, CPIAUCSL, CPILFESL, PCEPI, PCEPILFE, GDPC1, INDPRO, RSAFS, HOUST, UMCSENT, M2SL, WALCL, RRPONTSYD, FEDFUNDS, SOFR | Each macro release moves gold. Vintage-correct via ALFRED. |
+| **CFTC COT (Source 9)** | Weekly speculator positioning for COMEX gold futures | Predictive at extremes; non-commercial net long |
+| **WGC central bank flows (Source 10)** | Quarterly net central bank gold purchases | Slow signal, structurally bullish gold when positive |
+| **Calendar event schedule (Source 11)** | Pre/post-release windows for FOMC, CPI, NFP, GDP, JOLTS + cyclicals | Captures known information-flow patterns; deterministic schedule, no API |
+
+**Deferred (owner did NOT select — leave in TODOs):**
+- GVZ (CBOE Gold VIX), HY/IG OAS credit spreads, MOVE bond vol
+- USD direct cross-rates (DEXUSEU/DEXJPUS/DEXCHUS/DEXUSUK)
+- Crypto (BTC/ETH)
+- Industrial metals (HG=F copper, PL=F platinum, SI=F silver futures)
+
+These are documented in "Open Questions / TODOs" at the bottom. Re-ask after V1 baseline lands.
+
+**New per-bar feature dim:** ~1700-1800 (was ~804). Channel-group count grows from ~14 → ~25-30. Model architecture (doc 03) unchanged — input projection layer just gets wider (~1M extra params, trivial).
 
 **Decision rule (re-run before you start coding):**
 ```bash
@@ -36,15 +59,19 @@ df -h /System/Volumes/Data
 ### What Lives Where (current verdict: mostly local)
 
 ```
-LOCAL ~/Desktop/Coding Stuff/Side Projects/ML-Trading/data/         ~7-8 GB total
+LOCAL ~/Desktop/Coding Stuff/Side Projects/ML-Trading/data/         ~10-12 GB total
 ├── raw/
 │   ├── alpaca_bars_GLD_30min.parquet            2 MB
+│   ├── alpaca_bars_etfs_30min.parquet           ~20 MB (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU)
 │   ├── alpaca_news_GLD.parquet                  ~150 MB
-│   ├── fred_*_all_releases.parquet              ~20 MB
+│   ├── fred_*_all_releases.parquet              ~120 MB (~30 series ALFRED cubes)
 │   ├── brent_daily.parquet, wti_daily.parquet   <1 MB each
-│   └── gpr_monthly.parquet                       <1 MB
+│   ├── gpr_monthly.parquet                       <1 MB
+│   ├── cftc_cot_gold_weekly.parquet              <1 MB
+│   ├── wgc_central_bank_quarterly.parquet        <1 MB
+│   └── calendar_events_v1.parquet                <1 MB (deterministic schedule)
 ├── snapshots/
-│   ├── v1_<hash>.parquet                        ~500 MB - 1 GB
+│   ├── v1_<hash>.parquet                        ~1.5 - 2.5 GB (expanded feature set)
 │   └── v1_<hash>_meta.json
 ├── embeddings/
 │   └── v1_<hash>_qwen3-emb-4b.npy               ~25-130 MB (memmap fp16)
@@ -106,13 +133,17 @@ Worst case if NONE followed: ~$130 for one accidental SELECT *.
 src/nanogld/data/
 ├── __init__.py
 ├── alpaca_bars.py          # Alpaca historical bars pull (5y GLD 30min)
+├── alpaca_etfs.py          # NEW V1 expansion — 9-ETF basket (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU)
 ├── alpaca_news.py          # Alpaca News API (Benzinga, since 2015)
 ├── gdelt.py                # GDELT 2.0 GKG via BigQuery (themes, materialize once)
-├── fred.py                 # FRED + ALFRED for vintage-correct macro
+├── fred.py                 # FRED + ALFRED for vintage-correct macro (34 series)
 ├── yfinance_helpers.py     # Brent/WTI daily (with curl_cffi wrapper)
 ├── gpr.py                  # GPR Index monthly download from matteoiacoviello.com
+├── cot.py                  # NEW V1 expansion — CFTC COT weekly disaggregated for COMEX gold
+├── wgc.py                  # NEW V1 expansion — World Gold Council quarterly central bank flows
+├── calendar_events.py      # NEW V1 expansion — deterministic FOMC/CPI/NFP/GDP/JOLTS/PCE schedule
 ├── join.py                 # Point-in-time-correct joiner with 15min news latency
-├── schema.py               # Pydantic schemas for validation
+├── schema.py               # Pydantic schemas for validation (extended for new sources)
 ├── snapshot.py             # Hashing + parquet writing + meta.json
 └── cli.py                  # `python -m nanogld.data build` entrypoint
 
@@ -145,13 +176,17 @@ tests/
 You're done when:
 
 1. ✅ `python -m nanogld.data build` produces `data/snapshots/v1_<sha256_first_16>.parquet` with full 5y of joined data + accompanying `_meta.json`
-2. ✅ `pytest tests/test_pit.py` passes (golden fixture for point-in-time joiner)
+2. ✅ `pytest tests/test_pit.py` passes (golden fixture for point-in-time joiner — extended to cover ETF bars, COT release-time, and calendar event leakage)
 3. ✅ `pytest tests/test_join_schema.py` passes (every column matches schema, no NaN in non-nullable cols)
 4. ✅ `pytest tests/test_snapshot_hash.py` passes (running build twice on same input produces identical hash)
 5. ✅ Row count is approximately 16K bars (5y × 252 days × 13 RTH bars/day = ~16,380; allow ±5% for holidays)
 6. ✅ News coverage report shows ≥30% of bars have ≥1 Alpaca News article + ≥30% have ≥1 GDELT event in window
-7. ✅ FRED ALFRED vintage cubes saved for all 7 series (DTWEXBGS, DGS10, DGS2, T5YIE, VIXCLS, DCOILBRENTEU, DCOILWTICO)
-8. ✅ A README in `data/` explains how another developer reproduces the pipeline
+7. ✅ FRED ALFRED vintage cubes saved for ALL 34 V1 series (full curve + TIPS + breakevens + macro full bundle)
+8. ✅ Equity ETF basket pulled for all 9 symbols, row counts within ±5% of GLD
+9. ✅ CFTC COT parquet has ≥260 weekly rows (5y × 52w) with non-null `release_ts`
+10. ✅ WGC quarterly parquet has ≥20 rows (5y × 4q) with non-null `release_ts`
+11. ✅ Calendar events parquet covers all 7 event types over 2021-2026
+12. ✅ A README in `data/` explains how another developer reproduces the pipeline
 
 Hand off to doc 02 (feature engineering) by updating STATUS.md with the snapshot hash + meta.json path.
 
@@ -204,8 +239,8 @@ Now read the implementation specifics below.
 
 **Status:** ✅ Complete, implementation-ready, claims verified via Nia research subagents
 **Owner:** samsiavoshian
-**Implementation effort:** 2-3 days (revised up from 1.5-2 after pitfall discovery)
-**Last verified:** 2026-04-30
+**Implementation effort:** 4-5 days (revised up from 2-3 after 2026-05-04 dataset expansion: equity basket + full Treasury curve + macro bundle + COT + WGC + calendar)
+**Last verified:** 2026-05-04 (dataset expansion — owner directive)
 
 ## Goal
 
@@ -390,17 +425,78 @@ WHERE pub_ts_utc BETWEEN TIMESTAMP('2024-01-01') AND TIMESTAMP('2024-12-31');
 
 ## Source 4 — FRED + ALFRED (vintage-correct macro)
 
-### Series IDs (verified, with corrections)
+### Series IDs (V1 expanded 2026-05-04 — 30 series)
 
-| Series ID | Description | Vintage horizon | Revisions in practice |
-|-----------|-------------|-----------------|----------------------|
+**Treasury curve + TIPS + breakevens (11 series — real rates are #1 gold driver):**
+
+| Series ID | Description | Vintage horizon | Revisions |
+|-----------|-------------|-----------------|-----------|
+| `DGS3MO` | 3-Month Treasury Constant Maturity | 2006+ | Never |
+| `DGS6MO` | 6-Month Treasury Constant Maturity | 2006+ | Never |
+| `DGS2` | 2-Year Treasury Constant Maturity | 2006+ | Never |
+| `DGS5` | 5-Year Treasury Constant Maturity | 2006+ | Never |
+| `DGS10` | 10-Year Treasury Constant Maturity | 2006+ | Never |
+| `DGS30` | 30-Year Treasury Constant Maturity | 2006+ | Never |
+| `DFII5` | 5-Year TIPS Real Yield | 2006+ | Rare |
+| `DFII10` | 10-Year TIPS Real Yield (DIRECT real-rate signal) | 2006+ | Rare |
+| `T5YIE` | 5-Year Breakeven Inflation Rate | 2006+ | Occasional |
+| `T10YIE` | 10-Year Breakeven Inflation Rate | 2006+ | Occasional |
+| `T5YIFR` | 5-Year, 5-Year Forward Inflation Expectation | 2006+ | Occasional |
+
+**FX + market vol (3 series):**
+
+| Series ID | Description | Vintage horizon | Revisions |
+|-----------|-------------|-----------------|-----------|
 | `DTWEXBGS` | Nominal Broad USD Trade-Weighted Index | 2006+ | Rare |
-| `DGS10` | 10Y Treasury Constant Maturity | 2006+ | Essentially never |
-| `DGS2` | 2Y Treasury Constant Maturity | 2006+ | Essentially never |
-| `T5YIE` | **5-Year Breakeven Inflation Rate** (NOT forward — that's T5YIFR) | 2006+ | Occasional |
 | `VIXCLS` | VIX close | 2006+ | Rare |
+
+**Oil (2 series, daily):**
+
+| Series ID | Description | Vintage horizon | Revisions |
+|-----------|-------------|-----------------|-----------|
 | `DCOILBRENTEU` | Brent crude spot | 2006+ | Occasional |
 | `DCOILWTICO` | WTI crude spot | 2006+ | Occasional |
+
+**Macro economic — full bundle (19 series, varying frequency, ALL vintage-correct via ALFRED):**
+
+Labor (5):
+| Series ID | Description | Frequency | Release lag |
+|-----------|-------------|-----------|-------------|
+| `UNRATE` | Civilian Unemployment Rate | Monthly | ~1st Fri next month |
+| `PAYEMS` | Total Nonfarm Payrolls | Monthly | ~1st Fri next month |
+| `ICSA` | Initial Jobless Claims (weekly — vintage matters) | Weekly Thursday | ~1 day |
+| `CCSA` | Continued Jobless Claims | Weekly Thursday | ~1 day |
+| `JTSJOL` | JOLTS Job Openings | Monthly | ~1 month |
+
+Inflation (4):
+| Series ID | Description | Frequency | Release lag |
+|-----------|-------------|-----------|-------------|
+| `CPIAUCSL` | CPI, All Urban Consumers, all items | Monthly | ~mid-month |
+| `CPILFESL` | Core CPI (ex food + energy) | Monthly | ~mid-month |
+| `PCEPI` | PCE Price Index | Monthly | ~end of month |
+| `PCEPILFE` | Core PCE (Fed's preferred inflation gauge) | Monthly | ~end of month |
+
+Growth + sentiment (5):
+| Series ID | Description | Frequency | Release lag |
+|-----------|-------------|-----------|-------------|
+| `GDPC1` | Real GDP, chained 2017 dollars | Quarterly | ~1 month after quarter |
+| `INDPRO` | Industrial Production Index | Monthly | ~mid-month |
+| `RSAFS` | Retail Sales | Monthly | ~mid-month |
+| `HOUST` | Housing Starts | Monthly | ~mid-month |
+| `UMCSENT` | University of Michigan Consumer Sentiment | Monthly | ~end of month, prelim mid-month |
+
+Money + Fed (5):
+| Series ID | Description | Frequency | Release lag |
+|-----------|-------------|-----------|-------------|
+| `M2SL` | M2 Money Supply | Weekly Tuesday | ~2 weeks |
+| `WALCL` | Total Fed Assets (Fed balance sheet) | Weekly Wednesday | ~1 day |
+| `RRPONTSYD` | Overnight Reverse Repo Outstanding | Daily | ~1 day |
+| `FEDFUNDS` | Effective Federal Funds Rate (monthly avg) | Monthly | ~1 day after month |
+| `SOFR` | Secured Overnight Financing Rate | Daily | ~1 day |
+
+**Total: 34 FRED series (vs 7 in pre-expansion plan).** Breakdown: 6 nominal curve + 5 TIPS/breakevens + 2 FX/vol + 2 oil + 5 labor + 4 inflation + 5 growth + 5 money/Fed = 34.
+
+**Critical:** ALL series use ALFRED `get_series_all_releases` → groupby tail(1) for vintage discipline. Inflation/GDP/labor monthly prints get heavily revised; using non-vintage data = look-ahead leak that destroys validity.
 
 ### Verified Code Pattern
 
@@ -438,7 +534,27 @@ def pit_series(series_id: str, as_of: str) -> pd.Series:
 # Pull entire vintage cube once per series, persist, slice locally during backtest.
 # Avoids per-tick API calls.
 
-for series_id in ["DTWEXBGS", "DGS10", "DGS2", "T5YIE", "VIXCLS", "DCOILBRENTEU", "DCOILWTICO"]:
+FRED_SERIES_V1 = [
+    # Treasury curve
+    "DGS3MO", "DGS6MO", "DGS2", "DGS5", "DGS10", "DGS30",
+    # TIPS + breakevens
+    "DFII5", "DFII10", "T5YIE", "T10YIE", "T5YIFR",
+    # FX + vol
+    "DTWEXBGS", "VIXCLS",
+    # Oil
+    "DCOILBRENTEU", "DCOILWTICO",
+    # Labor
+    "UNRATE", "PAYEMS", "ICSA", "CCSA", "JTSJOL",
+    # Inflation
+    "CPIAUCSL", "CPILFESL", "PCEPI", "PCEPILFE",
+    # Growth + sentiment
+    "GDPC1", "INDPRO", "RSAFS", "HOUST", "UMCSENT",
+    # Money + Fed
+    "M2SL", "WALCL", "RRPONTSYD", "FEDFUNDS", "SOFR",
+]
+
+# 34 series total. 34 calls × 0.5s sleep = ~17s wall. ALFRED cubes ~3 MB each = ~100-120 MB.
+for series_id in FRED_SERIES_V1:
     df_all = fred.get_series_all_releases(series_id)
     df_all.to_parquet(f"data/raw/fred_{series_id.lower()}_all_releases.parquet")
     time.sleep(0.5)  # under 120 req/min limit
@@ -535,6 +651,179 @@ def fetch_recent_rss(window_min: int = 30) -> list[dict]:
 
 For historical 5y backfill, RSS is dead — feeds only carry recent items. We get historical news from Alpaca News (Benzinga 2015+) and GDELT GKG (2015+).
 
+## Source 8 — Alpaca Equity ETF Basket (V1 expansion 2026-05-04)
+
+Same client + endpoint as Source 1, just a multi-symbol pull. Captures risk-on/off (SPY/QQQ/IWM), gold-specific cross-correlations (GDX/SLV), and sector regime (XLF/XLE/XLK/XLU).
+
+```python
+ETF_BASKET = {
+    # Broad equity (risk-on/off)
+    "SPY": "S&P 500",
+    "QQQ": "Nasdaq-100",
+    "IWM": "Russell 2000 (small caps)",
+    # Gold-specific cross-references
+    "GDX": "VanEck Gold Miners (direct gold cross-correlation)",
+    "SLV": "iShares Silver Trust (gold-silver ratio numerator)",
+    # Sector ETFs (factor regime)
+    "XLF": "Financials",
+    "XLE": "Energy",
+    "XLK": "Technology",
+    "XLU": "Utilities (rate-sensitive defensive)",
+}
+
+req = StockBarsRequest(
+    symbol_or_symbols=list(ETF_BASKET.keys()),  # 9 symbols, single batched call
+    timeframe=TimeFrame(30, TimeFrameUnit.Minute),
+    start=datetime(2021, 4, 24),
+    end=datetime(2026, 4, 24),
+    adjustment="all",        # split + dividend adjusted
+    feed="iex",              # free tier
+    limit=None,              # SDK auto-paginates
+)
+etf_bars = client.get_stock_bars(req).df
+# multi-index (symbol, timestamp) → reshape per ETF on disk
+for sym in ETF_BASKET:
+    etf_bars.loc[sym].to_parquet(f"data/raw/alpaca_bars_{sym}_30min.parquet")
+```
+
+**Pitfalls (Nia-verify before relying on):**
+- All 9 ETFs are NYSE/NASDAQ listed and IEX-feed eligible on free tier — verify on first pull.
+- GDX/SLV occasionally have low IEX volume causing missing 30m bars; same resilience pattern as GLD applies.
+- All ETFs follow NYSE calendar (`pandas_market_calendars.get_calendar('NYSE')`) — same RTH gating as GLD.
+- Storage: ~2 MB × 9 = ~20 MB raw. Trivial.
+- Rate limit: 200 req/min applies across symbols, not per-symbol. SDK handles pagination across the full multi-symbol batch.
+
+**Schema (per ETF, identical to GLD):**
+- Columns: `[open, high, low, close, volume, trade_count, vwap]`
+- Same row count as GLD (~16K bars per 5y).
+- Aligned on the same NYSE 30min calendar — joins cleanly without resampling.
+
+## Source 9 — CFTC COT (Commitments of Traders, weekly gold futures)
+
+Source: https://www.cftc.gov/dea/futures/deacmesf.htm — weekly CSV/TXT, free, public.
+
+Every Friday 3:30 PM ET, CFTC publishes positions as of the previous Tuesday 4:00 PM ET. Disaggregated COT report gives non-commercial (large speculator) net longs, commercials, and open interest. For COMEX gold futures, the contract identifier is `GOLD - COMMODITY EXCHANGE INC.` (CFTC market code 088691).
+
+```python
+import pandas as pd
+import io
+import requests
+
+# Disaggregated COT (preferred over legacy — separates managed money from swap dealers)
+COT_DISAGG_URL_TEMPLATE = (
+    "https://www.cftc.gov/dea/newcot/f_disagg.txt"      # current year
+)
+COT_DISAGG_HISTORICAL_TEMPLATE = (
+    "https://www.cftc.gov/files/dea/history/com_disagg_txt_{year}.zip"  # historical years
+)
+
+def fetch_cot_gold_5y(start_year: int = 2021, end_year: int = 2026) -> pd.DataFrame:
+    """Pull weekly COT, filter to gold, return tidy frame.
+    Columns: report_date_ts, market_pos_dt, oi_open_interest, mm_net_long, mm_pct_oi, ...
+    """
+    rows = []
+    for yr in range(start_year, end_year + 1):
+        url = COT_DISAGG_HISTORICAL_TEMPLATE.format(year=yr)
+        zip_bytes = requests.get(url, timeout=60).content
+        # ... unzip, parse, filter to "GOLD - COMMODITY EXCHANGE INC."
+        df_yr = parse_cot_csv(zip_bytes, contract="GOLD - COMMODITY EXCHANGE INC.")
+        rows.append(df_yr)
+    return pd.concat(rows).sort_values("report_date_ts")
+
+cot = fetch_cot_gold_5y()
+cot.to_parquet("data/raw/cftc_cot_gold_weekly.parquet")
+```
+
+**Critical fields to extract (per arXiv:2305.05186 + CFTC docs):**
+- `oi_total` — open interest in contracts
+- `mm_net_long` — managed money net long (large spec extreme = contrarian signal)
+- `mm_pct_oi_long`, `mm_pct_oi_short` — % of OI by category
+- `comm_net_long` — commercial (producer/hedger) net long
+- `nonrep_net_long` — non-reportable (small spec) net long
+- `report_date_ts` — Tuesday 4 PM ET reference date (UTC = Tue 21:00)
+- `release_ts` — Friday 3:30 PM ET publication time (UTC = Fri 19:30 / 20:30 DST-dependent)
+
+**Point-in-time discipline for COT:**
+- Feature visible at bar T must satisfy `release_ts < T_close`. NOT `report_date_ts < T_close` (that leaks ~3 days).
+- For Tue afternoon prints to be visible, the next bar to consume them is the one closing AFTER Fri 3:30 PM ET (so first US RTH bar Mon 09:30 onward, since Fri 15:30 < 16:00 close).
+
+**Pitfalls:**
+- File format changed format in 2017 (legacy → disaggregated). Use disaggregated for full 5y.
+- Historical zips fail silently for pending year — wrap in try/except.
+- Field names with spaces; the parser must handle quoted CSV.
+- Holiday weeks shift release to Monday — handle missing Friday gracefully.
+
+**Storage: ~260 weekly rows × 5y × ~20 fields = <1 MB.**
+
+## Source 10 — World Gold Council (central bank quarterly flows)
+
+Source: https://www.gold.org/goldhub/data/quarterly-central-bank-statistics — free CSV/Excel quarterly download. Country-level central bank net gold purchases.
+
+```python
+WGC_CENTRAL_BANK_URL = "https://www.gold.org/download/file/XXXX/cb-flows.csv"  # verify exact URL via /browse before coding
+
+# Slow signal — quarterly, ~6-week release lag
+wgc = pd.read_csv(WGC_CENTRAL_BANK_URL)
+# Aggregate to total + top-N countries (China, Russia, India, Turkey, Singapore, Poland — verified largest buyers 2020-2025)
+wgc.to_parquet("data/raw/wgc_central_bank_quarterly.parquet")
+```
+
+**Schema:**
+- `quarter_end` (YYYY-Qn)
+- `release_ts` (estimated +6 weeks from quarter end — verify via WGC press release dates)
+- `country` (per-country net purchase, tonnes)
+- `net_purchase_total_tonnes` (global aggregate)
+
+**Point-in-time discipline:** feature visible at bar T must satisfy `release_ts < T_close`. WGC publishes the quarterly data in mid-Q+1 (e.g., Q4 2024 data released ~mid-Feb 2025). Hard-code release dates from WGC's archive or use `+6 weeks` heuristic.
+
+**Pitfalls:**
+- WGC URL changes — verify with `/browse` (gstack skill) before pulling.
+- Some country data is reported with a 1-quarter lag from IMF source data — WGC consolidates. Trust WGC's column.
+- Net purchases can flip negative (selling) — don't clip.
+
+**Storage: ~20 quarters × ~50 countries = <1 MB.**
+
+## Source 11 — Calendar Event Schedule (deterministic, no API)
+
+Pre/post-release windows for high-impact macro releases that move gold. Built deterministically from published BLS/BEA/Fed calendars, then merged onto bars.
+
+```python
+# Hard-code release calendars from official sources for 2021-2026:
+# - FOMC meeting dates: federalreserve.gov/monetarypolicy/fomccalendars.htm (8 per year)
+# - CPI release: BLS calendar — 2nd or 3rd Tuesday of month, 8:30 AM ET
+# - NFP release: BLS calendar — 1st Friday of month, 8:30 AM ET
+# - GDP advance: BEA — last Thursday of month following quarter end, 8:30 AM ET
+# - JOLTS: BLS — early in month, 10:00 AM ET
+# - PCE: BEA — last business day of month following data month, 8:30 AM ET
+# - FOMC minutes: 3 weeks after each meeting, 2:00 PM ET
+
+CALENDAR_EVENTS = {
+    "FOMC": load_fomc_dates(2021, 2026),       # ~40 events × 5y
+    "CPI": load_cpi_dates(2021, 2026),          # ~60 events × 5y
+    "NFP": load_nfp_dates(2021, 2026),          # ~60 events × 5y
+    "GDP": load_gdp_dates(2021, 2026),          # ~20 events × 5y
+    "JOLTS": load_jolts_dates(2021, 2026),      # ~60 events × 5y
+    "PCE": load_pce_dates(2021, 2026),          # ~60 events × 5y
+    "FOMC_minutes": load_fomc_minutes_dates(2021, 2026),  # ~40 events × 5y
+}
+
+# For each bar, compute event proximity features (doc 02 owns the feature side; doc 01 just persists the schedule).
+calendar = build_calendar_dataframe(CALENDAR_EVENTS)
+calendar.to_parquet("data/raw/calendar_events_v1.parquet")
+```
+
+**Schema (one row per event):**
+- `event_type` (FOMC/CPI/NFP/GDP/JOLTS/PCE/FOMC_minutes)
+- `event_ts_utc` (release timestamp)
+- `tier` (1 = market-moving like NFP/CPI/FOMC; 2 = secondary like JOLTS)
+
+**Pitfalls:**
+- Calendars sometimes change (Fed shifts FOMC date for emergencies — March 2020 cut). Verify with /browse before training; no live API for "official" calendar.
+- Daylight Saving shifts release-time UTC by 1 hour in spring/fall. Always store UTC, never ET.
+- Some FOMC days have a `decision` and a `press conference` ~30 min later — represent as two separate events if useful; default V1 = single event at decision time (14:00 ET).
+
+**Storage: ~340 events × 5y × 3 cols = trivial.**
+
 ## Point-in-Time Discipline (CRITICAL)
 
 **The Rule:** every feature for bar at time T uses data with timestamp **strictly less than** T_close, and accounts for publication latency.
@@ -575,12 +864,28 @@ meta = {
     "time_range_utc": [snapshot.index.min().isoformat(), snapshot.index.max().isoformat()],
     "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
     "data_sources": [
-        {"name": "alpaca_bars", "feed": "iex", "since": "2016", "license": "MIT-equivalent"},
+        {"name": "alpaca_bars", "feed": "iex", "since": "2016", "license": "MIT-equivalent", "symbols": ["GLD"]},
+        {"name": "alpaca_etfs", "feed": "iex", "since": "2016",
+         "symbols": ["SPY", "QQQ", "IWM", "GDX", "SLV", "XLF", "XLE", "XLK", "XLU"]},
         {"name": "alpaca_news", "source": "benzinga", "since": "2015"},
         {"name": "gdelt_gkg", "version": "2.0", "snapshot_table": "nanogld-data.gold_news.gkg_5y"},
-        {"name": "fred_alfred", "series": ["DTWEXBGS", "DGS10", "DGS2", "T5YIE", "VIXCLS", "DCOILBRENTEU", "DCOILWTICO"]},
+        {"name": "fred_alfred", "n_series": 34, "series": [
+            "DGS3MO", "DGS6MO", "DGS2", "DGS5", "DGS10", "DGS30",
+            "DFII5", "DFII10", "T5YIE", "T10YIE", "T5YIFR",
+            "DTWEXBGS", "VIXCLS", "DCOILBRENTEU", "DCOILWTICO",
+            "UNRATE", "PAYEMS", "ICSA", "CCSA", "JTSJOL",
+            "CPIAUCSL", "CPILFESL", "PCEPI", "PCEPILFE",
+            "GDPC1", "INDPRO", "RSAFS", "HOUST", "UMCSENT",
+            "M2SL", "WALCL", "RRPONTSYD", "FEDFUNDS", "SOFR",
+        ]},
         {"name": "yfinance", "version": "1.3.0", "tickers": ["BZ=F", "CL=F"]},
         {"name": "gpr_index", "url": "https://www.matteoiacoviello.com/gpr_files/data_gpr_export.xls"},
+        {"name": "cftc_cot", "report": "disaggregated_futures_only", "contract": "GOLD - COMMODITY EXCHANGE INC.",
+         "frequency": "weekly", "release_dow": "Friday 15:30 ET"},
+        {"name": "wgc_central_bank", "url": "https://www.gold.org/goldhub/data/quarterly-central-bank-statistics",
+         "frequency": "quarterly", "release_lag_weeks": 6},
+        {"name": "calendar_events_v1", "events": ["FOMC", "CPI", "NFP", "GDP", "JOLTS", "PCE", "FOMC_minutes"],
+         "source": "deterministic schedule built from BLS/BEA/Fed calendars"},
     ],
     "schema_version": "v1.0.0",
 }
@@ -628,23 +933,29 @@ Run on every CI / pre-commit. If it fails, do not commit.
 data/
 ├── raw/
 │   ├── alpaca_bars_GLD_30min_2021_2026.parquet
+│   ├── alpaca_bars_SPY_30min.parquet           # NEW V1 — equity basket
+│   ├── alpaca_bars_QQQ_30min.parquet
+│   ├── alpaca_bars_IWM_30min.parquet
+│   ├── alpaca_bars_GDX_30min.parquet           # gold miners
+│   ├── alpaca_bars_SLV_30min.parquet           # silver
+│   ├── alpaca_bars_XLF_30min.parquet           # sector ETFs
+│   ├── alpaca_bars_XLE_30min.parquet
+│   ├── alpaca_bars_XLK_30min.parquet
+│   ├── alpaca_bars_XLU_30min.parquet
 │   ├── alpaca_news_GLD_2021_2026.parquet
-│   ├── gdelt_gkg_macro_5y.parquet            # exported from materialized BigQuery table
-│   ├── fred_dtwexbgs_all_releases.parquet
-│   ├── fred_dgs10_all_releases.parquet
-│   ├── fred_dgs2_all_releases.parquet
-│   ├── fred_t5yie_all_releases.parquet
-│   ├── fred_vixcls_all_releases.parquet
-│   ├── fred_dcoilbrenteu_all_releases.parquet
-│   ├── fred_dcoilwtico_all_releases.parquet
+│   ├── gdelt_gkg_macro_5y.parquet              # exported from materialized BigQuery table
+│   ├── fred_*_all_releases.parquet             # 34 series × 1 file each
 │   ├── brent_daily.parquet
 │   ├── wti_daily.parquet
-│   └── gpr_monthly.parquet
+│   ├── gpr_monthly.parquet
+│   ├── cftc_cot_gold_weekly.parquet            # NEW V1 — COT disaggregated
+│   ├── wgc_central_bank_quarterly.parquet      # NEW V1 — WGC flows
+│   └── calendar_events_v1.parquet              # NEW V1 — deterministic event schedule
 ├── snapshots/
 │   ├── v1_<hash>.parquet
 │   └── v1_<hash>_meta.json
 └── tests/
-    └── test_data_join.py                      # golden fixture
+    └── test_data_join.py                       # golden fixture (extended for new sources)
 ```
 
 ## Day-by-Day Implementation (REVISED for verified pitfalls)
@@ -654,17 +965,21 @@ data/
 | 1 AM | Setup | Alpaca paper account + keys + verify SDK works | `.env.paper` populated |
 | 1 AM | Setup | FRED API key (free, instant) | `.env` updated |
 | 1 PM | Setup | GCP project + billing + BigQuery + custom 1024 GiB/day quota | Working `bq` CLI |
-| 1 PM | Pull | Alpaca historical bars 5y GLD 30min (`adjustment="all"`, `feed="iex"`) | `data/raw/alpaca_bars_*.parquet` |
+| 1 PM | Pull | Alpaca historical bars 5y GLD 30min | `data/raw/alpaca_bars_GLD_*.parquet` |
+| 1 PM | Pull | Alpaca ETF basket 5y 30min (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU) | `data/raw/alpaca_bars_<sym>_30min.parquet` × 9 |
 | 2 AM | Pull | Alpaca News 5y (Benzinga, paginate via 50-cap) | `data/raw/alpaca_news_*.parquet` |
-| 2 AM | Pull | FRED ALFRED 7 series, full vintage cubes | `data/raw/fred_*_all_releases.parquet` |
+| 2 AM | Pull | FRED ALFRED 34 series, full vintage cubes (~17s wall, ~120 MB) | `data/raw/fred_*_all_releases.parquet` |
 | 2 PM | Pull | yfinance Brent + WTI daily + GPR Excel | `data/raw/{brent,wti,gpr}_*.parquet` |
+| 2 PM | Pull | CFTC COT weekly disaggregated for COMEX gold | `data/raw/cftc_cot_gold_weekly.parquet` |
+| 2 PM | Pull | WGC central bank quarterly flows (browse-verify URL first) | `data/raw/wgc_central_bank_quarterly.parquet` |
 | 3 AM | Pull | GDELT GKG 5y materialize via BigQuery (~931 GB scan, dry-run first!) | BQ table + parquet export |
-| 3 PM | Build | Joiner with point-in-time discipline | `src/data/join.py` |
-| 3 PM | Test | Golden fixture test | `tests/test_data_join.py` (passes) |
+| 3 AM | Build | Calendar event schedule (deterministic, hard-coded BLS/BEA/Fed dates) | `data/raw/calendar_events_v1.parquet` |
+| 3 PM | Build | Joiner with point-in-time discipline (now ~12 sources) | `src/data/join.py` |
+| 3 PM | Test | Golden fixture test (extended for COT release-time + calendar event) | `tests/test_data_join.py` (passes) |
 | 4 AM | Run | Full join, snapshot, hash, meta JSON | `data/snapshots/v1_<hash>.parquet` |
-| 4 PM | Validate | Schema validator + sanity plots (price coverage, news coverage by month, NaN counts) | Plots + report |
+| 4 PM | Validate | Schema validator + sanity plots (per-source coverage, NaN counts, vintage spot-checks) | Plots + report |
 
-Total: 4 days realistic (revised from 1.5-2 in skeleton).
+Total: **4-5 days** realistic (was 4 days pre-expansion; +1 day for ETF basket pull validation, COT parser, WGC URL discovery, calendar build).
 
 ## Top 10 Pitfalls (VERIFIED, all from research subagents)
 
@@ -683,6 +998,17 @@ Total: 4 days realistic (revised from 1.5-2 in skeleton).
 
 - [ ] After `pip install`, verify `alpaca-py>=0.43,<1.0`, `yfinance==1.3.0`, `fredapi==0.5.2`, `google-cloud-bigquery>=3.40`
 - [ ] After GCP setup, verify dry-run estimate matches reality on a 1-month GKG slice (catches partition-prune mistakes early)
-- [ ] Confirm `T5YIE` (breakeven) is what we want, not `T5YIFR` (forward) — both available on ALFRED, picking based on whether breakeven or forward aligns with our gold thesis
+- [x] Confirm `T5YIE` (breakeven) is what we want — V1 expansion settles this: pull BOTH T5YIE + T10YIE + T5YIFR. Doc 02 builds derived features from all three.
 - [ ] Decide: do we backfill Brent/WTI 30m at all? Probably no — daily ffill is fine at our scale. Leave as 30m TODO if model regresses on smoothing.
 - [ ] AI-GPR daily index (https://www.matteoiacoviello.com/ai_gpr.html) — worth fetching as additional feature?
+- [ ] Verify all 9 ETFs in the basket (SPY/QQQ/IWM/GDX/SLV/XLF/XLE/XLK/XLU) return clean 5y of 30m bars on Alpaca free IEX feed before continuing — spawn Nia subagent if any fails.
+- [ ] Verify CFTC disaggregated zip URLs are still live for years 2021-2026 (CFTC has rotated paths in past). Use `/browse` to confirm.
+- [ ] Verify WGC central-bank-quarterly CSV exact URL (it changes — last verified URL pattern is form-based; may require `/browse` to extract direct download link).
+- [ ] FOMC emergency dates outside scheduled meetings (e.g., March 2020 emergency cut) — V1 hard-codes scheduled-only. If model misses regime breaks, add emergency dates.
+
+### Deferred specialty signals (owner declined 2026-05-04 — re-ask after V1 baseline)
+
+These were surfaced to owner on 2026-05-04 dataset expansion, owner did NOT select. Track here so they don't get lost:
+
+- [ ] **Gold-IV / credit / bond vol bundle** — GVZ (CBOE Gold VIX, direct gold IV), HY OAS (BAMLH0A0HYM2), IG OAS (BAMLC0A0CM), MOVE (bond vol). All free from FRED + CBOE. Adds ~4 series. Re-ask if model misses vol-spike regimes.
+- [ ] **USD cross-rates / crypto / industrial metals bundle** — DEXUSEU, DEXJPUS, DEXCHUS, DEXUSUK direct FX; BTC-USD/ETH-USD daily; HG=F (Dr. Copper), SI=F silver futures, PL=F platinum, PA=F palladium. All free from FRED/yfinance. Re-ask if alt-store-of-value regime not captured by SLV/GDX/DTWEXBGS combination.
