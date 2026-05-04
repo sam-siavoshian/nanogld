@@ -1,0 +1,45 @@
+name: smoke-test
+
+# Catches API drift / dep breakage between active development cycles.
+# Spec: plan/01-INFRA-AND-SECURITY.md "Quarterly Smoke Test (CI cron)"
+# bumped to monthly per spec line 503 (cron: '0 0 1 * *').
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install deps (frozen lockfile)
+        run: uv sync --frozen
+
+      - name: Critical-import sanity
+        run: |
+          uv run python - <<'PY'
+          import sys
+          import torch, pandas, numpy, transformers, sentence_transformers
+          import alpaca, fredapi, xgboost, sklearn, feedparser, yfinance
+          import schedulefree, accelerate
+          print(f"python:       {sys.version.split()[0]}")
+          print(f"torch:        {torch.__version__}")
+          print(f"transformers: {transformers.__version__}")
+          print(f"sentence-tr:  {sentence_transformers.__version__}")
+          print(f"pandas:       {pandas.__version__}")
+          print(f"numpy:        {numpy.__version__}")
+          print(f"xgboost:      {xgboost.__version__}")
+          print("all critical imports ok")
+          PY
