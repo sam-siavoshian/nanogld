@@ -1,0 +1,82 @@
+[project]
+name = "nanogld"
+version = "0.1.0"
+description = "From-scratch encoder-only transformer for 30min GLD direction prediction"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11,<3.13"
+authors = [
+    { name = "Saam Siavoshian", email = "samsiavoshian2009@gmail.com" },
+]
+dependencies = [
+    # Core ML
+    "torch>=2.11.0,<2.12",
+    "transformers>=5.7.0",
+    "sentence-transformers>=5.0",
+    "huggingface_hub>=1.13.0",
+    "accelerate>=1.13,<2.0",
+    "schedulefree>=1.0",
+
+    # Trading
+    "alpaca-py>=0.43,<1.0",
+
+    # Data sources
+    "yfinance==1.3.0",
+    "fredapi==0.5.2",
+    "google-cloud-bigquery>=3.40",
+    "feedparser>=6.0",
+    "beautifulsoup4>=4.12",
+
+    # Numerical
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "scikit-learn>=1.5",
+    "xgboost>=2.1",
+    "pyarrow>=16",
+    "arch>=7.2",
+
+    # Time-series + indicators
+    "pandas-ta-classic==0.5.44",
+    "pandas-market-calendars==5.3.2",
+
+    # Apple Silicon LLM inference (frozen Qwen3-Embedding-4B 4-bit)
+    "mlx-lm>=0.31.3 ; sys_platform == 'darwin'",
+
+    # Utilities
+    "python-dotenv>=1.0",
+    "filelock>=3.13",
+    "wandb>=0.18",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.11",
+    "mypy>=1.10",
+    "pre-commit>=4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nanogld"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "C4", "UP", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
