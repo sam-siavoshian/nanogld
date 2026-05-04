@@ -19,7 +19,6 @@ from __future__ import annotations
 import io
 import re
 import zipfile
-from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
@@ -81,7 +80,10 @@ def _filter_gold(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _normalize_columns(g: pd.DataFrame) -> pd.DataFrame:
-    """Map raw CFTC column names to our schema."""
+    """Map raw CFTC column names to our schema. Uses g's index for alignment
+    (otherwise pd.Series with default RangeIndex misaligns with non-default g).
+    """
+    g = g.reset_index(drop=True)  # canonical index for alignment
     pick = {
         "report_date_str": next(c for c in g.columns if "Report_Date" in c),
         "oi": next((c for c in g.columns if c == "Open_Interest_All"), None),
@@ -93,10 +95,16 @@ def _normalize_columns(g: pd.DataFrame) -> pd.DataFrame:
         "nonrept_long": next((c for c in g.columns if c == "NonRept_Positions_Long_All"), None),
         "nonrept_short": next((c for c in g.columns if c == "NonRept_Positions_Short_All"), None),
     }
-    out = pd.DataFrame(index=g.index)
-    out["contract_code"] = pd.Series([GOLD_CONTRACT_CODE] * len(g), dtype="string")
-    out["contract_name"] = pd.Series([GOLD_CONTRACT_NAME] * len(g), dtype="string")
-    out["report_date"] = pd.to_datetime(g[pick["report_date_str"]], utc=True, errors="coerce")
+    n = len(g)
+    out = pd.DataFrame(
+        {
+            "contract_code": pd.array([GOLD_CONTRACT_CODE] * n, dtype="string"),
+            "contract_name": pd.array([GOLD_CONTRACT_NAME] * n, dtype="string"),
+            "report_date": pd.to_datetime(
+                g[pick["report_date_str"]].values, utc=True, errors="coerce"
+            ),
+        }
+    )
     for col in (
         "oi",
         "mm_long",
@@ -109,29 +117,38 @@ def _normalize_columns(g: pd.DataFrame) -> pd.DataFrame:
     ):
         src = pick[col]
         if src is None:
-            out[col] = pd.Series([pd.NA] * len(g), dtype="float64")
+            out[col] = pd.array([pd.NA] * n, dtype="float64")
         else:
-            out[col] = pd.to_numeric(g[src], errors="coerce").astype("float64")
+            out[col] = pd.to_numeric(g[src].values, errors="coerce").astype("float64")
     out = out.rename(columns={"oi": "oi_open_interest"})
     return out
 
 
 def fetch_cot_year(year: int) -> pd.DataFrame:
-    """Pull a single historical year. Current year uses f_disagg.txt directly."""
-    if year == datetime.now(tz=UTC).year:
-        LOG.info("fetching current-year COT %s", year)
-        body = http_get_bytes(CURRENT_YEAR_URL)
-        df = _parse_cot_text(body)
-    else:
-        url = _zip_url_for_year(year)
-        LOG.info("fetching COT %s from %s", year, url)
+    """Pull a single historical year. Always uses historical zip — the
+    current-year f_disagg.txt short-format lacks the standard column header
+    row, so we rely on the year-zip endpoint exclusively (it includes the
+    current year as it accumulates).
+    """
+    url = _zip_url_for_year(year)
+    LOG.info("fetching COT %s from %s", year, url)
+    try:
         body = http_get_bytes(url)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("COT zip fetch failed for %s (%s) — year skipped", year, e)
+        return pd.DataFrame()
+    try:
         with zipfile.ZipFile(BytesIO(body)) as zf:
             txt_name = next(n for n in zf.namelist() if n.lower().endswith((".txt", ".csv")))
             with zf.open(txt_name) as f:
                 df = _parse_cot_text(f.read())
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("COT zip parse failed for %s (%s) — year skipped", year, e)
+        return pd.DataFrame()
+    if df.empty:
+        return df
     g = _filter_gold(df)
-    return _normalize_columns(g)
+    return _normalize_columns(g) if not g.empty else g
 
 
 def _flag_irregular(df: pd.DataFrame) -> pd.DataFrame:

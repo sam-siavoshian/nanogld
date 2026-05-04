@@ -38,8 +38,14 @@ def _gpr_cache_dir() -> Path:
 
 
 def fetch_and_snapshot() -> dict[str, dict[str, str]]:
-    """Pull both files, store raw bytes keyed by fetch_ts + sha."""
-    fetch_ts = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+    """Pull both files, store raw bytes keyed by fetch_ts + sha.
+
+    fetch_ts is ISO 8601 (parseable by pd.Timestamp). filename uses a
+    `:`-stripped variant since macOS rejects colons.
+    """
+    now = datetime.now(tz=UTC)
+    fetch_ts = now.isoformat().replace("+00:00", "Z")
+    fname_ts = now.strftime("%Y%m%dT%H%M%SZ")
     out: dict[str, dict[str, str]] = {}
     for name, url in [("monthly", GPR_MONTHLY_URL), ("aigpr_daily", AIGPR_DAILY_URL)]:
         try:
@@ -49,7 +55,7 @@ def fetch_and_snapshot() -> dict[str, dict[str, str]]:
             continue
         sha = hashlib.sha256(body).hexdigest()[:16]
         suffix = ".xls" if name == "monthly" else ".csv"
-        path = _gpr_cache_dir() / f"{name}_{fetch_ts}_{sha}{suffix}"
+        path = _gpr_cache_dir() / f"{name}_{fname_ts}_{sha}{suffix}"
         path.write_bytes(body)
         out[name] = {
             "path": str(path),

@@ -36,8 +36,14 @@ def _wgc_cache_dir() -> Path:
 
 
 def fetch_and_snapshot() -> dict[str, dict[str, str]]:
-    """Pull both files; keep raw bytes keyed by fetch-ts + sha."""
-    fetch_ts = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+    """Pull both files; keep raw bytes keyed by fetch-ts + sha.
+
+    fetch_ts is ISO 8601 (parseable by pd.Timestamp). filename uses a
+    `:`-stripped variant since macOS filesystem rejects colons.
+    """
+    now = datetime.now(tz=UTC)
+    fetch_ts = now.isoformat().replace("+00:00", "Z")
+    fname_ts = now.strftime("%Y%m%dT%H%M%SZ")
     out: dict[str, dict[str, str]] = {}
     for name, url in [
         ("quarterly_ts", WGC_QUARTERLY_TIMESERIES),
@@ -49,7 +55,22 @@ def fetch_and_snapshot() -> dict[str, dict[str, str]]:
             LOG.warning("WGC fetch failed (%s): %s", name, e)
             continue
         sha = hashlib.sha256(body).hexdigest()[:16]
-        path = _wgc_cache_dir() / f"{name}_{fetch_ts}_{sha}.xlsx"
+        # Sniff content. gold.org/download/<id> URLs return an HTML form wall
+        # for direct GETs; spec line 162 flags this — needs /browse to bypass.
+        if body.startswith(b"PK\x03\x04"):
+            ext = ".xlsx"
+        elif body.startswith(b"<!DOCTYPE") or body[:6].lower().startswith(b"<html"):
+            ext = ".html"
+            LOG.warning(
+                "WGC %s returned HTML form-wall (%d B). Direct download blocked; "
+                "owner must extract real URL via /browse (spec line 162). "
+                "Snapshot kept for audit.",
+                name,
+                len(body),
+            )
+        else:
+            ext = ".bin"
+        path = _wgc_cache_dir() / f"{name}_{fname_ts}_{sha}{ext}"
         path.write_bytes(body)
         out[name] = {
             "path": str(path),
@@ -130,9 +151,7 @@ def build_wgc_dataframe(snap: dict[str, dict[str, str]]) -> pd.DataFrame:
     if country_col is None:
         return pd.DataFrame()
 
-    fetch_ts = pd.Timestamp(
-        info["fetch_ts"].replace("T", " ").replace("Z", "").replace("-", ":", 2), tz=UTC
-    )
+    fetch_ts = pd.Timestamp(info["fetch_ts"], tz=UTC)
     period = pd.Timestamp(
         datetime.now(tz=UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     )
