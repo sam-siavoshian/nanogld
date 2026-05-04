@@ -16,17 +16,14 @@ dependencies = [
     "huggingface_hub>=1.13.0",
     "accelerate>=1.13,<2.0",
     "schedulefree>=1.0",
-
     # Trading
     "alpaca-py>=0.43,<1.0",
-
     # Data sources
     "yfinance==1.3.0",
     "fredapi==0.5.2",
     "google-cloud-bigquery>=3.40",
     "feedparser>=6.0",
     "beautifulsoup4>=4.12",
-
     # Numerical
     "pandas>=2.2",
     "numpy>=2.0",
@@ -34,18 +31,22 @@ dependencies = [
     "xgboost>=2.1",
     "pyarrow>=16",
     "arch>=7.2",
-
     # Time-series + indicators
     "pandas-ta-classic==0.5.44",
     "pandas-market-calendars==5.3.2",
-
     # Apple Silicon LLM inference (frozen Qwen3-Embedding-4B 4-bit)
     "mlx-lm>=0.31.3 ; sys_platform == 'darwin'",
-
     # Utilities
     "python-dotenv>=1.0",
     "filelock>=3.13",
     "wandb>=0.18",
+    "curl-cffi>=0.7",
+    "datasets>=3.0",
+    "requests>=2.32",
+    "tqdm>=4.66",
+    "lxml>=5.0",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
 ]
 
 [dependency-groups]

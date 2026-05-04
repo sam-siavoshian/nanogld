@@ -43,9 +43,10 @@ service-account*.json
 alpaca-*
 
 # ML artifacts (regenerable, large, content-addressed)
-data/
-checkpoints/
-runs/
+# anchor data/ to repo root so src/nanogld/data/ (code) is NOT ignored
+/data/
+/checkpoints/
+/runs/
 wandb/
 mlruns/
 lightning_logs/
