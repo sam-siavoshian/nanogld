@@ -141,14 +141,36 @@ def fetch_cftc_speeches() -> pd.DataFrame:
     return _scrape_index_page(CFTC_SPEECHES, "cftc_speeches", "government_official")
 
 
+# Regional Federal Reserve speech archives — public domain US gov't (17 USC §105).
+# Each is a paginated HTML index; we snapshot page 1 for V1, owner extends with
+# multi-page Wayback backfill if signal proves useful.
+REGIONAL_FED_URLS: dict[str, str] = {
+    "cleveland_fed": "https://www.clevelandfed.org/research/speeches",
+    "chicago_fed": "https://www.chicagofed.org/publications/speeches",
+    "ny_fed": "https://www.newyorkfed.org/newsevents/speeches",
+    "sf_fed": "https://www.sf.frb.org/news/speeches",
+    "atlanta_fed": "https://www.atlantafed.org/news/speeches",
+}
+
+
+def fetch_regional_fed(source: str, url: str) -> pd.DataFrame:
+    """Generic regional-Fed scrape. Same _scrape_index_page selector heuristic."""
+    return _scrape_index_page(url, source, "central_bank_official")
+
+
 def write_central_bank_parquet() -> tuple[pd.DataFrame, str]:
     frames: list[pd.DataFrame] = []
-    for fn, label in [
+    callers: list[tuple] = [
         (fetch_bis_speeches, "BIS"),
         (fetch_ecb_fed_speeches, "ECB+FED"),
         (fetch_treasury_press_releases, "Treasury"),
         (fetch_cftc_speeches, "CFTC"),
-    ]:
+    ]
+    # Regional Feds — append each as a callable returning DataFrame.
+    for src_name, url in REGIONAL_FED_URLS.items():
+        callers.append((lambda u=url, s=src_name: fetch_regional_fed(s, u), src_name))
+
+    for fn, label in callers:
         try:
             df = fn()
             LOG.info("%s -> %d rows", label, len(df))

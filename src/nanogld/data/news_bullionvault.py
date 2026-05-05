@@ -1,94 +1,128 @@
-"""BullionVault author-pages scraper — Source 15.
+"""BullionVault dealer commentary — Source 15. Wayback CDX backfill.
 
-Bullish dealer marketing. Use as bias-extreme feature, NOT raw signal.
-LAFTR will heavily down-weight in inference.
+Live scraper selectors don't match the modern layout. Wayback covers it.
 
 Spec: plan/02-DATA-PIPELINE.md "Source 15".
-- Bias tier: dealer_bullish.
-- No news API exists.
-- robots FAQ: bullionvault.com/help/FAQs/FAQs_bots.html — review before scraping.
-
-V1 ships a fetch-author-page primitive owner runs explicitly. Light V1 scope
-(~500MB worth of articles).
+- bias_tier = dealer_bullish (LAFTR head down-weights at inference per doc 03).
+- Smaller corpus than Kitco (handful of authors).
 """
 
 from __future__ import annotations
 
-import time
-from urllib.parse import urljoin
+from datetime import UTC, date, datetime
 
 import pandas as pd
-import requests
+from bs4 import BeautifulSoup
 
+from nanogld.data import wayback_helpers
 from nanogld.data.schema import NEWS_MANIFEST, validate
 from nanogld.data.utils import get_logger, raw_dir
 
 LOG = get_logger("nanogld.data.news_bullionvault")
 
-BV_HOME = "https://www.bullionvault.com"
-BV_AUTHOR_PAGES = (
-    "https://www.bullionvault.com/gold-news/users/adrian-ash",
-    "https://www.bullionvault.com/gold-news/users/gold-report",
-)
 BIAS_TIER = "dealer_bullish"
-THROTTLE_SEC = 3
+SOURCE_NAME = "bullionvault"
+ARTICLE_URL_GLOB = "bullionvault.com/gold-news/*"
 
 
-def fetch_author_page(url: str) -> pd.DataFrame:
-    """Single author archive page. Returns articles with (title, url, pub_ts)."""
-    from bs4 import BeautifulSoup  # noqa: PLC0415
-
-    LOG.info("fetching BullionVault: %s", url)
+def _parse_html(html: bytes) -> dict[str, str | None]:
     try:
-        resp = requests.get(url, timeout=30, headers={"User-Agent": "nanoGLD/0.1"})
-        resp.raise_for_status()
+        soup = BeautifulSoup(html, "lxml")
     except Exception as e:  # noqa: BLE001
-        LOG.warning("BullionVault fetch failed (%s): %s", url, e)
-        return pd.DataFrame()
+        LOG.warning("BullionVault parse failed: %s", e)
+        return {"title": None, "body": None, "pub_ts": None}
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    title = None
+    h1 = soup.find("h1")
+    if h1:
+        title = h1.get_text(strip=True)
+    if not title:
+        og = soup.find("meta", property="og:title")
+        if og and og.get("content"):
+            title = og["content"].strip()
+
+    body = None
+    art = soup.find("article")
+    if art:
+        body = art.get_text(" ", strip=True)
+    if not body:
+        paras = soup.find_all("p")
+        if paras:
+            body = " ".join(p.get_text(" ", strip=True) for p in paras[:30])
+
+    pub_ts = None
+    meta = soup.find("meta", property="article:published_time")
+    if meta and meta.get("content"):
+        pub_ts = meta["content"]
+    if not pub_ts:
+        t = soup.find("time")
+        if t and t.get("datetime"):
+            pub_ts = t["datetime"]
+
+    return {"title": title, "body": body, "pub_ts": pub_ts}
+
+
+def _capture_ts_to_iso(ts: str) -> pd.Timestamp:
+    return pd.Timestamp(datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=UTC))
+
+
+def backfill_wayback(
+    *,
+    start: date = date(2021, 4, 24),
+    end: date = date(2026, 4, 24),
+    cdx_limit: int = 5000,
+    polite_sec: float = 2.0,
+) -> pd.DataFrame:
+    captures = wayback_helpers.cdx_search(ARTICLE_URL_GLOB, start=start, end=end, limit=cdx_limit)
+    LOG.info("BullionVault: %d captures from CDX", len(captures))
+
     rows: list[dict[str, object]] = []
-    for art in soup.select("article, div.story, li.article"):
-        a = art.find("a", href=True)
-        if not a:
+    for capture_ts, url in captures:
+        if "/gold-news/" not in url:
             continue
-        title = a.get_text(strip=True)
-        href = urljoin(BV_HOME, a["href"])
-        time_el = art.find("time")
-        pub = (
-            pd.to_datetime(time_el.get("datetime"), utc=True, errors="coerce")
-            if time_el and time_el.get("datetime")
-            else pd.NaT
+        body = wayback_helpers.fetch_capture(
+            capture_ts, url, source=SOURCE_NAME, polite_sec=polite_sec
         )
-        rows.append({"article_id": href, "title": title, "url": href, "pub_ts": pub})
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+        if body is None:
+            continue
+        parsed = _parse_html(body)
+        if not parsed["title"]:
+            continue
+        created_at = pd.to_datetime(parsed["pub_ts"], utc=True, errors="coerce")
+        if pd.isna(created_at):
+            created_at = _capture_ts_to_iso(capture_ts)
+        rows.append(
+            {
+                "article_id": url,
+                "source": SOURCE_NAME,
+                "created_at": created_at,
+                "title": parsed["title"],
+                "body": parsed["body"],
+                "url": url,
+                "symbols": pd.NA,
+                "bias_tier": BIAS_TIER,
+            }
+        )
 
-
-def fetch_all_authors() -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for url in BV_AUTHOR_PAGES:
-        frames.append(fetch_author_page(url))
-        time.sleep(THROTTLE_SEC)
-    df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
-    if df.empty:
-        return df
-
-    df["source"] = pd.Series(["bullionvault"] * len(df), dtype="string")
-    df["created_at"] = pd.to_datetime(df["pub_ts"], utc=True)
-    df = df.dropna(subset=["created_at"])
-    df["bias_tier"] = pd.Series([BIAS_TIER] * len(df), dtype="string")
-    df["title"] = df["title"].astype("string")
-    df["body"] = pd.Series([pd.NA] * len(df), dtype="string")
-    df["url"] = df["url"].astype("string")
-    df["article_id"] = df["article_id"].astype("string")
-    df["symbols"] = pd.Series([pd.NA] * len(df), dtype="string")
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    for c in ("article_id", "source", "title", "body", "url", "bias_tier"):
+        df[c] = df[c].astype("string")
+    df["symbols"] = df["symbols"].astype("string")
+    df = df.drop_duplicates(subset=["article_id"]).reset_index(drop=True)
+    df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
     df["release_ts"] = df["created_at"]
-    df["t_visible"] = df["created_at"]
-    return df[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
+    df["t_visible"] = df["created_at"] + pd.Timedelta(seconds=60)
+    return df[[c.name for c in NEWS_MANIFEST.columns]]
 
 
-def write_bullionvault_parquet() -> tuple[pd.DataFrame, str]:
-    df = fetch_all_authors()
+def write_bullionvault_parquet(
+    *,
+    start: date = date(2021, 4, 24),
+    end: date = date(2026, 4, 24),
+) -> tuple[pd.DataFrame, str]:
+    df = backfill_wayback(start=start, end=end)
     if df.empty:
         return df, ""
     validate(df, NEWS_MANIFEST)

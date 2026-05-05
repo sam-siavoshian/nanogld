@@ -1,121 +1,138 @@
-"""Investing.com Gold scraper — Source 14.
+"""Investing.com gold news — Source 14. Wayback CDX backfill.
 
-Aggregator with the largest archive among user-listed sources. Mostly neutral
-wire syndication.
+Live Cloudflare-walled scrape returns 0 articles. Wayback CDX is the
+working alternative for the V1 window.
 
 Spec: plan/02-DATA-PIPELINE.md "Source 14".
-- Bias tier: aggregator_neutral.
-- Cloudflare anti-bot — use curl_cffi browser impersonation.
-- ToS: research-use grey zone. Throttle ≥ 1 req/3s.
-
-V1 ships a fetch-one-page primitive + a paged scrape skeleton owner runs
-explicitly. Live RSS / live cycle uses Alpaca News + Kitco for first-pass.
+- bias_tier = aggregator_neutral.
+- Same wayback_helpers infrastructure as Kitco.
+- ToS: research-use grey zone; existing IA captures are fair-use.
 """
 
 from __future__ import annotations
 
-import time
+from datetime import UTC, date, datetime
 
 import pandas as pd
-from curl_cffi import requests as curl_requests
+from bs4 import BeautifulSoup
 
+from nanogld.data import wayback_helpers
 from nanogld.data.schema import NEWS_MANIFEST, validate
 from nanogld.data.utils import get_logger, raw_dir
 
 LOG = get_logger("nanogld.data.news_investing")
 
-GOLD_NEWS_INDEX = "https://www.investing.com/commodities/gold-news"
 BIAS_TIER = "aggregator_neutral"
-THROTTLE_SEC = 3
+SOURCE_NAME = "investing_com"
+ARTICLE_URL_GLOB = "investing.com/news/commodities-news/*"
 
 
-def _session() -> curl_requests.Session:
-    return curl_requests.Session(impersonate="chrome")
-
-
-def fetch_gold_index_html() -> str | None:
-    """One-shot fetch of the gold-news index page. Cloudflare-aware via curl_cffi."""
-    LOG.info("fetching Investing.com gold-news index")
+def _parse_html(html: bytes) -> dict[str, str | None]:
     try:
-        resp = _session().get(GOLD_NEWS_INDEX, timeout=30)
-        resp.raise_for_status()
-        return resp.text
+        soup = BeautifulSoup(html, "lxml")
     except Exception as e:  # noqa: BLE001
-        LOG.warning("Investing.com fetch failed: %s", e)
-        return None
+        LOG.warning("Investing parse failed: %s", e)
+        return {"title": None, "body": None, "pub_ts": None}
+
+    title = None
+    h1 = soup.find("h1")
+    if h1:
+        title = h1.get_text(strip=True)
+    if not title:
+        og = soup.find("meta", property="og:title")
+        if og and og.get("content"):
+            title = og["content"].strip()
+
+    body = None
+    art = soup.find("article")
+    if art:
+        body = art.get_text(" ", strip=True)
+    if not body:
+        paras = soup.find_all("p")
+        if paras:
+            body = " ".join(p.get_text(" ", strip=True) for p in paras[:30])
+
+    pub_ts = None
+    meta = soup.find("meta", property="article:published_time")
+    if meta and meta.get("content"):
+        pub_ts = meta["content"]
+    if not pub_ts:
+        t = soup.find("time")
+        if t and t.get("datetime"):
+            pub_ts = t["datetime"]
+
+    return {"title": title, "body": body, "pub_ts": pub_ts}
 
 
-def parse_index_articles(html: str) -> list[dict[str, object]]:
-    """Best-effort extract of (title, url, pub_ts) tuples from the index page."""
-    from bs4 import BeautifulSoup  # noqa: PLC0415
+def _capture_ts_to_iso(ts: str) -> pd.Timestamp:
+    return pd.Timestamp(datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=UTC))
 
-    soup = BeautifulSoup(html, "lxml")
+
+def backfill_wayback(
+    *,
+    start: date = date(2021, 4, 24),
+    end: date = date(2026, 4, 24),
+    cdx_limit: int = 10000,
+    polite_sec: float = 2.0,
+) -> pd.DataFrame:
+    captures = wayback_helpers.cdx_search(ARTICLE_URL_GLOB, start=start, end=end, limit=cdx_limit)
+    LOG.info("Investing: %d unique URL captures from CDX", len(captures))
     rows: list[dict[str, object]] = []
-    for art in soup.select("article, div.textDiv, li.js-article-item"):
-        a = art.find("a", href=True)
-        if not a:
+    for capture_ts, url in captures:
+        if "/news/" not in url:
             continue
-        title = a.get_text(strip=True)
-        if not title:
-            continue
-        url = a["href"]
-        if not url.startswith("http"):
-            url = "https://www.investing.com" + url
-        time_el = art.find("time")
-        pub = (
-            pd.to_datetime(time_el["datetime"], utc=True, errors="coerce")
-            if time_el and time_el.get("datetime")
-            else pd.NaT
+        body = wayback_helpers.fetch_capture(
+            capture_ts, url, source=SOURCE_NAME, polite_sec=polite_sec
         )
-        rows.append({"title": title, "url": url, "pub_ts": pub})
-    return rows
+        if body is None:
+            continue
+        parsed = _parse_html(body)
+        if not parsed["title"]:
+            continue
+        created_at = pd.to_datetime(parsed["pub_ts"], utc=True, errors="coerce")
+        if pd.isna(created_at):
+            created_at = _capture_ts_to_iso(capture_ts)
+        rows.append(
+            {
+                "article_id": url,
+                "source": SOURCE_NAME,
+                "created_at": created_at,
+                "title": parsed["title"],
+                "body": parsed["body"],
+                "url": url,
+                "symbols": pd.NA,
+                "bias_tier": BIAS_TIER,
+            }
+        )
 
-
-def backfill_pages(max_pages: int = 5) -> pd.DataFrame:
-    """Page through the gold-news index. Throttled. Best-effort layout heuristic."""
-    sess = _session()
-    all_rows: list[dict[str, object]] = []
-    for page in range(1, max_pages + 1):
-        url = GOLD_NEWS_INDEX if page == 1 else f"{GOLD_NEWS_INDEX}/{page}"
-        try:
-            resp = sess.get(url, timeout=30)
-            resp.raise_for_status()
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("page %d failed: %s", page, e)
-            break
-        rows = parse_index_articles(resp.text)
-        all_rows.extend(rows)
-        LOG.info("page %d -> %d items", page, len(rows))
-        time.sleep(THROTTLE_SEC)
-
-    if not all_rows:
+    if not rows:
         return pd.DataFrame()
-    df = pd.DataFrame(all_rows)
-    df["article_id"] = df["url"].astype("string")
-    df["source"] = pd.Series(["investing_com"] * len(df), dtype="string")
-    df["created_at"] = pd.to_datetime(df["pub_ts"], utc=True)
-    df = df.dropna(subset=["created_at"])
-    df["bias_tier"] = pd.Series([BIAS_TIER] * len(df), dtype="string")
-    df["title"] = df["title"].astype("string")
-    df["body"] = pd.Series([pd.NA] * len(df), dtype="string")
-    df["url"] = df["url"].astype("string")
-    df["symbols"] = pd.Series([pd.NA] * len(df), dtype="string")
+    df = pd.DataFrame(rows)
+    for c in ("article_id", "source", "title", "body", "url", "bias_tier"):
+        df[c] = df[c].astype("string")
+    df["symbols"] = df["symbols"].astype("string")
+    df = df.drop_duplicates(subset=["article_id"]).reset_index(drop=True)
+    df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
     df["release_ts"] = df["created_at"]
-    df["t_visible"] = df["created_at"]
-    return df[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
+    df["t_visible"] = df["created_at"] + pd.Timedelta(seconds=60)
+    return df[[c.name for c in NEWS_MANIFEST.columns]]
 
 
-def write_investing_parquet(max_pages: int = 5) -> tuple[pd.DataFrame, str]:
-    df = backfill_pages(max_pages=max_pages)
+def write_investing_parquet(
+    *,
+    start: date = date(2021, 4, 24),
+    end: date = date(2026, 4, 24),
+) -> tuple[pd.DataFrame, str]:
+    df = backfill_wayback(start=start, end=end)
     if df.empty:
         return df, ""
     validate(df, NEWS_MANIFEST)
     out_path = raw_dir() / "investing_gold_news.parquet"
     df.to_parquet(out_path, compression="zstd", index=False)
-    LOG.info("wrote %d Investing.com rows -> %s", len(df), out_path)
+    LOG.info("wrote %d Investing rows -> %s", len(df), out_path)
     return df, str(out_path)
 
 
 if __name__ == "__main__":
     df, p = write_investing_parquet()
-    print(f"Investing.com gold news: {len(df)} rows -> {p}")
+    print(f"Investing.com: {len(df)} rows -> {p}")

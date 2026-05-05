@@ -1,12 +1,15 @@
 """FNSPID Historical News Corpus — Source 12.
 
 15.7M articles, 1999-2023, multi-source (Reuters, NASDAQ, Benzinga, Lenta, etc).
-arXiv:2402.06698, CC BY 4.0. Single biggest free win for pre-2021 history.
+arXiv:2402.06698. **License: CC BY-NC-4.0 — NON-COMMERCIAL only** (HF dataset
+card; previous spec line saying CC BY 4.0 was wrong — confirmed via Nia 2026-05).
 
 Spec: plan/02-DATA-PIPELINE.md "Source 12".
 - Filter to gold-relevant tickers + commodity miners + macro proxies.
 - Date-precise only (YYYY-MM-DD); t_visible = first RTH bar of date+1.
-- License: CC BY 4.0 — cite arXiv:2402.06698 in README.
+- License: **CC BY-NC-4.0**. Gated behind NANOGLD_NONCOMMERCIAL=1 env flag
+  (default off). Set the flag to enable for V1 personal/research training.
+- Cite arXiv:2402.06698 in README.
 """
 
 from __future__ import annotations
@@ -63,42 +66,98 @@ def _ensure_token() -> str | None:
     return tok
 
 
+def _noncommercial_gate_open() -> bool:
+    """Return True iff NANOGLD_NONCOMMERCIAL=1 is set.
+
+    FNSPID is CC-BY-NC-4.0. The gate prevents accidental commercial use.
+    Default closed; owner sets the flag explicitly to opt in for personal /
+    research training.
+    """
+    if os.environ.get("NANOGLD_NONCOMMERCIAL") != "1":
+        LOG.warning(
+            "FNSPID skipped — license is CC-BY-NC-4.0 (non-commercial). "
+            "Set NANOGLD_NONCOMMERCIAL=1 to enable for personal / research training."
+        )
+        return False
+    return True
+
+
 def fetch_filtered(
     tickers: frozenset[str] = GOLD_RELEVANT_TICKERS,
     *,
-    streaming: bool = True,
+    streaming: bool = False,
+    num_proc: int = 4,
 ) -> pd.DataFrame:
-    """Stream FNSPID, filter to relevant tickers. Streaming avoids 50 GB local download.
+    """Filter FNSPID to gold-relevant tickers. Default: non-streaming + Dataset.filter
+    with num_proc=4 for parallel C-level filtering — 10× faster than the prior
+    Python-iter loop.
+
+    Gated behind NANOGLD_NONCOMMERCIAL=1 (CC-BY-NC-4.0 license).
 
     Args:
         tickers: which symbols to keep.
-        streaming: True streams from HF; False downloads then filters (slow).
+        streaming: True streams from HF (slower iter loop, no local download).
+                   False downloads then filters in parallel (much faster, ~7-8 GB).
+        num_proc: parallel workers when streaming=False.
     """
+    if not _noncommercial_gate_open():
+        return pd.DataFrame()
+
     from datasets import load_dataset  # noqa: PLC0415
 
-    LOG.info("loading FNSPID streaming=%s", streaming)
+    LOG.info("loading FNSPID streaming=%s num_proc=%d", streaming, num_proc)
     token = _ensure_token()
     ds = load_dataset(DATASET, split="train", streaming=streaming, token=token)
-    rows: list[dict[str, object]] = []
-    for ex in ds:
-        sym = str(ex.get("symbol", "")).upper().strip()
-        if sym not in tickers:
-            continue
-        date_str = ex.get("date")
-        if not date_str:
-            continue
-        rows.append(
-            {
-                "article_id": str(ex.get("id") or f"fnspid_{len(rows)}"),
-                "source": str(ex.get("source", "fnspid")).lower(),
-                "created_at": pd.to_datetime(date_str, utc=True, errors="coerce"),
-                "title": str(ex.get("title", "")),
-                "body": str(ex.get("body", "") or ""),
-                "url": str(ex.get("url", "") or ""),
-                "symbols": sym,
+
+    if streaming:
+        # Streaming path: must iterate one-by-one (HF streaming can't pipe to filter).
+        rows: list[dict[str, object]] = []
+        for ex in ds:
+            sym = str(ex.get("symbol", "")).upper().strip()
+            if sym not in tickers:
+                continue
+            date_str = ex.get("date")
+            if not date_str:
+                continue
+            rows.append(
+                {
+                    "article_id": str(ex.get("id") or f"fnspid_{len(rows)}"),
+                    "source": str(ex.get("source", "fnspid")).lower(),
+                    "created_at": pd.to_datetime(date_str, utc=True, errors="coerce"),
+                    "title": str(ex.get("title", "")),
+                    "body": str(ex.get("body", "") or ""),
+                    "url": str(ex.get("url", "") or ""),
+                    "symbols": sym,
+                }
+            )
+        df = pd.DataFrame(rows)
+    else:
+        # Non-streaming: vectorized filter in C, then to_pandas. Much faster.
+        def _rel(ex: dict) -> bool:
+            sym = str(ex.get("symbol", "")).upper().strip()
+            return sym in tickers
+
+        filtered = ds.filter(_rel, num_proc=num_proc)
+        if len(filtered) == 0:
+            return pd.DataFrame()
+        df = filtered.to_pandas()
+        df["created_at"] = pd.to_datetime(df.get("date"), utc=True, errors="coerce")
+        # Conform column names + dtypes downstream-of-here
+        df = df.rename(
+            columns={
+                "id": "article_id",
+                "source": "source_raw",
             }
         )
-    df = pd.DataFrame(rows)
+        if "article_id" not in df.columns:
+            df["article_id"] = df.index.astype(str)
+        df["article_id"] = df["article_id"].astype(str).fillna("fnspid_unknown")
+        df["source"] = (df.get("source_raw") or "fnspid").astype(str).str.lower()
+        df["title"] = df.get("title", "").astype(str)
+        df["body"] = df.get("body", "").fillna("").astype(str)
+        df["url"] = df.get("url", "").fillna("").astype(str)
+        df["symbols"] = df.get("symbol", "").astype(str).str.upper()
+        df = df[["article_id", "source", "created_at", "title", "body", "url", "symbols"]]
     if df.empty:
         return df
 

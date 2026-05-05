@@ -1,25 +1,20 @@
-"""Reddit Arctic Shift dumps — Source 17.
+"""Reddit retail sentiment — HF mirror via DuckDB (no torrent).
 
-Pushshift successor. Free torrents through 2026-04. Retail-sentiment proxy.
-Often counter-indicator at extremes (r/wallstreetbets euphoria precedes pullbacks).
+Replaces the prior torrent-only path. The HF dataset `open-index/arctic`
+mirrors the Pushshift Parquet dumps with predicate pushdown, so we can
+query the slice we want without downloading 1.1 TB.
 
-Spec: plan/02-DATA-PIPELINE.md "Source 17".
-- Bias tier: retail_social.
-- Subreddits: Gold, wallstreetbets, investing, Goldandsilverstackers, Commodities.
-- Keyword filter: gold|GLD|silver|SLV|gdx|comex|xau|bullion.
-- Each post + comment has UTC timestamp; t_visible = created_utc.
-- V1: keep posts + top-comment only (comments outnumber posts 50:1).
+Spec: plan/02-DATA-PIPELINE.md "Source 17". V4-corrected.
 
-Owner downloads Arctic Shift torrents manually (multi-GB, multi-day). This
-module parses the resulting zstd-compressed JSONL files.
+Subreddits: Gold / wallstreetbets / investing / Goldandsilverstackers / Commodities.
+Keyword filter: gold|GLD|silver|SLV|gdx|comex|xau|bullion|miner.
+
+bias_tier = retail_social. Often counter-indicator at extremes.
 """
 
 from __future__ import annotations
 
-import gzip
-import json
-import re
-from pathlib import Path
+from datetime import UTC, date, datetime
 
 import pandas as pd
 
@@ -28,102 +23,82 @@ from nanogld.data.utils import get_logger, raw_dir
 
 LOG = get_logger("nanogld.data.news_reddit")
 
+ARCTIC_HF = "hf://datasets/open-index/arctic"
 SUBREDDITS = ("Gold", "wallstreetbets", "investing", "Goldandsilverstackers", "Commodities")
-GOLD_KEYWORDS = re.compile(r"\b(gold|GLD|silver|SLV|gdx|comex|xau|bullion|miner)\b", re.IGNORECASE)
+KEYWORD_REGEX = r"\b(gold|GLD|silver|SLV|gdx|comex|xau|bullion|miner)\b"
 BIAS_TIER = "retail_social"
 
 
-def _read_jsonl(path: Path):
-    """Yield JSON records from .jsonl, .jsonl.gz, or .jsonl.zst."""
-    suffix = path.suffix.lower()
-    if suffix == ".gz":
-        with gzip.open(path, "rt", encoding="utf-8") as f:
-            for line in f:
-                yield json.loads(line)
-    elif suffix == ".zst":
-        try:
-            import zstandard as zstd  # noqa: PLC0415
-        except ImportError as e:
-            raise RuntimeError(
-                "zstandard package required for .zst dumps — pip install zstandard"
-            ) from e
-        with path.open("rb") as f:
-            dctx = zstd.ZstdDecompressor()
-            with dctx.stream_reader(f) as r, gzip.io.TextIOWrapper(r, encoding="utf-8") as txt:
-                for line in txt:
-                    yield json.loads(line)
-    else:
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                yield json.loads(line)
+def query_arctic(
+    *,
+    start: date = date(2021, 4, 24),
+    end: date = date(2026, 4, 24),
+    subreddits: tuple[str, ...] = SUBREDDITS,
+    keyword_regex: str = KEYWORD_REGEX,
+    posts_only: bool = True,
+) -> pd.DataFrame:
+    """Use DuckDB predicate pushdown over the HF arctic Parquet mirror.
 
-
-def filter_dump(path: Path, *, kind: str = "submission") -> pd.DataFrame:
-    """Filter one Arctic Shift dump file. kind = 'submission' | 'comment'."""
-    rows: list[dict[str, object]] = []
-    for obj in _read_jsonl(path):
-        sub = obj.get("subreddit", "")
-        if sub not in SUBREDDITS:
-            continue
-        text = (
-            (obj.get("title") or "")
-            + " "
-            + (obj.get("selftext") or "")
-            + " "
-            + (obj.get("body") or "")
-        )
-        if not GOLD_KEYWORDS.search(text):
-            continue
-        created = obj.get("created_utc")
-        if created is None:
-            continue
-        rows.append(
-            {
-                "article_id": str(obj.get("id") or obj.get("name", f"reddit_{len(rows)}")),
-                "source": f"reddit_{sub.lower()}_{kind}",
-                "created_at": pd.to_datetime(int(created), unit="s", utc=True),
-                "title": str(obj.get("title", "") or ""),
-                "body": str(obj.get("selftext") or obj.get("body") or ""),
-                "url": str(obj.get("url") or obj.get("permalink") or ""),
-                "symbols": pd.NA,
-            }
-        )
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    for c in ("article_id", "source", "title", "body", "url"):
-        df[c] = df[c].astype("string")
-    df["symbols"] = df["symbols"].astype("string")
-    df["bias_tier"] = pd.Series([BIAS_TIER] * len(df), dtype="string")
-    df["release_ts"] = df["created_at"]
-    df["t_visible"] = df["created_at"]
-    return df[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
-
-
-def write_reddit_parquet(dump_dir: Path | None = None) -> tuple[pd.DataFrame, str]:
-    """Walk dump_dir/* and concatenate filtered Reddit rows.
-
-    Owner drops Arctic Shift `.jsonl.zst` files into `data/raw/reddit/`.
+    Returns NEWS_MANIFEST-conformant rows.
     """
-    dump_dir = dump_dir or (raw_dir() / "reddit")
-    if not dump_dir.exists():
-        LOG.warning("Reddit dump dir %s missing — owner downloads Arctic Shift torrents", dump_dir)
-        return pd.DataFrame(), ""
+    import duckdb  # noqa: PLC0415
 
-    frames: list[pd.DataFrame] = []
-    for path in sorted(dump_dir.glob("*.jsonl*")):
-        kind = "comment" if "_RC_" in path.name or "comment" in path.name.lower() else "submission"
-        try:
-            df = filter_dump(path, kind=kind)
-            if not df.empty:
-                frames.append(df)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("filter failed for %s: %s", path.name, e)
+    sub_list = ",".join(f"'{s}'" for s in subreddits)
+    table_root = "RS" if posts_only else "RC"  # RS = submissions, RC = comments
+    start_unix = int(datetime.combine(start, datetime.min.time(), tzinfo=UTC).timestamp())
+    end_unix = int(datetime.combine(end, datetime.min.time(), tzinfo=UTC).timestamp())
 
-    if not frames:
-        return pd.DataFrame(), ""
-    df = pd.concat(frames, ignore_index=True)
-    df = df.drop_duplicates(subset=["article_id", "source"])
+    sql = f"""
+    SELECT
+        id,
+        subreddit,
+        created_utc,
+        title,
+        selftext,
+        url,
+        permalink
+    FROM read_parquet('{ARCTIC_HF}/reddit/{table_root}/**/*.parquet', union_by_name=true)
+    WHERE subreddit IN ({sub_list})
+      AND created_utc BETWEEN {start_unix} AND {end_unix}
+      AND (
+        regexp_matches(coalesce(title, ''), '{keyword_regex}', 'i')
+        OR regexp_matches(coalesce(selftext, ''), '{keyword_regex}', 'i')
+      )
+    """
+    LOG.info("DuckDB arctic query: %s", sql.strip().split("WHERE")[0])
+    try:
+        df = duckdb.sql(sql).df()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("arctic DuckDB query failed: %s", e)
+        return pd.DataFrame()
+
+    if df.empty:
+        LOG.info("arctic returned 0 rows for filter")
+        return pd.DataFrame()
+
+    out = pd.DataFrame()
+    out["article_id"] = (df["id"].astype(str) + "_" + df["subreddit"].astype(str)).astype("string")
+    out["source"] = ("reddit_" + df["subreddit"].astype(str).str.lower()).astype("string")
+    out["created_at"] = pd.to_datetime(df["created_utc"], unit="s", utc=True)
+    out["title"] = df["title"].fillna("").astype("string")
+    out["body"] = df["selftext"].fillna("").astype("string")
+    out["url"] = df["url"].fillna("").astype("string")
+    out["symbols"] = pd.array([pd.NA] * len(df), dtype="string")
+    out["bias_tier"] = pd.array([BIAS_TIER] * len(df), dtype="string")
+    out = out.dropna(subset=["created_at"])
+    out["release_ts"] = out["created_at"]
+    out["t_visible"] = out["created_at"]
+    return out[[c.name for c in NEWS_MANIFEST.columns]].reset_index(drop=True)
+
+
+def write_reddit_parquet(
+    *,
+    start: date = date(2021, 4, 24),
+    end: date = date(2026, 4, 24),
+) -> tuple[pd.DataFrame, str]:
+    df = query_arctic(start=start, end=end)
+    if df.empty:
+        return df, ""
     validate(df, NEWS_MANIFEST)
     out_path = raw_dir() / "reddit_gold_filtered.parquet"
     df.to_parquet(out_path, compression="zstd", index=False)
@@ -133,4 +108,4 @@ def write_reddit_parquet(dump_dir: Path | None = None) -> tuple[pd.DataFrame, st
 
 if __name__ == "__main__":
     df, p = write_reddit_parquet()
-    print(f"Reddit Arctic Shift filtered: {len(df)} rows -> {p}")
+    print(f"Reddit (arctic): {len(df)} rows -> {p}")

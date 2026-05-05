@@ -31,12 +31,15 @@ from nanogld.data import (
     fred,
     gdelt,
     gpr,
+    news_alpha_vantage,
     news_bullionvault,
     news_central_bank,
     news_fnspid,
     news_investing,
     news_kaggle,
     news_kitco,
+    news_multisource,
+    news_polygon,
     news_reddit,
     wgc,
     yfinance_helpers,
@@ -71,12 +74,16 @@ SOURCES: dict[str, tuple[callable, str | None]] = {
     "gdelt": (gdelt.write_gdelt_parquet, "gdelt_gkg_5y.parquet"),
     # News scrapers
     "fnspid": (news_fnspid.write_fnspid_parquet, "fnspid_gold_relevant.parquet"),
-    "kitco": (news_kitco.write_kitco_rss_parquet, "kitco_news_recent.parquet"),
+    "kitco": (news_kitco.write_kitco_parquet, "kitco_news.parquet"),
     "investing": (news_investing.write_investing_parquet, "investing_gold_news.parquet"),
     "bullionvault": (news_bullionvault.write_bullionvault_parquet, "bullionvault_news.parquet"),
     "central_bank": (news_central_bank.write_central_bank_parquet, "central_bank_news.parquet"),
     "reddit": (news_reddit.write_reddit_parquet, "reddit_gold_filtered.parquet"),
     "kaggle": (news_kaggle.write_kaggle_parquet, "kaggle_gold_labeled.parquet"),
+    # Wire-news + macro extensions added in phase News-1
+    "polygon_news": (news_polygon.write_polygon_news_parquet, "polygon_news_GLD.parquet"),
+    "alpha_vantage": (news_alpha_vantage.write_alpha_vantage_parquet, "alpha_vantage_news.parquet"),
+    "multisource": (news_multisource.write_multisource_parquet, "multisource_news.parquet"),
 }
 
 # Sources that only need network (no API key). Used by `--skip-keyed`.
@@ -89,6 +96,11 @@ KEYLESS_SOURCES = {
     "kitco",
     "investing",
     "bullionvault",
+    "central_bank",  # HF datasets are public; HF_TOKEN optional
+    "reddit",  # arctic HF mirror via DuckDB, no key
+    "kaggle",  # HF mirror, public
+    "fnspid",  # HF, gated by NANOGLD_NONCOMMERCIAL not by an API key
+    "multisource",  # same gate
 }
 
 
