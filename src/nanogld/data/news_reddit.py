@@ -1,14 +1,19 @@
 """Reddit retail sentiment — HF mirror via DuckDB (no torrent).
 
-Replaces the prior torrent-only path. The HF dataset `open-index/arctic`
-mirrors the Pushshift Parquet dumps with predicate pushdown, so we can
-query the slice we want without downloading 1.1 TB.
+⚠️ DEFERRED — the `open-index/arctic` HF dataset partitions
+`data/submissions/YYYY/MM/NNN.parquet` end at 2017/04 (verified 2026-05).
+Doesn't cover the V1 window (2021-04-24 → 2026-04-24). For V1 retail-
+sentiment coverage, owner downloads the post-2017 dumps via Arctic Shift
+torrents into `data/raw/reddit/<filename>.jsonl.zst` and runs
+`python -m nanogld.data pull reddit_local` (separate module — TBD).
+
+The DuckDB+HF path below is retained: it works correctly against the
+2005-2017 slice if owner ever wants pre-V1-window historical data
+(useful for embedding-pretraining doc 03).
 
 Spec: plan/02-DATA-PIPELINE.md "Source 17". V4-corrected.
-
 Subreddits: Gold / wallstreetbets / investing / Goldandsilverstackers / Commodities.
 Keyword filter: gold|GLD|silver|SLV|gdx|comex|xau|bullion|miner.
-
 bias_tier = retail_social. Often counter-indicator at extremes.
 """
 
@@ -23,7 +28,7 @@ from nanogld.data.utils import get_logger, raw_dir
 
 LOG = get_logger("nanogld.data.news_reddit")
 
-ARCTIC_HF = "hf://datasets/open-index/arctic"
+ARCTIC_HF = "hf://datasets/open-index/arctic/data"
 SUBREDDITS = ("Gold", "wallstreetbets", "investing", "Goldandsilverstackers", "Commodities")
 KEYWORD_REGEX = r"\b(gold|GLD|silver|SLV|gdx|comex|xau|bullion|miner)\b"
 BIAS_TIER = "retail_social"
@@ -44,10 +49,13 @@ def query_arctic(
     import duckdb  # noqa: PLC0415
 
     sub_list = ",".join(f"'{s}'" for s in subreddits)
-    table_root = "RS" if posts_only else "RC"  # RS = submissions, RC = comments
+    table_root = "submissions" if posts_only else "comments"
     start_unix = int(datetime.combine(start, datetime.min.time(), tzinfo=UTC).timestamp())
     end_unix = int(datetime.combine(end, datetime.min.time(), tzinfo=UTC).timestamp())
 
+    # NOTE: open-index/arctic only covers 2005-12 → 2017-04 (verified 2026-05).
+    # If start > 2017-04, this returns 0 rows. Owner adds post-2017 dumps via
+    # a future news_reddit_local.py module.
     sql = f"""
     SELECT
         id,
@@ -57,7 +65,7 @@ def query_arctic(
         selftext,
         url,
         permalink
-    FROM read_parquet('{ARCTIC_HF}/reddit/{table_root}/**/*.parquet', union_by_name=true)
+    FROM read_parquet('{ARCTIC_HF}/{table_root}/**/*.parquet', union_by_name=true)
     WHERE subreddit IN ({sub_list})
       AND created_utc BETWEEN {start_unix} AND {end_unix}
       AND (

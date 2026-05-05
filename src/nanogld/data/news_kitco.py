@@ -29,7 +29,7 @@ LOG = get_logger("nanogld.data.news_kitco")
 
 BIAS_TIER = "industry_bullish"
 SOURCE_NAME = "kitco"
-ARTICLE_URL_GLOB = "kitco.com/news/*"
+ARTICLE_URL_GLOB = "kitco.com/news/article/*"
 
 # Kitco URL slug pattern: /news/article/2024-12-15/<slug>
 SLUG_DATE_RE = re.compile(r"/news/article/(\d{4}-\d{2}-\d{2})/")

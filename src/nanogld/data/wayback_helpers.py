@@ -124,8 +124,13 @@ def _polite_get(
     polite_sec: float = DEFAULT_POLITE_SEC,
     max_backoff: float = DEFAULT_MAX_RETRY_BACKOFF,
     hard_halt_after: int = DEFAULT_HARD_HALT_AFTER,
+    timeout: int = 300,
 ) -> bytes | None:
     """GET with polite delay + exponential backoff on 429/503.
+
+    timeout default 300s — CDX queries with broad globbed URLs over 5y can
+    legitimately take 60-180s server-side; the prior 30s default was the
+    main reason backfills returned 0 rows.
 
     Halts after `hard_halt_after` consecutive throttle responses with a
     "resume tomorrow" log. Returns None on terminal failure.
@@ -136,7 +141,7 @@ def _polite_get(
         try:
             resp = requests.get(
                 url,
-                timeout=30,
+                timeout=timeout,
                 headers={"User-Agent": "nanoGLD/0.1 (+https://github.com/sam-siavoshian/nanogld)"},
             )
         except requests.RequestException as e:

@@ -433,6 +433,74 @@ wti_daily.parquet              1257 rows
 **Doc 03 unblocked.** Owner: ML engineer agent. Effort: 1.5 days setup +
 ~120 min precompute. Spec: `plan/03-NEWS-EMBEDDING.md`.
 
+### News pipeline rewrite — code shipped 2026-05-04 (Phase News-1 to News-10)
+
+Rewrite triggered by user dropping Alpaca (KYC-gated paper signup confusion)
+and the verification pass exposing 4 broken scrapers + 1 license bug + 0
+geopolitical / 0 retail rows on disk.
+
+**Decisions (owner-confirmed):**
+- All-free wire news (Wayback CDX); `polygon_news.py` ships gated behind
+  `NANOGLD_POLYGON_PAID=1` for owner to flip if they pay $29/mo Polygon Stocks
+  Starter later.
+- `NANOGLD_NONCOMMERCIAL=1` default ON for V1 personal/research training.
+  Disables cleanly for any future commercial deployment.
+- GDELT — owner authed gcloud already (`~/.config/gcloud/application_default_credentials.json`,
+  quota project `nanogld`). Owner needs to enable BigQuery API in the project
+  (one-click) before `gdelt_materialize` works.
+- Push policy: local commits only, owner pushes when ready.
+
+**Code complete:**
+- `wayback_helpers.py` — CDX search + polite fetch (300s timeout, exp backoff
+  on 429/503, halt-after-5, raw-byte cache under `data/raw/wayback_cache/`)
+- `news_kitco.py` — Wayback CDX backfill (RSS endpoint serves HTML, broken)
+- `news_investing.py` — Wayback CDX (Cloudflare-walled live scrape)
+- `news_bullionvault.py` — Wayback CDX (selectors don't match modern layout)
+- `news_polygon.py` — drop-in for dropped `alpaca_news.py`, gated behind
+  `NANOGLD_POLYGON_PAID=1`. published_utc -> created_at; never `updated_at`.
+- `news_alpha_vantage.py` — free 25 req/day NEWS_SENTIMENT, 4y back to 2022-03,
+  journaled cursor at `data/raw/alpha_vantage_state.json` for daily-cron resume
+- `news_reddit.py` — DuckDB query against HF `open-index/arctic` (mirror covers
+  2005-2017 only — owner downloads post-2017 Arctic Shift torrents for V1)
+- `news_multisource.py` — HF `Brianferrell787/financial-news-multisource`
+  (57M rows 1990-2025, NON-COMMERCIAL gated, HF-token gated dataset)
+- `news_central_bank.py` — extended with 5 regional Fed scrapers
+  (Cleveland/Chicago/NY/SF/Atlanta — selectors per-Fed needed, 0 rows so far)
+- `news_fnspid.py` — license bug fixed (CC BY 4.0 -> CC BY-NC-4.0),
+  `NANOGLD_NONCOMMERCIAL=1` gate, parallel `Dataset.filter(num_proc=4)` perf fix
+- `cli.py` — SOURCES dict gains polygon_news/alpha_vantage/multisource;
+  KEYLESS_SOURCES expanded for HF-backed sources
+
+**Pulls run + landed:**
+| source | rows on disk | notes |
+|---|---:|---|
+| central_bank_news.parquet | 4988 | refreshed; regional Feds returned 0 (selector work needed per-Fed) |
+| (other news parquets) | not yet | running pulls hit timeouts / API gates — see owner actions below |
+
+**Test count:** 49 (data) + 14 (features) + 13 (news pipeline) = **76 pass**, 6 skip.
+
+**Owner-action checklist (continue news work):**
+
+1. Sign up at https://www.alphavantage.co/support/#api-key — email-only,
+   instant. Paste `ALPHA_VANTAGE_API_KEY=...` into `~/.config/nanogld/.env.paper`.
+2. Add `HF_TOKEN=...` to `.env.paper` (huggingface.co/settings/tokens, read
+   scope, free). Unblocks gated `Brianferrell787/financial-news-multisource`.
+3. Enable BigQuery API in GCP `nanogld` project (one-click):
+   https://console.developers.google.com/apis/api/bigquery.googleapis.com/overview?project=nanogld
+   Then re-run `NANOGLD_GCP_PROJECT=nanogld python -m nanogld.data pull gdelt_materialize`.
+4. (Optional) Decide on $29/mo Polygon News Stocks Starter — set
+   `NANOGLD_POLYGON_PAID=1` + `POLYGON_API_KEY=...` if yes.
+5. Wayback CDX backfills (Kitco/Investing/BullionVault) — each is a multi-hour
+   soak at 2 s/req polite rate. Run overnight: `python -m nanogld.data pull
+   kitco --force` etc. Cache resumes cleanly across runs. Free.
+6. FNSPID HF download is ~50 GB before filter applies — owner runs
+   `NANOGLD_NONCOMMERCIAL=1 python -m nanogld.data pull fnspid` overnight
+   when bandwidth permits.
+7. Reddit post-2017 — `open-index/arctic` HF mirror only covers 2005-2017.
+   Owner downloads Arctic Shift torrents to `data/raw/reddit/<file>.jsonl.zst`
+   for full V1-window coverage. Module path needs separate `news_reddit_local.py`
+   parser (TBD).
+
 ---
 
 ## Final Notes
