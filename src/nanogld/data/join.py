@@ -236,6 +236,17 @@ def join_snapshot(
     gdelt = _enforce_pit(sources.get("gdelt", pd.DataFrame()), "gdelt")
     base = _attach_news_counts(base, gdelt, source_label="gdelt")
 
+    for src_key, label in (
+        ("central_bank", "central_bank"),
+        ("kitco", "kitco"),
+        ("investing", "investing"),
+        ("bullionvault", "bullionvault"),
+        ("multisource", "multisource"),
+        ("fnspid", "fnspid"),
+    ):
+        df = _enforce_pit(sources.get(src_key, pd.DataFrame()), src_key)
+        base = _attach_news_counts(base, df, source_label=label)
+
     base["bar_close_utc"] = pd.to_datetime(base["bar_close_utc"], utc=True)
     return base.sort_values("bar_close_utc").reset_index(drop=True)
 
@@ -266,6 +277,12 @@ def load_default_sources() -> dict[str, pd.DataFrame]:
             else rd / "wgc_central_bank_monthly.parquet"
         ),
         "calendar": _load_parquet(rd / "calendar_events_v1.parquet"),
+        "central_bank": _load_parquet(rd / "central_bank_news.parquet"),
+        "kitco": _load_parquet(rd / "kitco_news.parquet"),
+        "investing": _load_parquet(rd / "investing_gold_news.parquet"),
+        "bullionvault": _load_parquet(rd / "bullionvault_news.parquet"),
+        "multisource": _load_parquet(rd / "multisource_news.parquet"),
+        "fnspid": _load_parquet(rd / "fnspid_gold_news.parquet"),
     }
     # ETFs: long-form concat. Prefer Polygon over Alpaca per-symbol.
     etf_paths: list[Path] = []

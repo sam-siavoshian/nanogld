@@ -496,10 +496,10 @@ geopolitical / 0 retail rows on disk.
 6. FNSPID HF download is ~50 GB before filter applies — owner runs
    `NANOGLD_NONCOMMERCIAL=1 python -m nanogld.data pull fnspid` overnight
    when bandwidth permits.
-7. Reddit post-2017 — `open-index/arctic` HF mirror only covers 2005-2017.
-   Owner downloads Arctic Shift torrents to `data/raw/reddit/<file>.jsonl.zst`
-   for full V1-window coverage. Module path needs separate `news_reddit_local.py`
-   parser (TBD).
+7. Reddit — **SKIPPED for V1** (owner decision 2026-05-04). Full firehose torrents
+   too big for 67 GB free disk. Selective per-subreddit torrent only covers
+   2021-04 → 2023-12 of V1 window. Wire news + central bank + Kaggle + multisource
+   provide enough density without retail social. Revisit after backtest results.
 
 ---
 
