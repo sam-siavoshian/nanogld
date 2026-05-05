@@ -230,11 +230,21 @@ def join_snapshot(
 
 
 def load_default_sources() -> dict[str, pd.DataFrame]:
-    """Best-effort: load every parquet under data/raw/ that the spec produces."""
+    """Best-effort: load every parquet under data/raw/ that the spec produces.
+
+    GLD primary bars: prefer Polygon (replaces Alpaca after KYC switch).
+    Alpaca path retained as fallback for owner-specific runs.
+    """
     rd = raw_dir()
+    polygon_gld = rd / "polygon_bars_GLD_30min.parquet"
+    alpaca_gld = rd / "alpaca_bars_GLD_30min.parquet"
+    bars_path = polygon_gld if polygon_gld.exists() else alpaca_gld
+    polygon_news_path = rd / "polygon_news_GLD.parquet"
+    alpaca_news_path = rd / "alpaca_news_GLD.parquet"
+    news_path = polygon_news_path if polygon_news_path.exists() else alpaca_news_path
     out: dict[str, pd.DataFrame] = {
-        "bars": _load_parquet(rd / "alpaca_bars_GLD_30min.parquet"),
-        "alpaca_news": _load_parquet(rd / "alpaca_news_GLD.parquet"),
+        "bars": _load_parquet(bars_path),
+        "alpaca_news": _load_parquet(news_path),  # key kept "alpaca_news" for joiner compat
         "gdelt": _load_parquet(rd / "gdelt_gkg_5y.parquet"),
         "brent_wti": _concat_parquets([rd / "brent_daily.parquet", rd / "wti_daily.parquet"]),
         "gpr": _load_parquet(rd / "gpr_combined.parquet"),
@@ -242,8 +252,12 @@ def load_default_sources() -> dict[str, pd.DataFrame]:
         "wgc": _load_parquet(rd / "wgc_central_bank_monthly.parquet"),
         "calendar": _load_parquet(rd / "calendar_events_v1.parquet"),
     }
-    # ETFs: long-form concat
-    etf_paths = [rd / f"alpaca_bars_{s}_30min.parquet" for s in ETF_SYMBOLS]
+    # ETFs: long-form concat. Prefer Polygon over Alpaca per-symbol.
+    etf_paths: list[Path] = []
+    for s in ETF_SYMBOLS:
+        poly_p = rd / f"polygon_bars_{s}_30min.parquet"
+        alp_p = rd / f"alpaca_bars_{s}_30min.parquet"
+        etf_paths.append(poly_p if poly_p.exists() else alp_p)
     out["etf_bars"] = _concat_parquets(etf_paths)
     # FRED: long-form concat across all 35 series
     out["fred"] = _concat_parquets(list(rd.glob("fred_*_all_releases.parquet")))
