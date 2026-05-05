@@ -49,6 +49,7 @@ dependencies = [
     "xlrd>=2.0",
     "duckdb>=1.0",
     "polygon-api-client>=1.14",
+    "db-dtypes>=1.5.1",
 ]
 
 [dependency-groups]

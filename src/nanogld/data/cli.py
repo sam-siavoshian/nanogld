@@ -41,6 +41,8 @@ from nanogld.data import (
     news_multisource,
     news_polygon,
     news_reddit,
+    polygon_bars,
+    polygon_etfs,
     wgc,
     yfinance_helpers,
 )
@@ -84,6 +86,9 @@ SOURCES: dict[str, tuple[callable, str | None]] = {
     "polygon_news": (news_polygon.write_polygon_news_parquet, "polygon_news_GLD.parquet"),
     "alpha_vantage": (news_alpha_vantage.write_alpha_vantage_parquet, "alpha_vantage_news.parquet"),
     "multisource": (news_multisource.write_multisource_parquet, "multisource_news.parquet"),
+    # Polygon prices — replaces dropped Alpaca bars/etfs after KYC detour
+    "polygon_bars": (polygon_bars.write_gld_parquet, "polygon_bars_GLD_30min.parquet"),
+    "polygon_etfs": (polygon_etfs.write_etf_parquets, None),  # 9 files
 }
 
 # Sources that only need network (no API key). Used by `--skip-keyed`.
@@ -101,6 +106,8 @@ KEYLESS_SOURCES = {
     "kaggle",  # HF mirror, public
     "fnspid",  # HF, gated by NANOGLD_NONCOMMERCIAL not by an API key
     "multisource",  # same gate
+    # polygon_* + alpha_vantage are key-required but ENV is now populated.
+    # Keeping them OUT of KEYLESS_SOURCES so --skip-keyed semantics stay clean.
 }
 
 

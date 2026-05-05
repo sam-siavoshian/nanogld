@@ -71,7 +71,10 @@ FROM `gdelt-bq.gdeltv2.gkg_partitioned` AS g
 WHERE g._PARTITIONTIME BETWEEN
         TIMESTAMP('{start_utc.strftime("%Y-%m-%d")}')
     AND TIMESTAMP('{end_utc.strftime("%Y-%m-%d")}')
-  AND g.TranslationInfo = ''
+  -- English-only: spec line 608 said TranslationInfo = '', but live GDELT 2.0
+  -- in 2026-05 has the column NULL for English originals (verified via direct
+  -- COUNTIF). Accept either to be safe.
+  AND (g.TranslationInfo IS NULL OR g.TranslationInfo = '')
   AND (
     REGEXP_CONTAINS(g.V2Themes, r'{GOLD_THEMES}')
     OR REGEXP_CONTAINS(g.V2Themes, r'{MONETARY_THEMES}')
