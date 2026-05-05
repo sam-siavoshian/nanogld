@@ -93,6 +93,64 @@ def _release_ts_for_period(period_start: pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(datetime.combine(d, datetime.min.time()), tz=UTC) + pd.Timedelta(hours=12)
 
 
+OWNER_QUARTERLY_PATH = Path("data/raw/wgc/quarterly_ts_owner_provided.xlsx")
+OWNER_LATEST_PATH = Path("data/raw/wgc/latest_reserves_owner_provided.xlsx")
+
+
+def parse_owner_quarterly_xlsx(path: Path) -> pd.DataFrame:
+    """Parse owner-provided WGC quarterly time series (real Goldhub xlsx).
+
+    Sheet 'Gold (Tonnes)': wide-form. Row 1 has 'Q1 2000', 'Q2 2000', ...
+    Cols 0-1 = country names (alt-spelling pair). Rows 3+ = data per country.
+
+    Returns long-form (country, period, holdings_tonnes).
+    """
+    try:
+        df = pd.read_excel(path, sheet_name="Gold (Tonnes)", header=None)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("WGC owner xlsx parse failed: %s", e)
+        return pd.DataFrame()
+
+    # Row 1 holds quarter labels starting at col 2.
+    quarter_labels = df.iloc[1, 2:].tolist()
+    countries = df.iloc[2:, 0].astype(str).str.strip()
+    values = df.iloc[2:, 2:].reset_index(drop=True)
+
+    rows: list[dict[str, object]] = []
+    for c_idx, country in enumerate(countries.tolist()):
+        if not country or country.lower() in {"nan", "none", "world"}:
+            continue
+        for q_idx, qlabel in enumerate(quarter_labels):
+            if not isinstance(qlabel, str):
+                continue
+            v = values.iat[c_idx, q_idx]
+            if pd.isna(v):
+                continue
+            # qlabel like 'Q1 2000' -> parse to first day of quarter
+            try:
+                quarter, year = qlabel.split()
+                m_map = {"Q1": 1, "Q2": 4, "Q3": 7, "Q4": 10}
+                period = pd.Timestamp(year=int(year), month=m_map[quarter], day=1, tz="UTC")
+            except Exception:  # noqa: BLE001
+                continue
+            rows.append({"country": country, "period": period, "holdings_tonnes": float(v)})
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    import numpy as np  # noqa: PLC0415
+
+    out["country"] = out["country"].astype("string")
+    out["frequency"] = pd.array(["quarterly"] * len(out), dtype="string")
+    out["net_purchases_tonnes"] = pd.array([np.nan] * len(out), dtype="float64")
+    out["pct_total_reserves"] = pd.array([np.nan] * len(out), dtype="float64")
+    out["fetch_ts"] = pd.Timestamp("2026-05-05T14:40:00+00:00", tz="UTC")
+    out["source_sha"] = pd.array(["owner_provided"] * len(out), dtype="string")
+    out["release_ts"] = out["period"].apply(_release_ts_for_period)
+    out["t_visible"] = out["release_ts"]
+    return out
+
+
 def parse_latest_reserves_xlsx(path: Path) -> pd.DataFrame:
     """Best-effort parser. WGC layout drifts — sheet 0 is typically the wide-form table.
     We try a few likely sheet names + auto-detect the country column. If parse fails,
@@ -192,6 +250,18 @@ def build_wgc_dataframe(snap: dict[str, dict[str, str]]) -> pd.DataFrame:
 
 
 def write_wgc_parquet() -> tuple[pd.DataFrame, str]:
+    # Prefer owner-provided xlsx when present (form-walled URLs blocked direct GET).
+    if OWNER_QUARTERLY_PATH.exists():
+        LOG.info("WGC: using owner-provided %s", OWNER_QUARTERLY_PATH.name)
+        df = parse_owner_quarterly_xlsx(OWNER_QUARTERLY_PATH)
+        if not df.empty:
+            validate(df, WGC_MANIFEST)
+            out_path = raw_dir() / "wgc_central_bank_quarterly.parquet"
+            df.to_parquet(out_path, compression="zstd", index=False)
+            LOG.info("wrote %d WGC rows -> %s", len(df), out_path)
+            return df, str(out_path)
+        LOG.warning("owner-provided WGC parse produced 0 rows; falling back to live download")
+
     snap = fetch_and_snapshot()
     df = build_wgc_dataframe(snap)
     if df.empty:

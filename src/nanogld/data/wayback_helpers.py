@@ -137,7 +137,10 @@ def _polite_get(
     """
     backoff = polite_sec
     consecutive_throttle = 0
+    consecutive_conn_err = 0
     while True:
+        # Always sleep BEFORE the request so error paths still observe rate limit.
+        time.sleep(polite_sec)
         try:
             resp = requests.get(
                 url,
@@ -145,11 +148,18 @@ def _polite_get(
                 headers={"User-Agent": "nanoGLD/0.1 (+https://github.com/sam-siavoshian/nanogld)"},
             )
         except requests.RequestException as e:
-            LOG.warning("[%s] request failed: %s", source, e)
-            return None
+            consecutive_conn_err += 1
+            if consecutive_conn_err >= hard_halt_after:
+                LOG.warning(
+                    "[%s] %d consecutive connection errors — halting", source, consecutive_conn_err
+                )
+                return None
+            LOG.info("[%s] conn err (%s) — backoff %.1fs", source, type(e).__name__, backoff)
+            backoff = min(backoff * 2, max_backoff)
+            time.sleep(backoff)
+            continue
 
         if resp.status_code == 200:
-            time.sleep(polite_sec)
             return resp.content
 
         if resp.status_code in (429, 503):
@@ -175,7 +185,6 @@ def _polite_get(
 
         # 404 / 5xx other → log + skip (not a halt)
         LOG.info("[%s] %d on %s — skip", source, resp.status_code, url)
-        time.sleep(polite_sec)
         return None
 
 

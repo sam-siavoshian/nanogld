@@ -260,7 +260,11 @@ def load_default_sources() -> dict[str, pd.DataFrame]:
         "brent_wti": _concat_parquets([rd / "brent_daily.parquet", rd / "wti_daily.parquet"]),
         "gpr": _load_parquet(rd / "gpr_combined.parquet"),
         "cot": _load_parquet(rd / "cftc_cot_gold_weekly.parquet"),
-        "wgc": _load_parquet(rd / "wgc_central_bank_monthly.parquet"),
+        "wgc": _load_parquet(
+            rd / "wgc_central_bank_quarterly.parquet"
+            if (rd / "wgc_central_bank_quarterly.parquet").exists()
+            else rd / "wgc_central_bank_monthly.parquet"
+        ),
         "calendar": _load_parquet(rd / "calendar_events_v1.parquet"),
     }
     # ETFs: long-form concat. Prefer Polygon over Alpaca per-symbol.

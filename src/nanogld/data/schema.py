@@ -130,7 +130,7 @@ FRED_MANIFEST = Manifest(
         ColumnSpec("date", "datetime64[ns, UTC]", description="Observation date (00:00 UTC)"),
         ColumnSpec("value", "float64", nullable=True),
         ColumnSpec("realtime_start", "datetime64[ns, UTC]", description="ALFRED first-public date"),
-        ColumnSpec("realtime_end", "datetime64[ns, UTC]"),
+        ColumnSpec("realtime_end", "datetime64[ns, UTC]", nullable=True),
         ColumnSpec(
             "release_ts", "datetime64[ns, UTC]", description="Date + series-specific ET tod"
         ),

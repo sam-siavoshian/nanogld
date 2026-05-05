@@ -98,8 +98,52 @@ def _fred_client() -> Fred:
 
 
 def _vintage_cube(series_id: str, fred: Fred) -> pd.DataFrame:
-    """Pull the full ALFRED revision history for a series. Returns long form."""
-    df = fred.get_series_all_releases(series_id)
+    """Pull the full ALFRED revision history for a series. Returns long form.
+
+    For high-frequency daily series (DGS10, DFF, etc.) ALFRED 2000-vintage limit
+    rejects the unbounded query. Fall back to non-vintage get_series so we lose
+    PIT-vintage discipline but keep the value series. Mark with realtime_start
+    = date so downstream PIT logic still works (no retroactive revisions).
+    """
+    try:
+        df = fred.get_series_all_releases(series_id)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "vintage dates" in msg or "2000" in msg or "Internal Server Error" in msg:
+            LOG.warning(
+                "ALFRED %s exceeds vintage limit / server error — falling back to "
+                "non-vintage get_series (no revision history)",
+                series_id,
+            )
+            try:
+                s = fred.get_series(series_id)
+            except Exception as e2:  # noqa: BLE001
+                LOG.warning("get_series fallback also failed for %s: %s", series_id, e2)
+                return pd.DataFrame(
+                    columns=["series_id", "date", "value", "realtime_start", "realtime_end"]
+                )
+            if s is None or s.empty:
+                return pd.DataFrame(
+                    columns=["series_id", "date", "value", "realtime_start", "realtime_end"]
+                )
+            # Treat each row's `date` as both observation date and realtime_start
+            # (no vintage history available; conservative one-revision view).
+            n = len(s)
+            df = pd.DataFrame(
+                {
+                    "series_id": [series_id] * n,
+                    "date": pd.to_datetime(s.index, utc=True, errors="coerce"),
+                    "value": s.values,
+                    "realtime_start": pd.to_datetime(s.index, utc=True, errors="coerce"),
+                    "realtime_end": pd.Series([pd.NaT] * n, dtype="datetime64[ns, UTC]"),
+                }
+            )
+            df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
+            df["series_id"] = df["series_id"].astype("string")
+            df = df.dropna(subset=["date", "realtime_start"])
+            return df[["series_id", "date", "value", "realtime_start", "realtime_end"]]
+        raise
+
     if df is None or df.empty:
         LOG.warning("ALFRED returned empty for %s", series_id)
         return pd.DataFrame(
@@ -113,7 +157,10 @@ def _vintage_cube(series_id: str, fred: Fred) -> pd.DataFrame:
     if "realtime_end" in df.columns:
         df["realtime_end"] = pd.to_datetime(df["realtime_end"], utc=True, errors="coerce")
     else:
-        df["realtime_end"] = pd.NaT
+        df["realtime_end"] = pd.Series([pd.NaT] * len(df), dtype="datetime64[ns, UTC]")
+    # Force tz-aware dtype even when all values are NaT (pd.to_datetime
+    # collapses to tz-naive in that case).
+    df["realtime_end"] = df["realtime_end"].astype("datetime64[ns, UTC]")
     df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
     df = df.dropna(subset=["date", "realtime_start"])
     return df[["series_id", "date", "value", "realtime_start", "realtime_end"]]
