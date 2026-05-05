@@ -82,6 +82,10 @@ def forward_fill_to_daily(
     base = pd.DataFrame({"date_utc": daily_idx})
     sub = sparse[[on, *cols]].sort_values(on).copy()
     sub = sub.rename(columns={on: "t_visible"})
+    # pandas 2.3+ requires same datetime resolution on both merge sides.
+    # Normalize both to nanosecond UTC.
+    base["date_utc"] = pd.to_datetime(base["date_utc"], utc=True).astype("datetime64[ns, UTC]")
+    sub["t_visible"] = pd.to_datetime(sub["t_visible"], utc=True).astype("datetime64[ns, UTC]")
     out = pd.merge_asof(
         base.sort_values("date_utc"),
         sub,
