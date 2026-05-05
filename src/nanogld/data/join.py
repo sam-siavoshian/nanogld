@@ -81,6 +81,11 @@ def _attach_bars_lag(
         )
         .sort_values("t_visible")
     )
+    base = base.copy()
+    base["bar_close_utc"] = pd.to_datetime(base["bar_close_utc"], utc=True).astype(
+        "datetime64[ns, UTC]"
+    )
+    sub["t_visible"] = pd.to_datetime(sub["t_visible"], utc=True).astype("datetime64[ns, UTC]")
     return pd.merge_asof(
         base.sort_values("bar_close_utc"),
         sub,
@@ -104,6 +109,12 @@ def _attach_daily(
         return base
     sub = df[["t_visible", value_col]].dropna().rename(columns={value_col: out_col})
     sub = sub.sort_values("t_visible")
+    # pandas 2.3 strict resolution: coerce both sides to ns UTC.
+    base = base.copy()
+    base["bar_close_utc"] = pd.to_datetime(base["bar_close_utc"], utc=True).astype(
+        "datetime64[ns, UTC]"
+    )
+    sub["t_visible"] = pd.to_datetime(sub["t_visible"], utc=True).astype("datetime64[ns, UTC]")
     return pd.merge_asof(
         base.sort_values("bar_close_utc"),
         sub,
