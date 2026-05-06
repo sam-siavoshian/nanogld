@@ -270,9 +270,11 @@ def load_default_sources() -> dict[str, pd.DataFrame]:
     Alpaca path retained as fallback for owner-specific runs.
     """
     rd = raw_dir()
+    # Prefer Alpaca paper bars (5y free SIP feed); Polygon free is only 2y.
+    # Polygon retained as fallback if Alpaca creds missing or owner re-pulls.
     polygon_gld = rd / "polygon_bars_GLD_30min.parquet"
     alpaca_gld = rd / "alpaca_bars_GLD_30min.parquet"
-    bars_path = polygon_gld if polygon_gld.exists() else alpaca_gld
+    bars_path = alpaca_gld if alpaca_gld.exists() else polygon_gld
     polygon_news_path = rd / "polygon_news_GLD.parquet"
     alpaca_news_path = rd / "alpaca_news_GLD.parquet"
     news_path = polygon_news_path if polygon_news_path.exists() else alpaca_news_path
@@ -296,12 +298,12 @@ def load_default_sources() -> dict[str, pd.DataFrame]:
         "multisource": _load_parquet(rd / "multisource_news.parquet"),
         "fnspid": _load_parquet(rd / "fnspid_gold_news.parquet"),
     }
-    # ETFs: long-form concat. Prefer Polygon over Alpaca per-symbol.
+    # ETFs: long-form concat. Prefer Alpaca (5y) over Polygon (2y).
     etf_paths: list[Path] = []
     for s in ETF_SYMBOLS:
         poly_p = rd / f"polygon_bars_{s}_30min.parquet"
         alp_p = rd / f"alpaca_bars_{s}_30min.parquet"
-        etf_paths.append(poly_p if poly_p.exists() else alp_p)
+        etf_paths.append(alp_p if alp_p.exists() else poly_p)
     out["etf_bars"] = _concat_parquets(etf_paths)
     # FRED: long-form concat across all 35 series
     out["fred"] = _concat_parquets(list(rd.glob("fred_*_all_releases.parquet")))
