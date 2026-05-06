@@ -119,10 +119,11 @@ def fetch_filtered(
         rows: list[dict[str, object]] = []
         seen = 0
         last_kept_at = 0
-        # 25M chosen empirically: prior run found 52K rows after a >10M-row
-        # dry section between gold-tagged shards. Tighter cutoff missed the
-        # dense back-half of the dataset.
-        EARLY_STOP_GAP = 25_000_000
+        # 10M chosen empirically: dense gold cluster ~12-16M, then long dry
+        # tail. Hard cap at 30M total scan ensures bounded wall time even
+        # with HF stream throttling (~1.5K rows/sec late in stream).
+        EARLY_STOP_GAP = 10_000_000
+        MAX_TOTAL_SCAN = 30_000_000
         try:
             for ex in ds:
                 seen += 1
@@ -133,6 +134,13 @@ def fetch_filtered(
                         "FNSPID early-stop: %d rows since last keep — assuming past "
                         "gold-relevant section (kept=%d).",
                         EARLY_STOP_GAP,
+                        len(rows),
+                    )
+                    break
+                if seen >= MAX_TOTAL_SCAN:
+                    LOG.warning(
+                        "FNSPID hard-cap: %d rows scanned, stopping (kept=%d).",
+                        seen,
                         len(rows),
                     )
                     break
