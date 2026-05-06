@@ -3,7 +3,9 @@
 Spec hard rules (plan/02-DATA-PIPELINE.md "Source 1"):
 - TimeFrame(30, TimeFrameUnit.Minute) — NOT TimeFrame.Minute_30 (does not exist).
 - adjustment='all' (split + dividend adjusted).
-- feed='iex' (free Basic tier).
+- feed='sip' (paper free + SIP — verified 2026-05-05: returns full 10y of
+  30min bars 2016-01-04+. IEX-only is more restricted on paper paid tier;
+  SIP works on paper free with longer history).
 - limit=None — SDK auto-paginates via next_page_token; drain all pages.
 - Bar timestamp is bar START. t_visible = timestamp + 30min (bar END).
 - Free tier 200 req/min, IEX-only ~2.5% of US volume — expect occasional gaps.
@@ -50,7 +52,7 @@ def fetch_bars(
     *,
     start: datetime = START_DATE_NAIVE,
     end: datetime = END_DATE_NAIVE,
-    feed: str = "iex",
+    feed: str = "sip",
 ) -> pd.DataFrame:
     """Pull 30min bars for one or many symbols. Returns long tidy frame.
 

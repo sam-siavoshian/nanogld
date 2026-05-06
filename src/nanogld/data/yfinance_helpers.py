@@ -43,7 +43,7 @@ def _settlement_ts_utc(observation_date: pd.Timestamp, ticker: str) -> pd.Timest
     return et.tz_convert(UTC)
 
 
-def fetch_daily(ticker: str, period: str = "5y") -> pd.DataFrame:
+def fetch_daily(ticker: str, period: str = "10y") -> pd.DataFrame:
     """Fetch daily bars for a single ticker. Returns tidy frame."""
     LOG.info("fetching yfinance %s period=%s", ticker, period)
     session = _impersonating_session()
@@ -86,7 +86,7 @@ def fetch_daily(ticker: str, period: str = "5y") -> pd.DataFrame:
 
 
 def fetch_brent_wti() -> pd.DataFrame:
-    """Pull both BZ=F (Brent) and CL=F (WTI) for the 5y window."""
+    """Pull both BZ=F (Brent) and CL=F (WTI) for the 10y window."""
     frames = [fetch_daily("BZ=F"), fetch_daily("CL=F")]
     df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
     return df.dropna(subset=["close"]).reset_index(drop=True)

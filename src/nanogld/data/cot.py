@@ -161,8 +161,9 @@ def _flag_irregular(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fetch_cot_5y(year_start: int = 2021, year_end: int = 2026) -> pd.DataFrame:
-    """Concatenate 5y, filter to gold, flag irregular weeks, set release_ts."""
+def fetch_cot_5y(year_start: int = 2016, year_end: int = 2026) -> pd.DataFrame:
+    """Concatenate window (default 10y), filter to gold, flag irregular weeks,
+    set release_ts. Func name kept for backwards compatibility."""
     frames = [fetch_cot_year(y) for y in range(year_start, year_end + 1)]
     df = pd.concat(frames, ignore_index=True)
     df = df.dropna(subset=["report_date"]).drop_duplicates(subset=["report_date"])
@@ -174,7 +175,7 @@ def fetch_cot_5y(year_start: int = 2021, year_end: int = 2026) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def write_cot_parquet(year_start: int = 2021, year_end: int = 2026) -> tuple[pd.DataFrame, str]:
+def write_cot_parquet(year_start: int = 2016, year_end: int = 2026) -> tuple[pd.DataFrame, str]:
     df = fetch_cot_5y(year_start, year_end)
     validate(df, COT_MANIFEST)
     out_path = raw_dir() / "cftc_cot_gold_weekly.parquet"

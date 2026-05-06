@@ -86,9 +86,11 @@ def test_oil_features_real_data() -> None:
     df = oil.build_oil_features()
     assert not df.empty
     assert {"brent_level_close", "wti_level_close", "brent_wti_spread"}.issubset(df.columns)
-    # Sane price ranges over 5y
-    assert 20 < df["brent_level_close"].dropna().min() < 200
-    assert 20 < df["wti_level_close"].dropna().min() < 200
+    # Sane price ranges over 10y window. Includes 2020 oil collapse:
+    # WTI 2020-04-20 went negative, Brent hit ~$19. Use permissive lower bounds.
+    assert 15 < df["brent_level_close"].dropna().min() < 200
+    # WTI can dip below zero in 2020 — only enforce upper bound
+    assert df["wti_level_close"].dropna().max() < 200
     # PIT carrier
     assert "t_visible" in df.columns
     # Spread non-trivial

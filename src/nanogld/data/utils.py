@@ -30,8 +30,11 @@ import requests
 ET: Final = ZoneInfo("America/New_York")
 LONDON: Final = ZoneInfo("Europe/London")
 
-# 5y window (matches plan/02-DATA-PIPELINE.md "Source 1" defaults)
-START_DATE_UTC: Final = datetime(2021, 4, 24, tzinfo=UTC)
+# 10y window (extended from 5y after Alpaca paper SIP feed verified back to
+# 2016-01-04 for 30min granularity — 2026-05-05 audit). FRED ALFRED, GPR, WGC,
+# multisource news already cover this depth; Polygon news (2y) + Alpaca news
+# (6y) gracefully degrade.
+START_DATE_UTC: Final = datetime(2016, 1, 4, tzinfo=UTC)
 END_DATE_UTC: Final = datetime(2026, 4, 24, tzinfo=UTC)
 
 # Naive variants for SDKs (Alpaca/yfinance) that want tz-unaware defaults.
