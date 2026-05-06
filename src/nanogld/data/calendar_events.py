@@ -30,6 +30,24 @@ from nanogld.data.utils import ET, UTC, raw_dir
 # ────────────────────────────────────────────────────────────────────────────
 
 _FOMC_SCHEDULE: dict[int, list[tuple[int, int]]] = {
+    # Historical 2016-2020 from federalreserve.gov/monetarypolicy/fomccalendars.htm.
+    # 2020 includes 2 emergency cuts (Mar 3, Mar 15) for completeness.
+    2016: [(1, 27), (3, 16), (4, 27), (6, 15), (7, 27), (9, 21), (11, 2), (12, 14)],
+    2017: [(2, 1), (3, 15), (5, 3), (6, 14), (7, 26), (9, 20), (11, 1), (12, 13)],
+    2018: [(1, 31), (3, 21), (5, 2), (6, 13), (8, 1), (9, 26), (11, 8), (12, 19)],
+    2019: [(1, 30), (3, 20), (5, 1), (6, 19), (7, 31), (9, 18), (10, 30), (12, 11)],
+    2020: [
+        (1, 29),
+        (3, 3),
+        (3, 15),
+        (3, 18),
+        (4, 29),
+        (6, 10),
+        (7, 29),
+        (9, 16),
+        (11, 5),
+        (12, 16),
+    ],
     2021: [(1, 27), (3, 17), (4, 28), (6, 16), (7, 28), (9, 22), (11, 3), (12, 15)],
     2022: [(1, 26), (3, 16), (5, 4), (6, 15), (7, 27), (9, 21), (11, 2), (12, 14)],
     2023: [(2, 1), (3, 22), (5, 3), (6, 14), (7, 26), (9, 20), (11, 1), (12, 13)],
@@ -100,7 +118,7 @@ def _approx_dates(year_start: int, year_end: int, *, day_of_month: int) -> list[
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def build_calendar(year_start: int = 2021, year_end: int = 2026) -> pd.DataFrame:
+def build_calendar(year_start: int = 2016, year_end: int = 2027) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
 
     # FOMC decisions — 14:00 ET, tier 1
@@ -193,7 +211,7 @@ def build_calendar(year_start: int = 2021, year_end: int = 2026) -> pd.DataFrame
 
 
 def write_calendar_parquet(
-    year_start: int = 2021, year_end: int = 2026
+    year_start: int = 2016, year_end: int = 2026
 ) -> tuple[pd.DataFrame, str]:
     """Build + persist the deterministic calendar. Returns (df, parquet_path)."""
     df = build_calendar(year_start, year_end)

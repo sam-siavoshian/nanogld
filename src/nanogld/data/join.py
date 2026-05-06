@@ -248,6 +248,34 @@ def join_snapshot(
     gdelt = _enforce_pit(sources.get("gdelt", pd.DataFrame()), "gdelt")
     base = _attach_news_counts(base, gdelt, source_label="gdelt")
 
+    # GDELT per-bar theme aggregates (gold/conflict/oil/macro mention counts).
+    gdelt_pb = sources.get("gdelt_per_bar", pd.DataFrame())
+    if not gdelt_pb.empty and "bar_close_utc" in gdelt_pb.columns:
+        gdelt_pb = gdelt_pb.copy()
+        gdelt_pb["bar_close_utc"] = pd.to_datetime(gdelt_pb["bar_close_utc"], utc=True).astype(
+            "datetime64[ns, UTC]"
+        )
+        theme_cols = [
+            c
+            for c in (
+                "article_count",
+                "gold_mentions",
+                "conflict_mentions",
+                "oil_mentions",
+                "macro_mentions",
+            )
+            if c in gdelt_pb.columns
+        ]
+        # Rename to gdelt_* prefix to avoid collision with other count cols
+        rename = {c: f"gdelt_{c}" for c in theme_cols}
+        gdelt_sub = gdelt_pb[["bar_close_utc", *theme_cols]].rename(columns=rename)
+        gdelt_sub["bar_close_utc"] = gdelt_sub["bar_close_utc"] + pd.Timedelta(minutes=30)
+        # +30min buffer per V4 §7: bar T sees aggregate from (T-60min, T-30min]
+        base = base.merge(gdelt_sub, on="bar_close_utc", how="left")
+        for c in rename.values():
+            base[c] = base[c].fillna(0).astype("int64")
+        LOG.info("GDELT theme aggregates attached: %d cols", len(rename))
+
     for src_key, label in (
         ("central_bank", "central_bank"),
         ("kitco", "kitco"),
@@ -385,7 +413,15 @@ def load_default_sources() -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {
         "bars": _load_parquet(bars_path),
         "alpaca_news": _load_parquet(news_path),  # key kept "alpaca_news" for joiner compat
-        "gdelt": _load_parquet(rd / "gdelt_gkg_5y.parquet"),
+        # GDELT: prefer aggregated per-bar parquet (66M raw rows compressed to
+        # ~86K bar-aggregates with theme counts). Falls back to full per-event
+        # parquet when present.
+        "gdelt": _load_parquet(
+            rd / "gdelt_gkg_per_bar.parquet"
+            if (rd / "gdelt_gkg_per_bar.parquet").exists()
+            else rd / "gdelt_gkg_5y.parquet"
+        ),
+        "gdelt_per_bar": _load_parquet(rd / "gdelt_gkg_per_bar.parquet"),
         "brent_wti": _concat_parquets([rd / "brent_daily.parquet", rd / "wti_daily.parquet"]),
         "gpr": _load_parquet(rd / "gpr_combined.parquet"),
         "cot": _load_parquet(rd / "cftc_cot_gold_weekly.parquet"),
