@@ -114,13 +114,28 @@ def fetch_filtered(
         # Article_title, Article, Url, Publisher, Author. Some rows have Cyrillic /
         # bad bytes that throw DatasetGenerationError mid-stream — wrap iter loop
         # in try/except per-batch to keep the run alive.
+        # Early-stop heuristic: if no new rows kept for 5M consecutive examined,
+        # assume we passed the gold-relevant section of the dataset and break.
         rows: list[dict[str, object]] = []
         seen = 0
+        last_kept_at = 0
+        # 25M chosen empirically: prior run found 52K rows after a >10M-row
+        # dry section between gold-tagged shards. Tighter cutoff missed the
+        # dense back-half of the dataset.
+        EARLY_STOP_GAP = 25_000_000
         try:
             for ex in ds:
                 seen += 1
                 if seen % 500_000 == 0:
                     LOG.info("FNSPID scan: %d examined, %d kept", seen, len(rows))
+                if seen - last_kept_at > EARLY_STOP_GAP and len(rows) > 0:
+                    LOG.warning(
+                        "FNSPID early-stop: %d rows since last keep — assuming past "
+                        "gold-relevant section (kept=%d).",
+                        EARLY_STOP_GAP,
+                        len(rows),
+                    )
+                    break
                 try:
                     sym = str(ex.get("Stock_symbol") or "").upper().strip()
                     if sym not in tickers:
@@ -139,6 +154,7 @@ def fetch_filtered(
                             "symbols": sym,
                         }
                     )
+                    last_kept_at = seen
                 except (UnicodeDecodeError, ValueError, TypeError) as e:  # noqa: BLE001
                     LOG.debug("FNSPID skip row %d: %s", seen, e)
                     continue
@@ -182,6 +198,9 @@ def fetch_filtered(
         return df
 
     df = df.dropna(subset=["created_at"])
+    # FNSPID tags same Article URL across multiple Stock_symbols (e.g. an article
+    # mentioning gold + silver miners gets ~5 rows). Dedupe on article_id.
+    df = df.drop_duplicates(subset=["article_id"], keep="first").reset_index(drop=True)
     df["bias_tier"] = df["source"].map(BIAS_BY_SOURCE).fillna(DEFAULT_BIAS).astype("string")
     for c in ("article_id", "source", "title", "body", "url", "symbols"):
         df[c] = df[c].astype("string")

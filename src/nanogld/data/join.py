@@ -436,7 +436,7 @@ def load_default_sources() -> dict[str, pd.DataFrame]:
         "investing": _load_parquet(rd / "investing_gold_news.parquet"),
         "bullionvault": _load_parquet(rd / "bullionvault_news.parquet"),
         "multisource": _load_parquet(rd / "multisource_news.parquet"),
-        "fnspid": _load_parquet(rd / "fnspid_gold_news.parquet"),
+        "fnspid": _load_parquet(rd / "fnspid_gold_relevant.parquet"),
     }
     # ETFs: long-form concat. Prefer Alpaca (5y) over Polygon (2y).
     etf_paths: list[Path] = []
