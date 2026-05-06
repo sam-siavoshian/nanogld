@@ -292,7 +292,17 @@ def join_snapshot(
     base = _attach_bar_frequency_features(base, bars)
 
     base["bar_close_utc"] = pd.to_datetime(base["bar_close_utc"], utc=True)
-    return base.sort_values("bar_close_utc").reset_index(drop=True)
+    base = base.sort_values("bar_close_utc").reset_index(drop=True)
+
+    # Labels + train/val/test split — doc 04 §labels (lines 631-654).
+    try:
+        from nanogld.features import labels as label_mod  # noqa: PLC0415
+
+        base = label_mod.add_labels_and_splits(base, close_col="gld_close")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("labels skipped: %s", e)
+
+    return base
 
 
 def _attach_daily_panel(base: pd.DataFrame) -> pd.DataFrame:
