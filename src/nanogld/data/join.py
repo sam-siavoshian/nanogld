@@ -259,8 +259,112 @@ def join_snapshot(
         df = _enforce_pit(sources.get(src_key, pd.DataFrame()), src_key)
         base = _attach_news_counts(base, df, source_label=label)
 
+    # Engineered features (doc 04) — daily panel + bar-frequency.
+    base = _attach_daily_panel(base)
+    base = _attach_bar_frequency_features(base, bars)
+
     base["bar_close_utc"] = pd.to_datetime(base["bar_close_utc"], utc=True)
     return base.sort_values("bar_close_utc").reset_index(drop=True)
+
+
+def _attach_daily_panel(base: pd.DataFrame) -> pd.DataFrame:
+    """Merge engineered daily features panel onto each bar via PIT asof.
+
+    Daily panel built by `nanogld.features.build.build_panel()`. Each row
+    carries `t_visible_max` = latest visible t_visible across joined source
+    groups for that day. We use strict-< asof so the bar at T only sees
+    panel rows with t_visible_max < T (V1 hard rule §1).
+    """
+    try:
+        from nanogld.features import build as feat_build  # noqa: PLC0415
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("daily panel skipped — features.build import failed: %s", e)
+        return base
+    if base.empty:
+        return base
+    start = base["bar_close_utc"].iloc[0].normalize()
+    end = base["bar_close_utc"].iloc[-1].normalize() + pd.Timedelta(days=1)
+    try:
+        panel = feat_build.build_panel(start=start, end=end)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("daily panel build failed: %s — skipping", e)
+        return base
+    if panel.empty or "t_visible_max" not in panel.columns:
+        LOG.warning("daily panel empty or missing t_visible_max — skipping")
+        return base
+    feat_cols = [
+        c for c in panel.columns if c != "t_visible_max" and not c.startswith("t_visible_")
+    ]
+    panel = panel.reset_index().rename(columns={"date_utc": "_panel_date"})
+    panel["t_visible_max"] = pd.to_datetime(panel["t_visible_max"], utc=True).astype(
+        "datetime64[ns, UTC]"
+    )
+    panel = panel.dropna(subset=["t_visible_max"]).sort_values("t_visible_max")
+    base = base.copy()
+    base["bar_close_utc"] = pd.to_datetime(base["bar_close_utc"], utc=True).astype(
+        "datetime64[ns, UTC]"
+    )
+    merged = pd.merge_asof(
+        base.sort_values("bar_close_utc"),
+        panel[["t_visible_max", *feat_cols]],
+        left_on="bar_close_utc",
+        right_on="t_visible_max",
+        direction="backward",
+        allow_exact_matches=False,
+    )
+    LOG.info("daily panel attached: %d cols, base rows %d", len(feat_cols), len(merged))
+    return merged.drop(columns=["t_visible_max"], errors="ignore")
+
+
+def _attach_bar_frequency_features(base: pd.DataFrame, bars: pd.DataFrame) -> pd.DataFrame:
+    """Compute price/risk/equity features at 30min granularity + merge.
+
+    These are NOT in the daily panel. Each is keyed by `bar_close_utc`
+    (= bar.timestamp + 30min) and joined with strict equality on the bar grid.
+    """
+    if base.empty:
+        return base
+    out = base.copy()
+
+    try:
+        from nanogld.features import equity, price, risk  # noqa: PLC0415
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("bar-frequency features skipped — import failed: %s", e)
+        return out
+
+    for mod, label in ((price, "price"), (risk, "risk"), (equity, "equity")):
+        try:
+            feat = mod.build_features() if hasattr(mod, "build_features") else None
+            if feat is None:
+                fn = getattr(mod, f"build_{label}_features", None)
+                feat = fn() if fn else pd.DataFrame()
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("[%s] feature build failed: %s — skip", label, e)
+            continue
+        if feat is None or feat.empty:
+            LOG.info("[%s] feature build returned empty — skip", label)
+            continue
+        if "bar_close_utc" not in feat.columns:
+            if "t_visible" in feat.columns:
+                feat = feat.rename(columns={"t_visible": "bar_close_utc"})
+            else:
+                LOG.warning("[%s] no bar_close_utc/t_visible column — skip", label)
+                continue
+        feat["bar_close_utc"] = pd.to_datetime(feat["bar_close_utc"], utc=True).astype(
+            "datetime64[ns, UTC]"
+        )
+        feat = feat.drop_duplicates(subset=["bar_close_utc"]).sort_values("bar_close_utc")
+        feat_cols = [c for c in feat.columns if c not in {"bar_close_utc", "t_visible"}]
+        before = len(out.columns)
+        out = pd.merge_asof(
+            out.sort_values("bar_close_utc"),
+            feat[["bar_close_utc", *feat_cols]],
+            on="bar_close_utc",
+            direction="backward",
+            allow_exact_matches=True,
+        )
+        LOG.info("[%s] bar-freq features attached: %d cols", label, len(out.columns) - before)
+    return out
 
 
 def load_default_sources() -> dict[str, pd.DataFrame]:
