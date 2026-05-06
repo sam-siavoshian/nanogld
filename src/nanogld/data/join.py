@@ -128,12 +128,24 @@ def _attach_daily(
 def _attach_news_counts(
     base: pd.DataFrame, news: pd.DataFrame, *, source_label: str
 ) -> pd.DataFrame:
-    """Per-bar count of news rows whose t_visible falls in (prev_close, close]."""
+    """Per-bar count of news rows whose t_visible falls in (prev_close, close].
+
+    Pre-V1 articles (t_visible < first bar_close - 30min) are dropped so they
+    don't dump into bar 0 via the diff `fillna(counts[0])` path. Same on the
+    tail: post-last-bar articles are ignored for snapshot purposes.
+    """
     if news.empty:
         base[f"{source_label}_news_count"] = 0
         return base
     base = base.sort_values("bar_close_utc").reset_index(drop=True)
-    news_idx = pd.DatetimeIndex(news["t_visible"]).sort_values()
+    first_close = base["bar_close_utc"].iloc[0]
+    last_close = base["bar_close_utc"].iloc[-1]
+    window_start = first_close - pd.Timedelta(minutes=30)
+    news_in_window = news[(news["t_visible"] > window_start) & (news["t_visible"] <= last_close)]
+    if news_in_window.empty:
+        base[f"{source_label}_news_count"] = 0
+        return base
+    news_idx = pd.DatetimeIndex(news_in_window["t_visible"]).sort_values()
     counts = news_idx.searchsorted(pd.DatetimeIndex(base["bar_close_utc"]), side="right")
     counts_diff = pd.Series(counts).diff().fillna(counts[0]).clip(lower=0).astype("int64")
     base[f"{source_label}_news_count"] = counts_diff.values

@@ -110,26 +110,46 @@ def fetch_filtered(
     ds = load_dataset(DATASET, split="train", streaming=streaming, token=token)
 
     if streaming:
-        # Streaming path: must iterate one-by-one (HF streaming can't pipe to filter).
+        # Real schema (Nia 2026-05): fields are Capitalized — Stock_symbol, Date,
+        # Article_title, Article, Url, Publisher, Author. Some rows have Cyrillic /
+        # bad bytes that throw DatasetGenerationError mid-stream — wrap iter loop
+        # in try/except per-batch to keep the run alive.
         rows: list[dict[str, object]] = []
-        for ex in ds:
-            sym = str(ex.get("symbol", "")).upper().strip()
-            if sym not in tickers:
-                continue
-            date_str = ex.get("date")
-            if not date_str:
-                continue
-            rows.append(
-                {
-                    "article_id": str(ex.get("id") or f"fnspid_{len(rows)}"),
-                    "source": str(ex.get("source", "fnspid")).lower(),
-                    "created_at": pd.to_datetime(date_str, utc=True, errors="coerce"),
-                    "title": str(ex.get("title", "")),
-                    "body": str(ex.get("body", "") or ""),
-                    "url": str(ex.get("url", "") or ""),
-                    "symbols": sym,
-                }
+        seen = 0
+        try:
+            for ex in ds:
+                seen += 1
+                if seen % 500_000 == 0:
+                    LOG.info("FNSPID scan: %d examined, %d kept", seen, len(rows))
+                try:
+                    sym = str(ex.get("Stock_symbol") or "").upper().strip()
+                    if sym not in tickers:
+                        continue
+                    date_str = ex.get("Date")
+                    if not date_str:
+                        continue
+                    rows.append(
+                        {
+                            "article_id": str(ex.get("Url") or f"fnspid_{len(rows)}"),
+                            "source": str(ex.get("Publisher") or "fnspid").lower(),
+                            "created_at": pd.to_datetime(date_str, utc=True, errors="coerce"),
+                            "title": str(ex.get("Article_title") or ""),
+                            "body": str(ex.get("Article") or ""),
+                            "url": str(ex.get("Url") or ""),
+                            "symbols": sym,
+                        }
+                    )
+                except (UnicodeDecodeError, ValueError, TypeError) as e:  # noqa: BLE001
+                    LOG.debug("FNSPID skip row %d: %s", seen, e)
+                    continue
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(
+                "FNSPID stream halted at row %d (%s) — keeping %d rows already pulled",
+                seen,
+                e,
+                len(rows),
             )
+        LOG.info("FNSPID scan complete: %d examined, %d kept", seen, len(rows))
         df = pd.DataFrame(rows)
     else:
         # Non-streaming: vectorized filter in C, then to_pandas. Much faster.
