@@ -109,10 +109,14 @@ def build_per_series() -> dict[str, pd.DataFrame]:
         df = pd.read_parquet(path)
         if df.empty:
             continue
+        # PIT-correct: take FIRST realtime_start per observation date (initial
+        # release). Taking .tail(1) returns the LATEST revision which has a
+        # much later realtime_start → introduces look-ahead bias and drops
+        # everything before the most recent revision date.
         latest = (
             df.sort_values(["date", "realtime_start"])
             .groupby("date")
-            .tail(1)
+            .head(1)
             .reset_index(drop=True)
             .sort_values("date")
             .reset_index(drop=True)
