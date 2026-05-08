@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from nanogld.data.utils import get_logger, raw_dir
@@ -92,8 +93,9 @@ def add_spread_feature(
         out["gld_spread_bps_t"] = merged["gld_spread_bps_t"].astype("float32").to_numpy()
 
     if proxy_used or out["gld_spread_bps_t"].isna().any():
-        proxy = ((out[high_col] - out[low_col]) / out[close_col]) * 10_000.0 * PROXY_SCALE
-        proxy = proxy.astype("float32")
+        safe_close = out[close_col].where(out[close_col] > 0)
+        proxy = ((out[high_col] - out[low_col]) / safe_close) * 10_000.0 * PROXY_SCALE
+        proxy = proxy.replace([np.inf, -np.inf], np.nan).astype("float32")
         if proxy_used:
             out["gld_spread_bps_t"] = proxy
         else:

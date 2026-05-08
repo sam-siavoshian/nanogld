@@ -68,16 +68,34 @@ def test_h5_x_vol_high_small_when_low_vol() -> None:
 
 
 @pytest.mark.smoke
-def test_h5_threshold_frozen_no_leak() -> None:
-    """Train threshold must NOT shift when applied to val/test."""
+def test_h5_threshold_frozen_deterministic() -> None:
+    """Same train data twice must give same threshold and same output."""
     train = _synthetic_session("2022-06-03", [100.0 + 0.5 * i for i in range(13)])
-    val = _synthetic_session("2024-06-03", [100.0 + 0.7 * i for i in range(13)])
-    th_train = h5.fit_h5_vol_threshold(train, vol_lookback=4)
-    th_val = h5.fit_h5_vol_threshold(val, vol_lookback=4)
+    th_a = h5.fit_h5_vol_threshold(train, vol_lookback=4)
+    th_b = h5.fit_h5_vol_threshold(train.copy(), vol_lookback=4)
+    if pd.notna(th_a) and pd.notna(th_b):
+        assert th_a == pytest.approx(th_b)
+    out_a = h5.add_h5_features(train.copy(), high_vol_threshold=th_a, vol_lookback=4)
+    out_b = h5.add_h5_features(train.copy(), high_vol_threshold=th_a, vol_lookback=4)
+    pd.testing.assert_series_equal(out_a["gld_h5_x_vol_high"], out_b["gld_h5_x_vol_high"])
 
-    out_val = h5.add_h5_features(val, high_vol_threshold=th_train, vol_lookback=4)
-    assert "gld_h5_x_vol_high" in out_val.columns
-    assert th_train != th_val or th_train == th_val
+
+@pytest.mark.smoke
+def test_h5_multi_day_propagation_resets_at_session_boundary() -> None:
+    """Across 3 ET sessions, h5 is constant WITHIN a day, DIFFERENT across days."""
+    sessions = []
+    for day, slope in (("2024-06-03", 0.5), ("2024-06-04", 0.7), ("2024-06-05", 0.3)):
+        sessions.append(_synthetic_session(day, [100.0 + slope * i for i in range(13)]))
+    df = pd.concat(sessions, ignore_index=True)
+    th = h5.fit_h5_vol_threshold(df, vol_lookback=4)
+    out = h5.add_h5_features(df, high_vol_threshold=th, vol_lookback=4)
+    h5_per_session = []
+    for s_start in (4, 17, 30):
+        h5_per_session.append(out["gld_h5_log_return"].iloc[s_start])
+    assert h5_per_session[0] != h5_per_session[1]
+    assert h5_per_session[1] != h5_per_session[2]
+    s1 = out["gld_h5_log_return"].iloc[4:13].dropna().unique()
+    assert len(s1) == 1, "h5 must be constant within session 1"
 
 
 @pytest.mark.smoke

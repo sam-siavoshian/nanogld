@@ -50,21 +50,31 @@ def fit_regime_thresholds(
 
     Returns frozen thresholds that should be reused for val/test.
     """
-    if vix_col in train_df.columns:
-        vix_quantiles = train_df[vix_col].quantile([1 / 3, 2 / 3])
-        vix_terc = (float(vix_quantiles.iloc[0]), float(vix_quantiles.iloc[1]))
-    else:
-        LOG.warning("%s missing in train_df — VIX tercile will be neutral", vix_col)
-        vix_terc = (np.nan, np.nan)
+    nan_pair = (np.nan, np.nan)
 
-    if close_col in train_df.columns:
-        log_ret = np.log(train_df[close_col] / train_df[close_col].shift(1))
-        rv = log_ret.rolling(rv_lookback, min_periods=rv_lookback // 2).std()
-        rv_quantiles = rv.dropna().quantile([1 / 3, 2 / 3])
-        rv_terc = (float(rv_quantiles.iloc[0]), float(rv_quantiles.iloc[1]))
+    if vix_col in train_df.columns and len(train_df[vix_col].dropna()) >= 3:
+        vix_quantiles = train_df[vix_col].quantile([1 / 3, 2 / 3])
+        if len(vix_quantiles) >= 2:
+            vix_terc = (float(vix_quantiles.iloc[0]), float(vix_quantiles.iloc[1]))
+        else:
+            vix_terc = nan_pair
     else:
-        LOG.warning("%s missing in train_df — RV tercile will be neutral", close_col)
-        rv_terc = (np.nan, np.nan)
+        LOG.warning("VIX column missing or empty in train_df — VIX tercile will be neutral")
+        vix_terc = nan_pair
+
+    if close_col in train_df.columns and len(train_df[close_col].dropna()) >= rv_lookback + 1:
+        safe_close = train_df[close_col].where(train_df[close_col] > 0)
+        log_ret = np.log(safe_close / safe_close.shift(1))
+        log_ret = log_ret.replace([np.inf, -np.inf], np.nan)
+        rv = log_ret.rolling(rv_lookback, min_periods=rv_lookback).std().dropna()
+        if len(rv) >= 3:
+            rv_quantiles = rv.quantile([1 / 3, 2 / 3])
+            rv_terc = (float(rv_quantiles.iloc[0]), float(rv_quantiles.iloc[1]))
+        else:
+            rv_terc = nan_pair
+    else:
+        LOG.warning("close column missing or insufficient in train_df — RV tercile will be neutral")
+        rv_terc = nan_pair
 
     LOG.info("regime thresholds: vix=%s rv=%s", vix_terc, rv_terc)
     return RegimeThresholds(vix_tercile=vix_terc, rv_tercile=rv_terc)
@@ -124,6 +134,8 @@ def add_regime_columns(
     if bar_close_col not in out.columns:
         raise KeyError(f"{bar_close_col} required for regime features")
     out[bar_close_col] = pd.to_datetime(out[bar_close_col], utc=True)
+    if not out[bar_close_col].is_monotonic_increasing:
+        out = out.sort_values(bar_close_col).reset_index(drop=True)
 
     if vix_col in out.columns:
         vix_oh = _tercile_one_hot(out[vix_col], thresholds.vix_tercile)
@@ -134,8 +146,10 @@ def add_regime_columns(
     out["regime_vix_high"] = vix_oh[:, 2]
 
     if close_col in out.columns:
-        log_ret = np.log(out[close_col] / out[close_col].shift(1))
-        rv = log_ret.rolling(rv_lookback, min_periods=rv_lookback // 2).std()
+        safe_close = out[close_col].where(out[close_col] > 0)
+        log_ret = np.log(safe_close / safe_close.shift(1))
+        log_ret = log_ret.replace([np.inf, -np.inf], np.nan)
+        rv = log_ret.rolling(rv_lookback, min_periods=rv_lookback).std()
         rv_oh = _tercile_one_hot(rv, thresholds.rv_tercile)
     else:
         rv_oh = np.zeros((len(out), 3), dtype=np.int8)

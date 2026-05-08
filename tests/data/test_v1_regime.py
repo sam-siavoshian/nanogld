@@ -77,6 +77,52 @@ def test_vix_tercile_one_hot_disjoint() -> None:
 
 
 @pytest.mark.smoke
+def test_year_bucket_all_decades() -> None:
+    """Every year-bucket must fire for at least one expected year."""
+    rows = []
+    for year in (2016, 2018, 2020, 2022, 2023, 2024, 2025, 2027):
+        rows.append(
+            {
+                "bar_close_utc": pd.Timestamp(f"{year}-06-15 14:30:00+00:00"),
+                "vix_level": 18.0,
+                "gld_close": 100.0,
+                "is_fomc_week": 0,
+            }
+        )
+    df = pd.DataFrame(rows)
+    th = regime.RegimeThresholds(vix_tercile=(15.0, 20.0), rv_tercile=(0.001, 0.002))
+    out = regime.add_regime_columns(df, thresholds=th, rv_lookback=2)
+    assert out["regime_year_2016_2019"].iloc[0] == 1
+    assert out["regime_year_2016_2019"].iloc[1] == 1
+    assert out["regime_year_2020_2022"].iloc[2] == 1
+    assert out["regime_year_2020_2022"].iloc[3] == 1
+    assert out["regime_year_2023_2024"].iloc[4] == 1
+    assert out["regime_year_2023_2024"].iloc[5] == 1
+    assert out["regime_year_2025_plus"].iloc[6] == 1
+    assert out["regime_year_2025_plus"].iloc[7] == 1
+
+
+@pytest.mark.smoke
+def test_fit_thresholds_empty_df_does_not_crash() -> None:
+    """Empty train_df must return NaN thresholds, not raise IndexError."""
+    empty = pd.DataFrame({"vix_level": [], "gld_close": []})
+    th = regime.fit_regime_thresholds(empty, rv_lookback=20)
+    import math
+
+    assert math.isnan(th.vix_tercile[0]) and math.isnan(th.vix_tercile[1])
+    assert math.isnan(th.rv_tercile[0]) and math.isnan(th.rv_tercile[1])
+
+
+@pytest.mark.smoke
+def test_regime_vector_columns_order_stable() -> None:
+    """Canonical column order must match across calls."""
+    cols = regime.regime_vector_columns()
+    assert len(cols) == 12
+    assert cols[0] == "regime_vix_low"
+    assert cols[-1] == "regime_hmm_p_high_vol"
+
+
+@pytest.mark.smoke
 def test_thresholds_frozen_no_test_leak() -> None:
     """Thresholds fit on train must NOT change when applied to val."""
     train = _synthetic_panel(n=200, year=2022)

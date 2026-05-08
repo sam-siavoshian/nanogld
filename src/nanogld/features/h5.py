@@ -67,8 +67,10 @@ def fit_h5_vol_threshold(
     """
     if close_col not in train_df.columns:
         return float("nan")
-    log_ret = np.log(train_df[close_col] / train_df[close_col].shift(1))
-    realized_vol = log_ret.rolling(vol_lookback, min_periods=vol_lookback // 2).std()
+    safe_close = train_df[close_col].where(train_df[close_col] > 0)
+    log_ret = np.log(safe_close / safe_close.shift(1))
+    log_ret = log_ret.replace([np.inf, -np.inf], np.nan)
+    realized_vol = log_ret.rolling(vol_lookback, min_periods=vol_lookback).std()
     rv = realized_vol.dropna()
     if len(rv) < 3:
         return float("nan")
@@ -107,7 +109,9 @@ def add_h5_features(
     bar_idx_within_day = _rth_bar_index(pd.DatetimeIndex(ts))
     bar_idx_within_day.index = out.index
 
-    log_ret = np.log(out[close_col] / out[close_col].shift(1))
+    safe_close = out[close_col].where(out[close_col] > 0)
+    log_ret = np.log(safe_close / safe_close.shift(1))
+    log_ret = log_ret.replace([np.inf, -np.inf], np.nan)
 
     h5_value_at_bar = log_ret.where(bar_idx_within_day == H5_BAR_INDEX, other=np.nan)
 
@@ -123,7 +127,7 @@ def add_h5_features(
     )
     out["gld_h5_log_return"] = out["gld_h5_log_return"].astype("float32")
 
-    realized_vol = log_ret.rolling(vol_lookback, min_periods=vol_lookback // 2).std()
+    realized_vol = log_ret.rolling(vol_lookback, min_periods=vol_lookback).std()
     if np.isnan(high_vol_threshold):
         is_high_vol = pd.Series(np.zeros(len(out), dtype=np.float32), index=out.index)
     else:

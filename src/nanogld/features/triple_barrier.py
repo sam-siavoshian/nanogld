@@ -68,7 +68,18 @@ def triple_barrier_label(
 
     spread_frac = sp_bps / 10_000.0
 
-    nan_mask = np.isnan(nlr) | np.isnan(up) | np.isnan(dn) | np.isnan(sp_bps)
+    invalid_mask = (
+        np.isnan(nlr)
+        | np.isnan(up)
+        | np.isnan(dn)
+        | np.isnan(sp_bps)
+        | np.isinf(nlr)
+        | np.isinf(up)
+        | np.isinf(dn)
+        | np.isinf(sp_bps)
+        | (up <= 0)
+        | (dn <= 0)
+    )
     abs_nlr = np.abs(nlr)
 
     labels = np.zeros_like(nlr, dtype=np.int8)
@@ -78,7 +89,7 @@ def triple_barrier_label(
 
     labels[fired_up] = 1
     labels[fired_down] = -1
-    labels[nan_mask] = 0
+    labels[invalid_mask] = 0
     return labels
 
 

@@ -86,9 +86,23 @@ def add_atr_and_barriers(
     if missing:
         raise KeyError(f"missing required OHLC columns: {missing}")
 
+    if "bar_close_utc" in out.columns:
+        bc = pd.to_datetime(out["bar_close_utc"], utc=True)
+        if not bc.is_monotonic_increasing:
+            out = out.sort_values("bar_close_utc").reset_index(drop=True)
+
     atr_col = f"gld_atr_{period}"
-    out[atr_col] = atr_wilder(out[high_col], out[low_col], out[close_col], period=period)
-    atr_log_return = out[atr_col] / out[close_col]
+    out[atr_col] = atr_wilder(out[high_col], out[low_col], out[close_col], period=period).astype(
+        "float32"
+    )
+    safe_close = out[close_col].where(out[close_col] > 0)
+    n_bad_close = int((~(out[close_col] > 0)).sum())
+    if n_bad_close > 0:
+        LOG.warning(
+            "ATR: %d rows with non-positive close — barriers NaN-masked at those rows",
+            n_bad_close,
+        )
+    atr_log_return = out[atr_col] / safe_close
 
     out["barrier_up"] = (barrier_mult * atr_log_return).astype("float32")
     out["barrier_down"] = (barrier_mult * atr_log_return).astype("float32")
