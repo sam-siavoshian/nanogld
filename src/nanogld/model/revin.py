@@ -45,8 +45,8 @@ class RevIN(nn.Module):
             self.affine_weight = nn.Parameter(torch.ones(num_features))
             self.affine_bias = nn.Parameter(torch.zeros(num_features))
 
-        self.register_buffer("_mean", torch.zeros(1), persistent=False)
-        self.register_buffer("_stdev", torch.ones(1), persistent=False)
+        self._mean: Tensor | None = None
+        self._stdev: Tensor | None = None
 
     def forward(self, x: Tensor, mode: str) -> Tensor:
         """Apply normalization in the requested direction.
@@ -79,4 +79,6 @@ class RevIN(nn.Module):
         y = x
         if self.affine:
             y = (y - self.affine_bias) / (self.affine_weight + self.eps)
+        if self._stdev is None or self._mean is None:
+            raise RuntimeError("RevIN.denorm called before norm — no stored stats")
         return y * self._stdev + self._mean
