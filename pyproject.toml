@@ -50,6 +50,12 @@ dependencies = [
     "duckdb>=1.0",
     "polygon-api-client>=1.14",
     "db-dtypes>=1.5.1",
+    # V1 model phase
+    "laplace-torch>=0.2",
+    "torchcp>=0.4",
+    "hmmlearn>=0.3",
+    "PyWavelets>=1.4",
+    "joblib>=1.3",
 ]
 
 [dependency-groups]
@@ -81,6 +87,13 @@ quote-style = "double"
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
 pythonpath = ["src"]
+markers = [
+    "slow: heavy tests that load real models or hit external services",
+    "needs_data: tests that require pulled data parquets to exist",
+    "smoke: fast smoke tests under 1s; runs on every PR",
+    "integration: multi-module flow tests, 5-30s each",
+    "needs_gpu: tests requiring CUDA or MPS GPU, skipped on CPU CI runner",
+]
 
 [tool.mypy]
 strict = true
