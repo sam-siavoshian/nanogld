@@ -2,19 +2,62 @@
 
 **Project:** nanoGLD
 **Owner:** samsiavoshian
-**Date last updated:** 2026-05-01
-**Phase:** Planning complete. Implementation phase begins.
-**Version:** **V1 — frozen.** No version bump until owner explicitly says so. Agents do NOT introduce V2/V3/etc references. Past planning iterations collapsed into V1.
+**Date last updated:** 2026-05-08
+**Phase:** ⭐ **DATA PHASE COMPLETE. V1 SPEC LOCKED.** Single unified dataset shipped on Mac mini. Ready for V1 model phase.
+**Version:** **V1 — locked 2026-05-08.** No further replanning without owner approval. Agents do NOT introduce V2/V3/etc references or further redline V1. Past planning iterations collapsed into V1; V1 is a single-pass redline on top.
+
+---
+
+## V1 transition complete — 2026-05-08
+
+9-agent Nia research synthesis on top of V1's 27 verifying agents produced V1 redlines. Owner approved Decisions 1B (hybrid encoder), 2B (channel-independent + patches), 3B (multi-task focal CE + Sharpe head), 4A (CFA + AECF + sparse cross-attn) + all small wins (Cautious update mask, muP transfer, Mixout, SimPSI/Wave-Mask, FreeLB on news, DANN era, SimMTM + CLIP SSL, triple-barrier labels, half-hour-5 feature, VSN gate, series decomposition, per-channel RevIN, focal loss gamma=3, T-scaling -> RAPS -> AgACI, Laplace last-layer, F2F-style sizing, per-bucket eval, cost-stress {0.5x, 1.0x, 1.5x}, DSR > 1.0).
+
+`plan/V1-SPEC.md` is the canonical change list. All 8 plan docs touched + this STATUS + HANDOFF.
+
+| Doc | V1 touched | Date |
+|---|---|---|
+| V1-SPEC.md | NEW | 2026-05-08 |
+| 00-OVERVIEW.md | yes | 2026-05-08 |
+| 01-INFRA-AND-SECURITY.md | minimal (deps unchanged) | 2026-05-08 |
+| 02-DATA-PIPELINE.md | minimal (spread + ATR pre-features added) | 2026-05-08 |
+| 03-NEWS-EMBEDDING.md | minimal (CFA + AECF call-out) | 2026-05-08 |
+| 04-FEATURE-ENGINEERING.md | yes (VSN + series decomp + per-channel RevIN + h5 + spread + triple-barrier) | 2026-05-08 |
+| 05-MODEL-TRAINING-CALIBRATION.md | yes (hybrid encoder + dual head + focal + RAPS/AgACI + Laplace + Cautious + muP + Mixout + SimMTM + CLIP) | 2026-05-08 |
+| 06-BACKTEST.md | yes (per-bucket + cost-stress + DSR hard gate + 8 promotion gates) | 2026-05-08 |
+| 07-SIZING-AND-EXITS.md | yes (F2F-style: friction-Kelly + ATR + vol-target + 30d timeout + sqrt-impact + conformal floor) | 2026-05-08 |
+| 08-LIVE-TRADING.md | minimal (sizing API contract follows new doc 07) | 2026-05-08 |
+| HANDOFF.md | yes (V1 transition section + pre-training-run checklist + label rebuild caveat) | 2026-05-08 |
+| STATUS.md | this entry | 2026-05-08 |
+| README.md | yes (target reframe + arch diagram + hard rules 18-25 + 8 gates) | 2026-05-08 |
+
+**Execution rule update:** V1 is the new lock. Agents do NOT replan further without owner approval. Same Iron Law as V1: do not silently rewrite, redesign, or extend. If a V1 spec line is wrong, document the issue and AskUserQuestion before changing anything. README/STATUS slot reserved for V1 backtest report once the model is trained.
 
 ---
 
 ## Quick Status
 
 ```
-Planning:        ██████████████ 100% locked, Nia-verified across 5 rounds (27 agents)
-Implementation:  ███░░░░░░░░░░░  ~30% — doc 01 + doc 02 code shipped 2026-05-04;
-                                       owner fills ENV before doc 03 starts
+Planning:        ██████████████ V1 locked 2026-05-08, 27 V1 + 9 V1 = 36 specialized Nia agents
+Data phase:      ██████████████ 100% — unified dataset shipped 2026-05-08
+                                  /Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt
+                                  234 MB, 75,993 bars x 681 features + 40,032 news embeddings
+                                  CAVEAT: V1 fixed-5bps labels; V1 wants triple-barrier (rebuild in dataloader or sidecar)
+Model phase:     ░░░░░░░░░░░░░░   0% — read plan/V1-SPEC.md then plan/HANDOFF.md before starting
 ```
+
+**🎯 NEXT STEP:** Model agent reads `plan/V1-SPEC.md` + `plan/HANDOFF.md` then implements per `plan/05-MODEL-TRAINING-CALIBRATION.md`. Run pre-training-run checklist (HANDOFF.md) before any H100 spend.
+
+---
+
+## Implementation phase tracker (V1)
+
+| Module | Path | Status | Notes |
+|---|---|---|---|
+| Model | `src/nanogld/model/` | not-yet-built | hybrid encoder (10 transformer + 2 sLSTM) + FiLM + sparse cross-attn + CFA + AECF + dual head |
+| Training | `src/nanogld/training/` | not-yet-built | Stage 1 SimMTM + CLIP SSL, Stage 2 linear probe, Stage 3 LLRD + Mixout p=0.7, Cautious-SF-AdamW + F-SAM + muP transfer |
+| Calibration | `src/nanogld/calibration/` | not-yet-built | T-scaling (focal-trained logits) -> RAPS -> AgACI online wrapper, Laplace last-layer epistemic |
+| Sizing | `src/nanogld/sizing/` | not-yet-built | F2F machinery: friction-adjusted Kelly + ATR-14 exits + vol-target 15% ann + 30d timeout + sqrt-impact + conformal floor |
+| Backtest | `src/nanogld/backtest/` | not-yet-built | walk-forward CV + per-bucket eval + cost-stress {0.5x, 1.0x, 1.5x} + DSR + bootstrap CIs + 8 promotion gates |
 
 Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one agent per doc, hand off when done. **8 docs after V5 merge** (was 11; merged model+train+calib into doc 05, sizing+exits into doc 07).
 
@@ -24,15 +67,15 @@ Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one age
 
 | Doc | Owner role | Status | Effort | Blocked by |
 |-----|-----------|--------|--------|-----------|
-| 00 OVERVIEW | n/a | ✅ Read-first reference | n/a | n/a |
-| 01 INFRA-AND-SECURITY | DevOps | ✅ **Implemented 2026-05-04** (see hand-off below) | 0.5 day | n/a |
-| 02 DATA-PIPELINE | Data engineer | ✅ **Code complete 2026-05-04** (see hand-off below); 5 keyless sources pulled end-to-end; Alpaca/FRED/GDELT/HF datasets pending owner ENV | **4-5 days** | doc 01 |
-| 03 NEWS-EMBEDDING | ML engineer | ✅ Spec ready (V1 Qwen3 + V4 expanded pipeline + LAFTR + new aggregator) | **1.5 day** setup + ~120min precompute | doc 02 |
-| 04 FEATURE-ENGINEERING | Feature engineer | ✅ Spec ready (V1 expanded 2026-05-04) | **1.5 days** | doc 03 |
-| 05 MODEL-TRAINING-CALIBRATION | ML systems engineer | ✅ Spec ready (V5 merge: model + training + calibration in one file) | **3 days** | doc 04 |
-| 06 BACKTEST | Quant engineer | ✅ Spec ready | 1 day | doc 05 |
-| 07 SIZING-AND-EXITS | Quant risk engineer | ✅ Spec ready (V5 merge: sizing + per-trade SL + profit-take + drawdown circuit-breaker) | **2 days** | doc 06 |
-| 08 LIVE-TRADING | Production engineer | ✅ Spec ready | 1.5 days | doc 07 |
+| 00 OVERVIEW | n/a | ✅ Read-first reference (V1-touched 2026-05-08) | n/a | n/a |
+| 01 INFRA-AND-SECURITY | DevOps | ✅ **Implemented 2026-05-04** (see hand-off below; deps unchanged for V1) | 0.5 day | n/a |
+| 02 DATA-PIPELINE | Data engineer | ✅ **DONE 2026-05-08.** All 27 ETFs/crypto + 40 FRED + GDELT + GPR + COT + WGC + calendar + DXY ingested. Unified dataset shipped. (V1: spread + ATR pre-features added to spec.) | **4 days actual** | doc 01 |
+| 03 NEWS-EMBEDDING | ML engineer | ✅ **DONE 2026-05-08.** 40,032 articles embedded with Qwen3-Embedding-4B (256-dim FP16) on Mac mini MPS at bs=2. 99.7% coverage. (V1: CFA + AECF call-outs in spec, no re-embedding required.) | **2 days actual** | doc 02 |
+| 04 FEATURE-ENGINEERING | Feature engineer | ✅ **DONE 2026-05-08** for v1 base + v2 engineered (681 features). **V1 ADDS** half-hour-5, spread bps, VSN gate, series decomposition, per-channel RevIN, triple-barrier labels — added in dataloader (see HANDOFF.md). | **0.5 day actual + V1 ~0.5 day** | doc 03 |
+| 05 MODEL-TRAINING-CALIBRATION | ML systems engineer | 🔜 **NEXT (V1).** Read `plan/V1-SPEC.md` + `plan/HANDOFF.md` first. Hybrid encoder + dual head + SimMTM + CLIP SSL + focal -> RAPS -> AgACI + Laplace + Cautious + muP + Mixout. | **4-5 days (V1)** | doc 04 |
+| 06 BACKTEST | Quant engineer | ✅ Spec ready (V1: per-bucket + cost-stress + DSR hard gate + 8 promotion gates) | 1 day | doc 05 |
+| 07 SIZING-AND-EXITS | Quant risk engineer | ✅ Spec ready (V1: F2F-style — friction-adjusted Kelly + ATR exits + vol-target 15% ann + 30d timeout + sqrt-impact + conformal floor) | **2 days** | doc 06 |
+| 08 LIVE-TRADING | Production engineer | ✅ Spec ready (V1: sizing API contract follows new doc 07) | 1.5 days | doc 07 |
 
 **V5 Merge (2026-05-04):** old docs 05+06+07 merged into the new doc 05 (MODEL-TRAINING-CALIBRATION). Old docs 09+10 merged into the new doc 07 (SIZING-AND-EXITS). One agent owns each merged doc end-to-end. Each doc's `Blocked by` is now exactly the immediately-preceding doc — pure linear chain.
 
@@ -45,6 +88,8 @@ Estimated implementation: **~14-16 days** end-to-end. **Sequential** — one age
 ## Execution Mode (every agent reads 00-OVERVIEW.md "Execution Mode" section)
 
 **These docs ARE the plan. Do not replan, do not rewrite, do not redesign.** The user said explicitly: *plan to execute the docs, do not replan*. Silent scope drift = fired. If a doc claim is wrong, document the issue and AskUserQuestion before changing anything.
+
+**V1 is the new lock as of 2026-05-08.** Same rule applies: agents do NOT redline V1 further. Build what `plan/V1-SPEC.md` says, test it, ship it. If a V1 spec line is wrong or under-specified, document and AskUserQuestion. Do not silently rewrite.
 
 **Research with Nia.** Before guessing on a library version, paper claim, or API, spawn a subagent (general-purpose or Explore) to run `nia papers` / `nia github` / `nia search` / `nia oracle` / `nia packages` / `nia tracer`. Run `nia auth` once if any command errors on auth. Nia CLI: `/Users/samsiavoshian/.bun/bin/nia`.
 
@@ -160,17 +205,20 @@ Owner lifted "raw PyTorch only / no HuggingFace" restriction. Researched modern 
 
 ---
 
-## V1 Architecture Locked (May 1, 2026)
+## V1 Architecture Locked (May 1, 2026) -> V1 Locked (May 8, 2026)
 
-**Backbone:** encoder-only transformer, ~24-60M params, channel-group tokens (~14)
-**Per-block:** RMSNorm + SwiGLU + RoPE (real-form) + QK-Norm + per-head gating + value residuals + no-bias
-**News fusion:** Qwen3-Embedding-4B → Perceiver-Resampler-lite → Flamingo-gated cross-attn
-**Training:** SSL-MAE → linear-probe → LLRD fine-tune, Schedule-Free AdamW + Friendly-SAM ρ=0.05 + EMA 0.999
-**Loss:** 3-class cross-entropy + label smoothing 0.1 (NEVER MSE on returns — forecast-collapse rule)
-**Sizing:** Stage 2 = vol-target × Kelly-lite × conformal-confidence
-**Backtest:** vectorized engine, bars_per_year=3276, baselines = DLinear/TSMixer/TimeMixer/xLSTMTime/XGBoost/Forecast-to-Fill replica, DSR + bootstrap CI
-**Live:** launchd StartCalendarInterval cron on Macbook M4 Pro, alpaca-py >=0.43, pmset sleep prevention
-**Infra:** PyTorch 2.11.0 pinned, FP32 weights, gitleaks before first commit, ADC for GCP, 1Password for live keys
+**Backbone (V1):** hybrid encoder, ~24-60M params. 10 transformer blocks (layers 1-10) + 2 sLSTM blocks (layers 11-12, xLSTMTime style). Channel-independent + patches (P=4, S=4, T=64 -> 16 patches/channel) replaces V1's channel-group tokens.
+**Per-block:** RMSNorm + SwiGLU + RoPE (real-form) + QK-Norm + per-head gating + value residuals + no-bias. FiLM regime modulation @ {2,4,6,8,10} on a 12-dim regime vector. Stochastic depth schedule linear 0.0 -> 0.2.
+**News fusion (V1):** Qwen3-Embedding-4B (frozen) -> CFA projector (FiLM + orthogonal residual) -> sparse Flamingo-gated cross-attn at layers {3, 7, 11} with AECF entropy-gated curriculum mask. is_news_present binary embedding concatenated.
+**Input (V1):** VSN feature gate (Lim 2021 TFT) -> series decomposition (24-bar MA kernel) -> per-channel RevIN (681 instances) -> patches.
+**Training (V1):** Stage 1 SSL = SimMTM (mask 0.40, K=3 multi-mask) + CLIP-style bars<->news contrastive. Stage 2 linear probe. Stage 3 LLRD fine-tune with Mixout p=0.7 anchored to SSL checkpoint. Cautious-Schedule-Free-AdamW + Friendly-SAM rho=0.05 + EMA 0.999 + muP transfer-tune from 2-4M tiny model. SimPSI + Wave-Mask aug only (NO naive jittering). FreeLB on news embeddings, DANN era-label gradient reversal.
+**Loss (V1):** dual head jointly trained — focal CE gamma=3 (Head A, 3-class) + cost-aware Sharpe loss (Head B, position weight in [-1, +1]). NEVER MSE on returns. Combined Stage 3: `0.5 * L_focal + 0.5 * L_sharpe_net + 0.05 * L_DANN + L_aecf`.
+**Calibration (V1):** focal-trained logits -> T-scaling [0.7, 3.0] guard -> RAPS (size penalty) -> AgACI online wrapper. Laplace last-layer epistemic (replaces MC dropout T=20). Snapshot ensemble (last 3 EMA checkpoints) kept.
+**Sizing (V1, F2F-style):** Head B output -> friction-adjusted Kelly (lambda=0.4, edge from Head B, variance from Laplace + rolling 60-bar realized) -> ATR-14 hard stop (2x) + trailing (1.5x) -> 30-day timeout -> sqrt-impact cost (gamma=0.02, k=0.7bps) -> vol target 15% annualized -> conformal floor (RAPS lower-bound < 0.40 -> position 0).
+**Backtest (V1):** vectorized engine, bars_per_year=3276, baselines = DLinear/TSMixer/TimeMixer/xLSTMTime/VLSTM/Gao 2014 half-hour-5/XGBoost/Forecast-to-Fill replica, DSR > 1.0 hard gate, per-bucket {news-present, news-absent, both} hard requirement, cost-stress {0.5x, 1.0x, 1.5x} hard gate, bootstrap CI.
+**Honest target (V1):** 1.0 to 1.5 OOS Sharpe net of 2bps round-trip, beating Gao 2014 + XGBoost ensemble by >= 0.2 Sharpe. The 2.88 number is daily gold futures EOD-to-EOD, not 30-min intraday.
+**Live:** launchd StartCalendarInterval cron on Macbook M4 Pro, alpaca-py >=0.43, pmset sleep prevention.
+**Infra:** PyTorch 2.11.0 pinned, FP32 weights, gitleaks before first commit, ADC for GCP, 1Password for live keys.
 
 ---
 
@@ -189,29 +237,35 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 
 ---
 
-## Empirical Bar (success criteria)
+## Empirical Bar (success criteria — V1 reframe)
 
 | Tier | Threshold | Status to ship |
 |------|-----------|---------------|
-| Minimum viable | 38% accuracy + Sharpe > 0 + beat XGBoost | Mandatory |
-| Real claim | Sharpe > 1.0 + DSR > 1.0 + beat ALL baselines by ≥0.2 | Mandatory for X thread |
-| Forecast-to-Fill tier | Sharpe > 2.5 + MDD < 5% | Publishable contribution |
+| Minimum viable | 38% accuracy + Sharpe > 0 net of 1x cost + beat XGBoost | Mandatory |
+| V1 ship | Sharpe > 1.0 net of 1x + Sharpe > 0.5 net of 1.5x + DSR > 1.0 + per-bucket Sharpe both positive + beat Gao 2014 + XGBoost ensemble by >= 0.2 | Mandatory for X thread |
+| Stretch | Sharpe > 1.5 net of 2bps + MDD < 5% + beats VLSTM 2.40 (daily futures, separate scoreboard) | Publishable contribution |
 
-**The actual bar:** GLD 5y buy-and-hold Sharpe ≈ 2.4 (2020-2025 was a great gold run). nanoGLD must beat this honestly to claim alpha. Forecast-to-Fill (Sharpe 2.88) on gold remains UNREPLICATED in 2026 — building this honestly is publishable.
+**The actual bars (V1):**
+- GLD 5y buy-and-hold Sharpe ~ 2.4 (2020-2025 was a great gold run). Beating this gross is easy; net of costs and on a 30-min timing strategy is the real test.
+- **Gao-Han-Li-Zhou 2014 half-hour-5 single-feature rule (5.43 Sharpe)** is the apples-to-apples GLD intraday published bar. If V1 loses to this, we shipped a worse model than 2014 and the recommendation is the simpler ensemble.
+- **Forecast-to-Fill 2.88 Sharpe** is daily gold futures EOD-to-EOD, ~30-day holding. Different problem, separate scoreboard.
+- **Saly-Kaufmann/Wood/Zohren 2026 VLSTM 2.40 Sharpe** is the daily futures DL frontier, separate scoreboard.
 
 ---
 
 ## Hard Project Rules (apply across all docs)
 
+V1 invariants (1-17, kept):
+
 1. **NEVER use MSE on returns** (forecast-collapse, arXiv:2604.00064)
-2. **STAY FROM-SCRATCH** (no TS foundation model fine-tune, arXiv:2511.18578)
+2. **STAY FROM-SCRATCH** (encoder + sLSTM head + heads all trainable; only Qwen3 frozen, arXiv:2511.18578)
 3. **SHIP THE SIMPLER MODEL IF IT TIES** (TLOB lesson)
 4. **APPLY PEER-BENCHMARK DISCOUNT** to backtests (arXiv:2604.18821)
 5. **bars_per_year = 3276** (NYSE RTH only)
 6. **Point-in-time correctness on every feature** (`.shift(1).rolling(...)`, news buffer = 30min for GDELT, 60s for Alpaca News, bar visibility = `bar.timestamp + bar_duration`)
 7. **gitleaks BEFORE first commit** (verify with fake key)
 8. **PyTorch 2.11.0 pinned** (SDPA fix #174945 for MPS)
-9. **FP32 weights everywhere** (no autocast, no torch.compile, no quantization)
+9. **FP32 weights everywhere** (no autocast, no torch.compile, no quantization). H100 has bf16 but V1 stays FP32 deterministic.
 10. **`.contiguous()` Q/K/V before SDPA** (PyTorch #181133)
 11. **Every feature row carries `t_visible`** column. CI gate: `test_release_ts_lte_t_visible_all_rows`.
 12. **ALFRED `get_series_all_releases` for ALL FRED series** (CPI/PCE annual revisions silently rewrite 5y of history)
@@ -220,6 +274,17 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 15. **Anchor-cosine anchors = hand-crafted templates OR pre-train-period samples**
 16. **Alpaca News field = `created_at`** (`published_at` does NOT exist; never join on `updated_at`)
 17. **`DFF` for daily Fed Funds, NOT `FEDFUNDS`** (FEDFUNDS is monthly)
+
+V1 invariants (18-25, NEW):
+
+18. **Per-bucket eval (news-present / news-absent / both) is non-negotiable.** 51% of bars are news-absent.
+19. **Cost-stress at {0.5x, 1.0x, 1.5x} on every reported Sharpe.** Hard gate: Sharpe > 0.5 at 1.5x.
+20. **DSR > 1.0 hard gate.** No cherry-picking across configs.
+21. **SimPSI / Wave-Mask aug only.** Naive jittering FORBIDDEN (Fons 2020 net-negative on Sharpe).
+22. **Focal loss gamma=3 (NOT vanilla CE).** Required for clean T-scaling / APS interaction (Xi 2024 arXiv:2402.04344).
+23. **Triple-barrier labels with spread-adjusted neutral threshold.** Replaces fixed 5-bps cutoff.
+24. **Variable per-batch modality dropout p ~ U(0.1, 0.9).** NOT 15% constant — training distribution must bracket inference (51% news-absent).
+25. **Decision-aware head (multi-task with Sharpe loss) is V1 ship gate.** End-to-end profit metric, not just classification accuracy.
 
 ---
 
@@ -242,6 +307,7 @@ These are coded as alternative components. Test if baseline plateaus. Adopt only
 | 2026-05-01 | Add agent-isolation headers to all docs | Concurrent multi-agent implementation phase |
 | 2026-05-04 | Dataset expansion (V1, owner directive): 9-ETF basket + full Treasury curve + 19-series macro bundle + CFTC COT + WGC + calendar | Capture real-rate / risk-on-off / sector rotation / positioning drivers. Per-bar dim ~804 → ~1000. doc 02 effort 2-3d → 4-5d, doc 04 1d → 1.5d. No model arch change. |
 | 2026-05-04 | Owner flagged 3 missing pieces: confidence sizing, per-trade SL, profit-taking. Spawned 4 parallel research agents (sizing / SL / TP / Forecast-to-Fill replication + Alpaca constraints). Wrote `plan/07-SIZING-AND-EXITS.md` superseding doc 07 sizing math and doc 08 line 198 stop-loss. | (1) Sizing: replace `(max_prob-0.33)` with signed score `P_up-P_down`; quarter-Kelly default; vol-target with `min(σ*/σ_t, 3.0)` cap; continuous conformal shrinkage; EWMA λ=0.94 + 20d floor. (2) Stop-loss: 2.0×ATR(14) hard + 1.5×ATR(14) trailing + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + ±15min FOMC/CPI/NFP blackout. Match Forecast-to-Fill exactly. (3) Profit-take: NO fixed TP (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit `max_prob < entry_max_prob × 0.7` gated on val A/B ≥30bp lift. (4) Live: client-side stop polling — Alpaca rejects bracket orders for fractional positions (error 42210000), and at $100 with GLD ~$200 every position is fractional. (5) Deleted fabricated "30% lower decision loss" Wright 2026 citation. |
+| 2026-05-08 | **V1 lock.** 9-agent Nia synthesis approved by owner: Decisions 1B (hybrid 10 transformer + 2 sLSTM head) + 2B (channel-independent + patches replaces channel-group tokens) + 3B (multi-task focal CE + Sharpe loss head) + 4A (CFA + AECF + sparse cross-attn at {3,7,11}) + small wins (Cautious update mask, muP transfer, Mixout, SimPSI/Wave-Mask, FreeLB news-only, DANN era, SimMTM + CLIP SSL, triple-barrier labels, half-hour-5 feature, VSN gate, series decomposition, per-channel RevIN, focal loss gamma=3, T-scaling -> RAPS -> AgACI, Laplace last-layer, F2F-style sizing, per-bucket eval hard gate, cost-stress {0.5x, 1.0x, 1.5x} hard gate, DSR > 1.0 hard gate). Honest target reframe: 1.0-1.5 OOS Sharpe net of 2bps, beating Gao 2014 + XGBoost ensemble by >= 0.2. The 2.88 number is daily futures, not 30-min intraday. | Recurrent gated state (VLSTM 2.40 / xLSTM 1.79 / iTransformer 0.38 on Saly-Kaufmann/Wood/Zohren 2026), small-data PatchTST channel-independent dominance (75K samples), end-to-end Sharpe loss > MSE forecasts (Hwang & Zohren 2025), focal cleans T-scaling/APS conflict (Xi 2024), AECF entropy gate PAC bound (Chlon 2025), sparse cross-attn beats dense (mPLUG-Owl3), SimMTM > MAE (Dong NeurIPS 2023), AgACI provable coverage under shift (Zaffran ICML 2022), Laplace last-layer faster + better-calibrated than 20x MC dropout (Daxberger 2021). |
 
 ---
 
@@ -503,10 +569,245 @@ geopolitical / 0 retail rows on disk.
 
 ---
 
+## V1 Data Gap-Fill (2026-05-05) — owner directive: "fill any data gap"
+
+Audit revealed two NaN-warm-up bugs + missing GDELT tone + missing dims +
+incomplete doc 03 prep. All filled. Snapshot hash advances 79678e1d → 11b24f78.
+
+### Bugs fixed
+
+| Issue | Was | Now |
+|---|---|---|
+| **DXY warm-up** (DTWEXBGS post-2020 only) | 24,387 NaN bars 2016-2019 (32% of data) | yfinance DX-Y.NYB, 0.2% NaN, full 10y. Spec deviation: V1 substitutes ICE futures DXY for FRED DTWEXBGS. |
+| **SOFR sparseness** (only post-2018-04) | fred_sofr 30% NaN | dropped from FRED_SERIES_V1 (was 35→33 series). DFF covers daily Fed Funds role per spec line 21. |
+| **GDELT tone missing** | spec mandated tone_mean / tone_std (most validated GDELT signal); per-bar parquet had counts only | gdelt_tone_mean / gdelt_tone_std / gdelt_polarity_mean / gdelt_tone_mean_gold / gdelt_tone_mean_conflict (5 cols, <2% NaN per year) |
+| **GDELT 5y window** (only 2021-2026) | 50% snapshot bars had 0 article_count | materialized `gkg_5y_pre` table covering 2016-01-04 → 2021-04-23 (119M rows, 1664 GB scan). Re-aggregated full 10y per-bar parquet (177,867 bars). |
+| **Missing feature dims** | price 11/12, macro short 6/12, equity ratios 7/9 | added macd_hist, bb_width, dxy_level, vix_log_change_1d, brent_log_change_1d, wti_log_change_1d, gold_silver_log_ret_30d, slv_gld_corr_30d. New total: 367 cols (was 356). |
+| **Late-window news** (2024-2026 thin) | 2024 = 398 articles, 2025 = 92, 2026 = 1 | AV multi-topic backfill: 5,107 articles 2024 + 1,534 articles 2025. 2026 awaiting AV daily quota reset. Free tier 25 calls/day, journaled cursor. |
+
+### Doc 03 (news embedding) inputs ready
+
+- `data/processed/news_corpus_v1.parquet` — **31,840 unique articles**, 68% with body, 8 sources unified, schema-conforming, deduped (URL-aware, body-preferred), V1 window filtered.
+- `data/processed/news_source_registry.json` — 30 sources × 12 bias_tiers per doc 03 V4 spec. Used by Flamingo gate as source-conditional bias.
+- `data/anchors/v1_templates.json` — 4 anchor categories × 20 templates each (V4 leakage-fixed: hand-crafted, no event provenance).
+- `data/embeddings/` — empty dir created for doc 03 outputs.
+
+### Final snapshot v1_11b24f78a3ad6ea9
+
+- 75,673 bars × **367 cols**, 2016-01-04 → 2026-04-24, 2,747 trading days
+- splits: train 57,696 (76%) / val 7,540 (10%) / test 10,437 (14%)
+- class balance: DOWN 29.1% / FLAT 39.9% / UP 31.0% (target 28/44/28)
+- **first all-clean row: idx 2,676 = 2016-05-23** (vs prior 24,387 = 2019-06-24 — 9× warm-up reduction)
+- tests: 88 pass / 4 skip / 0 fail
+- News bar coverage: 9% of bars have ≥1 article; 13.9% in 2016, 16.7% in 2024 (best); 2.9% in 2025 (will improve with daily AV pulls)
+
+### Costs incurred
+
+- BigQuery scan (GDELT pre-2021 materialize + tone re-agg + per-bar full 10y): ~2,200 GB, ~$5-8 over free tier (one-time backfill).
+- AV API: 25 calls/day free quota — currently exhausted. Resumes 2026-05-06.
+- Wayback IA: hit 504 + connection errors during attempted re-pulls. IA infra issues today; kitco/investing/bullionvault remain at 24/11/26 articles. Multisource (39K) + FNSPID (19K) + AV (6K) + central_bank (5K) + polygon (863) compensate. Re-pull via Wayback can be retried later when IA stabilizes.
+
+### Spec deviations (logged here for traceability)
+
+1. DXY = yfinance DX-Y.NYB (ICE futures), not FRED DTWEXBGS. Pre-2020 DTWEXBGS had no real PIT data.
+2. SOFR dropped (FRED_SERIES_V1 size 35 → 33). DFF covers daily-rate role.
+3. AV news pulled via topic filter (finance/monetary_policy/economy_macro/...) instead of ticker filter, since gold-ticker filter returned 0 articles for 2024+ on the free tier.
+
+### What's queued
+
+- AV daily pull (25 calls × 7 topics @ 3 cursors) — resumes when quota refreshes; will further fill 2025-2026 gap. Persisted via journaled cursor in `data/raw/alpha_vantage_state.json`.
+- Wayback re-pull (kitco/investing) — IA infra was 504-ing; retry overnight.
+
+---
+
+## Phase 3 — Embedding (2026-05-06)
+
+**Doc 03 precompute pipeline shipped + running on Mac mini.**
+
+### Code (committed cc3ad02 + this session)
+
+`src/nanogld/embed/` — 12 modules:
+- `config.py` — frozen EmbedConfig + content-addressed run_hash
+- `registry.py` — SOURCE_REGISTRY loader + alias resolver (colon, underscore, UNK fallback)
+- `text_builder.py` — title+body construction + NFC-normalized text_hash
+- `checkpoint.py` — atomic JSON Progress + errors.jsonl
+- `qwen3_embedder.py` — sentence-transformers wrapper (FP16 MPS, MRL, L2-norm, fallback model)
+- `anchors.py` — 80 templates → 4 vectors → v1.npz
+- `precompute.py` — main loop: sharded, resumable, OOM-tolerant
+- `cli.py` + `__main__.py` — `python -m nanogld.embed {precompute|anchors|verify}`
+- `bar_index.py` — bar→article_ids window index (NEW for doc 04 hand-off)
+- `anchor_cosines.py` — per-bar cosine features (NEW pre-build for doc 04)
+
+Tests: 17 new (test_embed_bar_index 9, test_embed_anchor_cosines 8). All green.
+
+### Mac mini run (in progress)
+
+| Step | Status |
+|---|---|
+| rsync corpus + code → Mac mini | ✅ |
+| uv sync on Mac mini | ✅ |
+| Qwen3-Embedding-4B downloaded (8 GB) | ✅ |
+| anchors → data/anchors/v1.npz | ✅ |
+| smoke 64 articles (anchors cohesion 0.469-0.526, gate 0.40 PASS) | ✅ |
+| probe 500 articles bs=16 (10.5 min, 0 OOM, 1.26 sec/article) | ✅ |
+| **full 31,840 article precompute** (nohup+caffeinate) | 🟡 running |
+| ETA | ~13 hours total wall, started 12:58 PDT |
+| Heartbeat | data/embeddings/.heartbeat (touched every 60s) |
+| Sentinel | data/embeddings/.done OR .failed |
+
+### Hardware decision
+
+**Mac mini stays as data + embedding box.** Training goes to **rented 1× H100 ($1.99/hr RunPod Community)**.
+
+Reasoning:
+- Mac mini 16 GB unified RAM caps practical training at ~30-40M FP32 (60M = OOM with SAM + EMA + AdamW state)
+- MPS gradient reliability for transformer training unverified at 30M+ scale (PyTorch issues #103343 silent grad divergence, #157345 RMSNorm slow)
+- Wall-clock estimate on Mac mini: 4-10 days with restart risk vs 3-5 hours per H100 run
+
+### V1 model size — locked
+
+**24-40M params (D=384, 12 layers, 6 heads, channel-token T=64).**
+
+**Why not bigger:**
+- Industry: Lag-Llama 2.5M, TLOB 10M, Chronos-Bolt-base 205M, TimesFM 2.5 200M (halved from 500M, got better)
+- Forecast-to-Fill (our Sharpe 2.88 target) uses ZERO neural net — just EWMA + Kelly
+- Single-asset 30min direction: ~33K bars × 50+ features → Chinchilla-optimal compute caps at 30-80M
+- TLOB lesson: 10M model on RTX 3090 beat SOTA F1 by 3.7
+- Hard rule still applies: if 30M transformer doesn't beat XGBoost + DLinear baselines by ≥0.2 Sharpe → ship the baseline
+
+### Cost-of-fund (V1 + V2 if scale)
+
+| Item | Cost |
+|---|---|
+| Embedding (Mac mini, free) | $0 |
+| V1 training (1× H100, ~10 hyperparam runs × 3-5h × $1.99) | $60-150 |
+| V2 if scale to 200M (5 runs × 30h × $1.99) | $200-400 |
+| Backtest (Mac mini, free) | $0 |
+| **Total V1+V2** | **$300-600** |
+
+Rounding error. Don't optimize.
+
+### Timeline to first ship
+
+- **2 days** to first trained model on H100 after embedding completes
+- **14-21 days** to ship-ready calibrated model (V1 baseline + hyperparam sweep + walk-forward backtest + isotonic/Platt calibration + drift audit)
+
+### Story (publishable)
+
+**"30M from-scratch encoder + Qwen3-Embedding-4B news fuser beats hand-tuned Forecast-to-Fill EMA on 10y of 30min GLD bars (Sharpe ≥ 2.88, DSR ≥ 1.0). Sub-$500 compute budget."**
+
+Lab-level. Beats industry-standard hand-tuned alpha. Engineering > scale.
+
+---
+
+## Data Phase Achievements (2026-05-04 → 2026-05-08)
+
+### What got built
+
+**Asset universe (27 instruments × 30-min × 10y where possible):**
+- Metals: GLD, SLV, GDX
+- Indices: SPY, QQQ, IWM, DIA, VTI, EEM, EFA
+- Sectors: XLE, XLF, XLK, XLU
+- Treasury: TLT, IEF
+- Real estate: VNQ, IYR
+- Oils: USO (WTI), BNO (Brent), UNG (nat gas)
+- Volatility: VXX (2018+)
+- Crypto: BTC, ETH (2016+, Bitfinex), XRP (2017+), ADA, SOL, DOGE (2021+)
+
+**Macro (40 FRED series):** full Treasury curve + TIPS + breakevens, inflation (CPI, PCE), employment (UNRATE, PAYEMS, ICSA, CCSA, JOLTS), Fed (DFF, M2, WALCL, RRP), growth (GDP, INDPRO, RSAFS, HOUST, UMCSENT), retirement (PSAVERT, DSPI, DSPIC96), real estate (CSUSHPISA, MORTGAGE30US, HSN1F), oil daily, VIX daily.
+
+**Other:** DXY dollar index daily, COT positioning weekly, WGC central bank quarterly, GPR geopolitical risk daily, GDELT 30-min tone aggregates (66M raw → 177K), 752 calendar events.
+
+**News (40,032 articles embedded):**
+- FNSPID 12,301 + Multisource HF 6,683 + ECB+Fed speeches 1,881 + Multisource Benzinga 1,756
+- Polygon (Benzinga, Zacks, Seeking Alpha, MarketWatch) ~750
+- Alpha Vantage ~1,000 across multiple wires
+- Fox News + Fox Business 8,192 (Common Crawl WARC range-fetch)
+- Kitco, BullionVault, central_bank_news ~5,000
+
+All embedded with **Qwen3-Embedding-4B** (frozen, FP16 MPS) + MRL truncation 2560→256 + L2-norm.
+
+**v2 engineered features (46 added on top of v1 base):**
+- Cross-asset interactions (4): flight-to-safety, digital-gold-rotation, real-rate × dollar, pm-cohesion
+- Volatility regime (5): VRP, vol-of-vol, VIX z-scores, RV breakout
+- Calendar (7): NFP/CPI windows, London Fix, FOMC time decay, weekend, quarter-end
+- Regime + microstructure (8): bull/bear MA-cross, drawdown, volume z-score, tick imbalance, VWAP deviation, variance ratio 8/48
+- Macro term structure (6): 2y10y inversion + persistence, term premium, mortgage spread, recession flag
+- Momentum (10): 6 extended log-ret horizons + acceleration ratios + cross-horizon agreement + trend efficiency + mean-reversion z + silver lead-lag
+- News × price (5): velocity ratio, news-price interaction, sentiment momentum, recession-monetary spread
+- Anchor cosines (4 anchors × 3 stats + 2 visibility = 14)
+
+### Bug-hunt iterations (paranoid audit loop, 8 agents per iter)
+
+**Iteration 1:** 9 bugs found + fixed
+- 6 leakage bugs (bull_bear_regime, drawdown, volume_z, tick_imbalance, vwap_dev, mean_rev_z used current bar — added .shift(1))
+- VRP annualization off by 630× (fixed to ×252)
+- INDPRO recession fallback wrong window
+- 11 features missing (col name mismatch — `gld_log_ret_X` vs `log_return_X`)
+- timestamp_x/timestamp_y merge collisions
+- spy_rs_spy_24 zero-variance constant
+- 3,309 inf values from rrpontsyd_*_change (fixed: replace inf → NaN)
+- label dtype float64 → int8
+
+**Iteration 2:** 3 bugs found + fixed
+- rv_breakout_flag warmup all 0 (boolean cast lost NaN)
+- cross_horizon_agreement warmup all 0 (sign(NaN)=0 issue)
+- label dtype Int8 nullable → int8 non-nullable (after dropping 1 NaN row at very end)
+
+**Iteration 3:** 5 bugs found + fixed
+- All v2 cross-asset features used `fillna(0)` then arithmetic, masking warmup as fake zeros (flight_to_safety, digital_gold_rotation, real_rate_dollar, pm_cohesion, vrp). Dropped fillna(0) so NaN propagates.
+
+**Total bugs fixed: 19. All v2 features now propagate NaN correctly during warmup.**
+
+### Final unified dataset (single file)
+
+```
+/Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt
+```
+
+234 MB PyTorch native. Loadable in 1 line: `data = torch.load(path)`.
+
+Contains: features (75993, 681) float32 + labels (75993,) int8 + splits + bar_close_utc_ns + 40032 article embeddings (256-dim FP16) + bar→article CSR index + meta dict.
+
+Read `plan/HANDOFF.md` before training.
+
+### Verification (last paranoid loop iteration)
+
+| Check | Result |
+|---|---|
+| Future leakage | **0 violations** (strict-< t_visible) |
+| FRED PIT correctness | 0 violations across sampled series |
+| gld_lag1_close == prior bar close | 0 mismatch |
+| Rolling/shift operations PIT-correct | 48/48 safe |
+| Max \|corr\| feature × next_log_return | 0.0117 (research-typical, no leakage) |
+| 100% NaN cols | 0 |
+| Inf values | 0 |
+| Constant cols | 0 |
+| Duplicate bars | 0 |
+| Chronological order | True |
+| Calendar/event window timing | All PASS |
+| Train/Val/Test chronological non-overlap | True |
+| Dangling article references | 0 |
+
+### Cron audit loop active
+
+Job ID `2dc09613`. Recurring `*/10 * * * *` (every 10 min). 8 verification agents per iteration. Auto-expires 7d. Cancel with `CronDelete 2dc09613` once model training starts.
+
+### Tooling for next agent
+
+- Mac mini SSH: `ssh -o StrictHostKeyChecking=no root1@100.83.86.5` (Tailscale 100.83.86.5)
+- All code under `~/Desktop/nanogld/` synced from local laptop
+- `uv` at `~/.local/bin/uv`, Python 3.11, PyTorch 2.11 with MPS available + built
+- 16 GB unified RAM (training >30M params requires H100)
+
+---
+
 ## Final Notes
 
-The plan has been verified across **3 rounds, 19 agents, ~30+ critical findings**. Every load-bearing claim has citation. Every architectural decision has been challenged. Every doc is now a self-contained spec for one Opus 4.7 agent.
+The plan has been verified across **5 rounds + V1 redline = 36 specialized Nia agents (27 V1 + 9 V1), ~80 critical findings absorbed**. Every load-bearing claim has citation. Every architectural decision has been challenged. Every doc is now a self-contained spec for one Opus 4.7 agent.
 
 **The field moves weekly.** Always run a fresh Nia search before starting your section. Plan is a snapshot, not a contract.
 
-**Agents: read 00-OVERVIEW.md first. Then your assigned doc. Spawn Nia agents freely. Build the thing.**
+**V1 is the new lock.** Agents do NOT replan further without owner approval. If a V1 spec line is wrong, document the issue and AskUserQuestion before changing anything. Same Iron Law as V1.
+
+**Agents: read `plan/V1-SPEC.md` first, then 00-OVERVIEW.md, then your assigned doc. Spawn Nia agents freely. Build the thing.**

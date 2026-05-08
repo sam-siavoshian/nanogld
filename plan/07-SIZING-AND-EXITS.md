@@ -1,14 +1,41 @@
 # 07 — Sizing + Exits + Risk
 
+## V1 DELTAS (what changed since V1)
+
+Authoritative source: `plan-edit/V1-SPEC.md` section 10. Summary of V1 redlines that land in this doc:
+
+1. **F2F-style strategy machinery REPLACES V1's lighter sizing** — the model now produces a Head B `tanh` position weight (NEW V1 head, see doc 05). Sizing layer consumes Head B as primary, Head A focal-loss + T-scale + RAPS + AgACI conformal lower-bound as defensive shutoff floor, and Laplace last-layer posterior variance as the Kelly variance term.
+2. **Friction-adjusted Kelly with lambda = 0.4** (half-Kelly-ish, F2F paper). Replaces V1's quarter-Kelly (0.25) default at V1 launch — note: V1 quarter-Kelly was a conservative choice; V1 anchors directly to F2F's published lambda = 0.4. `kelly_size = lambda * edge / variance` with `edge` from Head B output and `variance` from Laplace posterior + rolling 60-bar realized variance.
+3. **Cost-aware adjustment**: `effective_size = kelly_size * max(0, 1 - cost / |edge|)` zeros out when cost exceeds edge.
+4. **Vol target locked at 15% annualized** (using NYSE RTH bars_per_year = 3276), matching F2F. V1's 10% annualized cash-equity discount is overridden — F2F uses 15% on gold futures and our friction-adjusted Kelly already conservatively scales down.
+5. **ATR-14 hard stop at 2x ATR, trailing 1.5x ATR, 30-day timeout** — V1's per-trade stop machinery was already F2F-anchored; V1 keeps the multipliers and explicitly re-cites F2F. 30-day timeout = 390 bars on 30-min RTH.
+6. **sqrt-impact cost model**: `cost_t = gamma * sqrt(|delta_w|) + k_bps * |delta_w|`, gamma=0.02, k=0.7bps. Anchored to F2F.
+7. **Conformal floor (NEW V1)**: if APS lower-bound on top-class probability < 0.40, force position to 0. Defensive shutoff that composes with vol-target and Kelly without amplifying it.
+8. **Sizing gates updated**:
+   - Stage 1 (basic): Head B output * vol target.
+   - Stage 2 (full): Head B + friction-adjusted Kelly + ATR exits + vol target + 30-day timeout + conformal floor.
+   - Stage 2 must beat Stage 1 by >= 0.2 Sharpe OOS to ship the full pipeline. Otherwise ship Stage 1 (simpler).
+9. **Cost stress integration**: sizing must be tested at 0.5x / 1.0x / 1.5x cost variants alongside backtest (doc 06).
+10. **Calibration interface (V1)**: sizing layer consumes:
+    - Head B position weight (primary).
+    - Head A focal-loss + T-scale + RAPS + AgACI conformal lower-bound (defensive shutoff floor).
+    - Laplace last-layer posterior variance (Kelly variance term).
+
+**Reference**: Wright et al. 2026 Forecast-to-Fill arXiv:2511.08571 — friction-adjusted Kelly with lambda=0.4, vol target 15% ann, ATR-14 hard stop 2x trailing 1.5x, 30-day timeout, gamma=0.02 sqrt-impact, k=0.7bps. F2F honestly publishes that 1.5x costs collapse Sharpe to -0.03 — V1 doc 06 makes 1.5x a hard gate in direct response.
+
+V1 content below stays as the implementation reference except where overridden by V1 deltas above. Where V1 cited "30% lower decision loss" from arXiv:2601.07852, that citation was fabricated and was already removed in the V1 finalization. V1 does not reintroduce it.
+
+---
+
 ## YOU ARE THE POSITION-SIZING + EXITS + RISK AGENT
 
 You own how positions are sized AND how they are exited:
-1. **Stage 2 sizing** — vol-target × Kelly-lite × calibrated conformal probability shrinkage.
-2. **Per-trade stop-loss** — vol-scaled SL with client-side polling on Alpaca.
-3. **Profit-take logic** — partial profit ladders + trailing stop.
+1. **Stage 2 sizing (V1)** — Head B tanh + friction-adjusted Kelly (lambda=0.4) + cost-aware adjustment + vol target (15% ann) + Laplace-posterior variance + APS conformal floor.
+2. **Per-trade stop-loss** — ATR-14 hard 2x + trailing 1.5x + 30-day timeout, client-side polling on Alpaca.
+3. **Profit-take logic** — model re-decision is the primary TP (no fixed TP); optional signal-decay exit as A/B.
 4. **Drawdown circuit-breaker** — hard re-entry rules.
 
-You start when doc 06 (backtest) hands off a backtest engine + a calibrated model from doc 05. You hand off to doc 08 (live) the live-deployable position-management module.
+You start when doc 06 (backtest) hands off a backtest engine + a calibrated model from doc 05 (Head A focal+T-scale+RAPS+AgACI, Head B Sharpe-loss-trained, Laplace last-layer posterior). You hand off to doc 08 (live) the live-deployable position-management module.
 
 **Read 00-OVERVIEW.md FIRST.** Project context. Read doc 05's calibration interface (temperature + APS quantiles) and doc 06's backtest engine before coding.
 
@@ -28,17 +55,18 @@ src/nanogld/sizing/        # part 1 — Kelly-lite × vol-target × conformal sh
 src/nanogld/exits/         # part 2 — SL + profit-take + drawdown circuit-breaker
 ```
 
-### Acceptance Criteria
+### Acceptance Criteria (V1)
 
 You're done when:
 
-1. ✅ Stage 2 sizer produces position size from calibrated probability + vol target (10% annual)
-2. ✅ Conformal shrinkage uses APS p-values (NOT discrete set size — V4 correction)
-3. ✅ Per-trade SL fires on Alpaca via client-side polling (Alpaca server-side OCO not reliable on free tier)
-4. ✅ Profit-take ladders trigger correctly under backtest + paper-trade smoke
-5. ✅ Drawdown circuit-breaker fires at -8% paper / -5% live with explicit re-entry rule
-6. ✅ Sizing GATE: Stage 2 must beat Stage 1 by ≥0.2 Sharpe OOS (else ship Stage 1 fixed-share)
-7. ✅ Hand-off artifact: position-mgmt module that doc 08 (live) imports
+1. ✅ V1 Stage 2 sizer produces position size from Head B tanh + friction-adjusted Kelly (lambda=0.4) + Laplace posterior variance + cost-aware adjustment + vol target **15% annual** + APS conformal floor at 0.40
+2. ✅ Conformal floor uses APS lower-bound on top-class probability (continuous shrinkage; threshold 0.40 zeros out position)
+3. ✅ Per-trade SL fires on Alpaca via client-side polling (Alpaca server-side OCO not reliable on free tier; fractional positions reject bracket orders error 42210000)
+4. ✅ ATR-14 hard 2x + trailing 1.5x + 30-day (390 bar) timeout match F2F arXiv:2511.08571
+5. ✅ Drawdown circuit-breaker fires at -5% / -10% / -15% with explicit re-entry rule (recovery to -10% line OR 65 bars / 5 trading days flat)
+6. ✅ V1 sizing GATE: Stage 2 must beat Stage 1 by >= 0.2 Sharpe OOS at all three cost levels (0.5x / 1.0x / 1.5x) — else ship Stage 1
+7. ✅ V1 cost-stress integration: every sizing variant tested at {0.5x, 1.0x, 1.5x} cost alongside doc 06 backtest
+8. ✅ Hand-off artifact: position-mgmt module that doc 08 (live) imports
 
 This doc is **2 parts** combined for one agent — read all of it before starting.
 
@@ -98,21 +126,42 @@ tests/
 - The backtest engine (doc 06 owns) — you call its interface
 - Other doc files
 
-### Stable Interface You Publish
+### Stable Interface You Publish (V1)
+
+V1 primary path uses Head B (see doc 05). V1 fallback path (3-class probs only) is kept for ablation.
 
 ```python
-from nanogld.sizing.stage2 import stage2_sizing
-from nanogld.sizing.conformal import ConformalSizer
+# V1 PRIMARY
+from nanogld.sizing.stage2 import compute_target_position_v1_5
+from nanogld.sizing.conformal import APSConformalFloor
 from nanogld.sizing.drawdown_breaker import DrawdownCircuitBreaker
 
 # doc 06 (backtest) calls this per-bar:
-size = stage2_sizing(
-    probs: np.ndarray,                  # (3,) — softmax probs from model
-    realized_vol_20d: float,            # annualized
-    conformal_factor: float = 1.0,      # 1.0 high-conf, 0.5 medium, 0.0 low (from ConformalSizer)
+size = compute_target_position_v1_5(
+    head_b_weight: float,                # tanh in [-1, +1] from doc 05 Head B
+    head_a_aps_lower: float,             # APS lower-bound on top-class probability (defensive shutoff)
+    laplace_posterior_var: float,        # Laplace last-layer posterior variance
+    realized_var_60bar: float,           # rolling 60-bar realized variance (V1 replaces 20d)
+    cost_bps: float,                     # 1x baseline = 2bps; stress at 0.5x / 1.5x
+    target_vol: float = 0.15,            # V1: 15% ann (F2F)
+    kelly_lambda: float = 0.4,           # V1: friction-adjusted Kelly (F2F)
+    vol_mult_cap: float = 3.0,
+    aps_floor: float = 0.40,             # V1: conformal defensive shutoff threshold
+    bars_per_year: int = 3276,
+    position_limit: float = 1.0,
+) -> float
+
+# V1 FALLBACK (used if doc 05 ships without Head B, e.g., focal-only ablation)
+from nanogld.sizing.stage2 import compute_target_position
+size = compute_target_position(
+    probs: np.ndarray,                   # (3,) — Head A softmax post T-scale + RAPS + AgACI
+    sigma_ewma: float,                   # EWMA λ=0.94 on 30-min returns (annualized)
+    sigma_20d: float,                    # 20-day rolling stdev floor
+    conformal_set_size: int,             # 1, 2, or 3
     target_vol: float = 0.10,
-    confidence_scale: float = 3.0,
-    kelly_fraction: float = 0.5,
+    kelly_fraction: float = 0.25,
+    vol_mult_cap: float = 3.0,
+    min_signed_signal: float = 0.05,
     position_limit: float = 1.0,
 ) -> float
 
@@ -135,14 +184,16 @@ size = stage2_sizing(
 - **Conformal prediction TS extensions** — Wright 2026 (arXiv:2601.07852) for utility-weighted; pure Kato 2024 (arXiv:2410.16333) for portfolio variant. Pick the one that fits your data shape.
 - **Drawdown circuit-breaker re-entry rules** — survey papers if our 5-day fallback rule isn't documented elsewhere
 
-### V1 Critical Decisions (DO NOT REVERT)
+### V1 Critical Decisions (kept) + V1 layered
 
-1. **bars_per_year = 3276** (propagated from doc 06). Annualization MUST be `sqrt(3276)`.
-2. **Drawdown sign consistency** — store as NEGATIVE number (-0.15 = 15% DD). Use `<=` comparisons throughout.
-3. **Recovery rule** — exit halt mode when equity recovers above -10% line OR after 5 trading days flat (whichever first).
-4. **Probability calibration BEFORE Kelly-lite** — Guo et al. show NN's are overconfident, Kelly-lite amplifies it. Temperature scaling on val fold first.
-5. **Conformal Prediction REPLACES "just temperature scaling"** for V4 — Wright 2026 shows 30% lower decision loss.
-6. **Half Kelly (0.5) is the default**. Quarter Kelly (0.25) is fallback if drawdowns alarm us.
+1. **bars_per_year = 3276** (propagated from doc 06). Annualization MUST be `sqrt(3276)`. Kept.
+2. **Drawdown sign consistency** — store as NEGATIVE number (-0.15 = 15% DD). Use `<=` comparisons throughout. Kept.
+3. **Recovery rule** — exit halt mode when equity recovers above -10% line OR after 5 trading days flat (whichever first). Kept.
+4. **Probability calibration BEFORE sizing** — V1: T-scaling on CE logits. V1: focal-loss gamma=3 + T-scale + RAPS + AgACI online wrapper (Head A). Xi 2024 (arXiv:2402.04344) shows T-scaling on CE logits HARMS APS adaptive coverage; focal-trained logits avoid this. T post-fit converges closer to 1.0 with focal.
+5. ~~Conformal Prediction REPLACES "just temperature scaling" — Wright 2026 30% lower decision loss~~ → **V1: APS conformal floor at 0.40** as defensive shutoff (NOT a sizing multiplier). The "30% lower decision loss" V1 citation was fabricated and was already removed in V1 finalization. V1 does not reintroduce it.
+6. ~~Half Kelly (0.5) is the default~~ → **V1: friction-adjusted Kelly with lambda=0.4** (F2F arXiv:2511.08571). Variance term comes from Laplace last-layer posterior + rolling 60-bar realized variance. Replaces V1's MC-dropout-derived variance.
+7. **NEW V1**: Head B `tanh` is the primary edge input. Trained jointly on `0.5 * L_focal + 0.5 * L_sharpe_net`. See doc 05.
+8. **NEW V1**: cost-stress at {0.5x, 1.0x, 1.5x} alongside backtest. Hard gate at 1.5x.
 
 ### Hand-off Protocol
 
@@ -697,23 +748,35 @@ order_action = resolve_live_target(
 - **EWMA λ=0.94 on 30-min bars** — verify the annualization factor is `√3276` and that the EWMA implementation handles the per-day market-close-to-next-day-open gap correctly.
 - **arXiv:2511.08571 v2/v3** — Forecast-to-Fill paper may have updated; check for any post-Nov-2025 changes to the ATR multipliers or Kelly fraction.
 
-### V1 Critical Decisions (DO NOT REVERT)
+### V1 Critical Decisions (kept) + V1 layered
 
-1. **Signed score `s = P_up - P_down`**, not `max_prob - 0.33`. Magnitude-only formula collapses two distinct signals (clean UP vs mixed UP/DOWN) into the same size.
-2. **Quarter-Kelly (0.25) at V1 launch.** Half-Kelly only after 6 months of OOS calibration evidence shows the model is well-calibrated.
-3. **`target_vol = 0.10` annualized.** F2F uses 0.15 on gold *futures*; GLD is unleveraged, so 0.10 is the conservative cash-equity equivalent. Test 0.15 in A/B if 0.10 underbets.
-4. **`vol_mult` capped at 3.0.** With `sigma_target = 0.10` this means realized vol below 3.3% annualized never multiplies further.
-5. **Continuous conformal shrinkage**, not 3-bucket. Set-size 1 → λ=1.0; set-size 2 → λ=0.5; set-size 3 → λ=0.0. Identical numerically to doc 07's three-bucket form, but the function signature exposes the underlying primitive (set size) so future work can swap in continuous variants.
-6. **`hard_stop = 2.0 × ATR(14)` and `trail_stop = 1.5 × ATR(14)`.** Match Forecast-to-Fill exactly. Sweep on val fold but default to 2.0 / 1.5.
-7. **Time-stop = 390 bars.** F2F uses 30 trading days on daily bars; 30 days × 13 RTH bars = 390 30-min bars. This is the safety net, not the primary exit.
-8. **No fixed take-profit.** Empirical literature (F2F, Baur-Dimpfl, positive-skew trend research) plus the 5-bp cost gate make a price-level TP net-negative. Optional signal-decay exit (`max_prob[t] < entry_max_prob × floor`) is the only TP-like rule, and ships only if val-fold sweep shows ≥30 bp annualized lift.
-9. **Session-flat at 15:55 ET, re-eligible at 09:35 ET.** No overnight GLD positions. Eliminates Sunday-night CME gold spike risk and after-hours news risk. Costs us any genuine overnight model edge but at $100 capital that's not worth a 3% gap.
-10. **News blackout ±15 min around scheduled FOMC, CPI, NFP releases.** Calendar already wired in doc 04 features. No new entries during blackout; existing positions can hold but stops apply normally.
-11. **Re-entry gate after stop-out:** block same-side re-entry until either (a) ≥1 bar elapsed AND `max_prob ≥ 0.55`, or (b) model argmax has flipped to a different side. Prevents stop-then-re-enter-then-stop loops on news bars.
-12. **Live ≠ broker bracket.** Alpaca rejects bracket orders for fractional positions (error 42210000), and at $100 capital with GLD ~$200 every position is fractional. Stops are enforced **client-side** in `cycle.py` by polling current price each cycle and submitting a market exit when triggered. The broker is a dumb execution venue.
-13. **Drawdown circuit-breaker thresholds (-5% / -10% / -15%) stay**, but they're now scaled to quarter-Kelly. At quarter-Kelly a -15% portfolio drawdown means the model is materially broken, so halt-then-investigate is correct behavior.
-14. **`min_signed_signal = 0.05`.** Below 5 percentage points of P_up minus P_down, the model is noise. Stay flat.
-15. **`min_notional = $1.00`.** Alpaca minimum. If the sized position dollarizes to <$1, stay flat.
+V1 decisions (kept):
+
+1. **Signed score `s = P_up - P_down`** (FALLBACK only — V1 primary input is Head B `tanh`). Beats `max_prob - 0.33` for the 3-class-only ablation.
+2. ~~Quarter-Kelly (0.25)~~ → **V1: friction-adjusted Kelly with lambda = 0.4** (F2F arXiv:2511.08571). V1's quarter-Kelly was conservative; V1 anchors directly to F2F's published lambda. The V1 fallback formula keeps 0.25.
+3. ~~`target_vol = 0.10` annualized~~ → **V1: `target_vol = 0.15` annualized** (F2F). V1's cash-equity discount is overridden — F2F uses 15% and friction-adjusted Kelly already conservatively scales down.
+4. **`vol_mult` capped at 3.0.** Kept.
+5. **Continuous conformal shrinkage** (V1) → **V1: APS lower-bound floor at 0.40**. Defensive shutoff that zeros out position when conformal lower-bound on top-class probability < 0.40. Composes with vol-target and Kelly without amplifying it.
+6. **`hard_stop = 2.0 × ATR(14)` and `trail_stop = 1.5 × ATR(14)`.** Match Forecast-to-Fill. Kept verbatim in V1.
+7. **Time-stop = 390 bars.** F2F 30 trading days on daily bars, 30 days * 13 RTH bars = 390 30-min bars. Kept.
+8. **No fixed take-profit.** Kept. Optional signal-decay exit ships only if val-fold A/B shows >= 30bp annualized lift at 1.5x cost stress (V1 update — was 7bp in V1).
+9. **Session-flat at 15:55 ET, re-eligible at 09:35 ET.** Kept.
+10. **News blackout ±15 min** around scheduled FOMC, CPI, NFP. Kept.
+11. **Re-entry gate after stop-out.** Kept. Same-side re-entry blocked until either (a) >= 1 bar elapsed AND `max_prob >= 0.55`, or (b) argmax flipped during cooldown.
+12. **Live != broker bracket.** Alpaca rejects bracket on fractional (error 42210000). Stops enforced client-side in `cycle.py`. Kept.
+13. **Drawdown circuit-breaker thresholds (-5% / -10% / -15%)** kept. At V1's lambda=0.4 (vs V1's 0.25), a -15% portfolio drawdown is even more diagnostic of model breakage; halt-then-investigate is correct.
+14. **`min_signed_signal = 0.05`.** Kept (used in V1 fallback path).
+15. **`min_notional = $1.00`.** Alpaca minimum. Kept.
+
+V1 NEW (V1 spec sections 10.1 and 10.5):
+
+16. **Head B tanh is the primary edge** — `nn.Linear(D, 1, bias=False)` on mean-pooled tokens, then `tanh`, trained jointly with Head A on `0.5 * L_focal + 0.5 * L_sharpe_net`. See doc 05.
+17. **Laplace last-layer posterior variance is the Kelly variance term** (REPLACES MC dropout T=20). `aleximmer/Laplace`, `pip install laplace-torch`.
+18. **Cost-aware adjustment**: `effective_size = kelly_size * max(0, 1 - cost / |edge|)`.
+19. **APS conformal floor at 0.40**: Head A focal-loss + T-scale + RAPS + AgACI lower-bound on top-class probability < 0.40 forces position to 0. Defensive shutoff.
+20. **sqrt-impact cost model**: `cost_t = gamma * sqrt(|delta_w|) + k_bps * |delta_w|`, gamma=0.02, k=0.7bps.
+21. **Cost-stress integration**: every sizing variant tested at {0.5x, 1.0x, 1.5x} cost alongside doc 06 backtest.
+22. **Stage 2 must beat Stage 1 by >= 0.2 Sharpe OOS at all three cost levels** to ship the full pipeline. Else ship Stage 1.
 
 ---
 
@@ -773,9 +836,75 @@ This doc fixes all three with literature-backed defaults and explicit val-fold t
 
 ---
 
-## PILLAR 1 — Confidence-Aware Position Sizing (V2)
+## PILLAR 1 — Confidence-Aware Position Sizing (V1)
 
-### The Formula
+### V1 Formula (F2F-anchored, Head B primary)
+
+V1 spec section 10.1 anchors sizing to Wright et al. 2026 Forecast-to-Fill (arXiv:2511.08571). The model now produces a Head B `tanh` position weight in `[-1, +1]` (NEW V1 head, see doc 05). Sizing pipeline:
+
+```python
+def compute_target_position_v1_5(
+    head_b_weight: float,         # Head B tanh output in [-1, +1] (PRIMARY V1 input)
+    head_a_aps_lower: float,      # APS lower-bound on top-class probability (Head A defensive shutoff)
+    laplace_posterior_var: float, # Laplace last-layer posterior variance
+    realized_var_60bar: float,    # rolling 60-bar realized variance
+    cost_bps: float,              # current 1x cost = 2bps; stress at 0.5x / 1.5x
+    target_vol: float = 0.15,     # V1: 15% ann (F2F), was 0.10 in V1
+    kelly_lambda: float = 0.4,    # V1: friction-adjusted half-Kelly-ish (F2F)
+    vol_mult_cap: float = 3.0,
+    aps_floor: float = 0.40,      # V1: conformal defensive shutoff threshold
+    bars_per_year: int = 3276,
+    position_limit: float = 1.0,
+) -> float:
+    """
+    V1 sizing per V1-SPEC.md section 10.1.
+    Returns desired position multiplier in [-position_limit, +position_limit].
+    """
+    # Conformal floor (defensive shutoff) — NEW V1
+    if head_a_aps_lower < aps_floor:
+        return 0.0
+
+    # Edge from Head B (V1 primary)
+    edge = head_b_weight  # already in [-1, +1]
+    if abs(edge) < 1e-6:
+        return 0.0
+
+    # Variance: Laplace posterior + realized variance (V1)
+    variance = laplace_posterior_var + realized_var_60bar
+    variance = max(variance, 1e-6)
+
+    # Friction-adjusted Kelly (F2F lambda=0.4)
+    kelly_size = kelly_lambda * edge / variance
+
+    # Cost-aware adjustment: zero out if cost exceeds edge
+    cost_adj = max(0.0, 1.0 - cost_bps / max(abs(edge) * 10_000, 1e-6))
+    effective_size = kelly_size * cost_adj
+
+    # Vol target (15% ann, NYSE RTH 3276)
+    realized_vol_ann = math.sqrt(realized_var_60bar * bars_per_year)
+    vol_mult = min(target_vol / max(realized_vol_ann, 1e-3), vol_mult_cap)
+    sized = effective_size * vol_mult
+
+    return float(np.clip(sized, -position_limit, position_limit))
+```
+
+**Inputs from doc 05 (V1 calibration interface)**:
+- `head_b_weight`: Head B `tanh` output, trained jointly with Head A on the multi-task `0.5 * L_focal + 0.5 * L_sharpe_net` loss.
+- `head_a_aps_lower`: APS lower-bound after focal-loss + T-scale + RAPS + AgACI online wrapper. Defensive shutoff floor.
+- `laplace_posterior_var`: from Laplace last-layer approximation (Daxberger 2021 arXiv:2106.14806, `aleximmer/Laplace`). REPLACES V1's MC dropout T=20.
+
+**ATR-14 hard stop at 2x ATR, trailing 1.5x ATR, 30-day timeout** — kept from V1 (already F2F-anchored). See Pillar 2.
+
+**sqrt-impact cost model** for backtest integration: `cost_t = gamma * sqrt(|delta_w|) + k_bps * |delta_w|`, gamma=0.02, k=0.7bps. Anchored to F2F.
+
+**Sizing gates (V1 spec section 10.2)**:
+- Stage 1 (basic): Head B output * vol target (no Kelly, no conformal floor, no Laplace variance).
+- Stage 2 (full): the V1 formula above.
+- Stage 2 must beat Stage 1 by >= 0.2 Sharpe OOS at all three cost levels {0.5x, 1.0x, 1.5x} to ship the full pipeline. Otherwise ship Stage 1 (simpler).
+
+The V1 formula below (signed-score `s = P_up - P_down` form) is the FALLBACK if doc 05 ships without Head B (e.g., focal-only ablation). V1's signed-score sizing remains correct for a 3-class-only model and beats the older `(max_prob - 0.33)` form for that case. V1 ships Head B; V1's formula is documented as the fallback path.
+
+### The V1 Formula (FALLBACK — used if Head B is ablated out)
 
 ```python
 def compute_target_position(
@@ -1233,87 +1362,106 @@ Note: at quarter-Kelly (V1 default), hitting -15% portfolio DD means the model i
 
 ---
 
-## Hyperparameter Table (Consolidated)
+## Hyperparameter Table (V1 Consolidated)
 
-| Pillar | Param | V1 default | Tunable? | Source |
-|---|---|---|---|---|
-| Sizing | `target_vol` | 0.10 | A/B vs 0.15 | F2F arXiv:2511.08571 |
-| Sizing | `kelly_fraction` | 0.25 | Ramp to 0.5 after 6mo OOS | MacLean-Thorp-Ziemba |
-| Sizing | `vol_mult_cap` | 3.0 | Fixed | F2F leverage cap |
-| Sizing | `min_signed_signal` | 0.05 | Sweep {0.03, 0.05, 0.08} | arXiv:2110.14914 |
-| Sizing | EWMA λ | 0.94 | Fixed | RiskMetrics |
-| Sizing | 20d floor multiplier | 0.5 | Fixed | Sanity |
-| Sizing | Conformal α | 0.10 | Fixed | Standard split CP |
-| Sizing | `position_limit` | 1.0 | Fixed | Owner constraint (cash account) |
-| Sizing | `min_notional` | $1.00 | Fixed | Alpaca minimum |
-| Stop | `atr_window` | 14 bars | Fixed | Wilder; F2F |
-| Stop | `hard_stop_mult` | 2.0 | Sweep {1.5, 2.0, 2.5} | F2F arXiv:2511.08571 |
-| Stop | `trail_stop_mult` | 1.5 | Sweep {1.0, 1.5, 2.0} | F2F |
-| Stop | `time_stop_bars` | 390 | Fixed | F2F (30 days × 13 RTH bars) |
-| Re-entry | `reentry_prob_threshold` | 0.55 | Sweep {0.50, 0.55, 0.60} | Heuristic |
-| Re-entry | `reentry_cooldown_bars` | 1 | Fixed | Heuristic |
-| Session | `session_flat_time_et` | 15:55 | Fixed | Gap-risk literature |
-| Session | `session_eligible_time_et` | 09:35 | Fixed | Open-auction noise |
-| Blackout | `blackout_minutes` | ±15 | Fixed | J. Banking & Finance 2024 |
-| TP | `enable_signal_decay` | False (V1 default), enable only if val A/B shows ≥30bp lift | A/B | This doc |
-| TP | `signal_decay_floor` | 0.7 | Sweep {0.5, 0.6, 0.7, 0.8} on val fold | Heuristic |
-| Drawdown | tier 1 | -5% → halve | Fixed | doc 07 |
-| Drawdown | tier 2 | -10% → quarter | Fixed | doc 07 |
-| Drawdown | tier 3 | -15% → halt + 65-bar / -10% recovery rule | Fixed | doc 07 |
+| Pillar | Param | V1 default | V1 default (deprecated) | Tunable? | Source |
+|---|---|---|---|---|---|
+| Sizing | `target_vol` | **0.15** | 0.10 | Fixed (F2F-anchored) | F2F arXiv:2511.08571 |
+| Sizing | `kelly_lambda` (V1) | **0.4** | 0.25 (kelly_fraction) | Fixed (F2F-anchored) | F2F arXiv:2511.08571 |
+| Sizing | `aps_floor` (V1 NEW) | **0.40** | n/a | Sweep {0.30, 0.40, 0.50} on val | V1-SPEC.md 10.1 |
+| Sizing | `vol_mult_cap` | 3.0 | 3.0 | Fixed | F2F |
+| Sizing | `min_signed_signal` (V1 fallback) | 0.05 | 0.05 | Sweep {0.03, 0.05, 0.08} | arXiv:2110.14914 |
+| Sizing | Realized variance window | 60 bars | 20d EWMA λ=0.94 | Fixed | F2F-anchored |
+| Sizing | `position_limit` | 1.0 | 1.0 | Fixed | Owner constraint |
+| Sizing | `min_notional` | $1.00 | $1.00 | Fixed | Alpaca minimum |
+| Stop | `atr_window` | 14 bars | 14 bars | Fixed | Wilder; F2F |
+| Stop | `hard_stop_mult` | 2.0 | 2.0 | Sweep {1.5, 2.0, 2.5} | F2F arXiv:2511.08571 |
+| Stop | `trail_stop_mult` | 1.5 | 1.5 | Sweep {1.0, 1.5, 2.0} | F2F |
+| Stop | `time_stop_bars` | 390 (30 days * 13 RTH) | 390 | Fixed | F2F |
+| Cost | `k_bps` half-spread | **0.7 bps** | n/a (fixed 5bp RT) | Fixed (F2F) | V1 spec 10.1 |
+| Cost | sqrt-impact `gamma` | **0.02** | n/a | Fixed (F2F) | V1 spec 10.1 |
+| Cost | stress levels | **{0.5x, 1.0x, 1.5x}** | {3, 5, 7, 10} bps | Hard gate at 1.5x | V1 spec 9.2 |
+| Re-entry | `reentry_prob_threshold` | 0.55 | 0.55 | Sweep {0.50, 0.55, 0.60} | Heuristic |
+| Re-entry | `reentry_cooldown_bars` | 1 | 1 | Fixed | Heuristic |
+| Session | `session_flat_time_et` | 15:55 | 15:55 | Fixed | Gap-risk literature |
+| Session | `session_eligible_time_et` | 09:35 | 09:35 | Fixed | Open-auction noise |
+| Blackout | `blackout_minutes` | ±15 | ±15 | Fixed | J. Banking & Finance 2024 |
+| TP | `enable_signal_decay` | False (only ship if val A/B shows >= 30bp lift at 1.5x cost stress) | False | A/B | This doc |
+| TP | `signal_decay_floor` | 0.7 | 0.7 | Sweep {0.5, 0.6, 0.7, 0.8} on val | Heuristic |
+| Drawdown | tier 1 | -5% → halve | -5% → halve | Fixed | doc 07 |
+| Drawdown | tier 2 | -10% → quarter | -10% → quarter | Fixed | doc 07 |
+| Drawdown | tier 3 | -15% → halt + 65-bar / -10% recovery rule | same | Fixed | doc 07 |
 
-**Tuning protocol:** all sweeps run on **validation fold only**, never test. Joint sweep over `{hard_stop_mult, trail_stop_mult, reentry_prob_threshold}` = 3 × 3 × 3 = 27 combinations × 4 walk-forward folds. Pick the combination that maximizes Sharpe at **7-bp cost** (the stress case). Lock for OOS test.
+**V1 Tuning protocol:** all sweeps run on **validation fold only**, never test. Joint sweep over `{hard_stop_mult, trail_stop_mult, reentry_prob_threshold, aps_floor}` = 3 * 3 * 3 * 3 = 81 combinations * 4 walk-forward folds. Pick the combination that maximizes Sharpe at **1.5x cost stress** (3 bps round-trip — the F2F-anchored stress case; was 7bp in V1). Lock model BEFORE OOS. DSR penalty for multi-config selection (V1 spec 9.8).
 
 ---
 
-## Ablation Plan (Mandatory)
+## Ablation Plan (V1, Mandatory)
 
-Run these 8 variants on the same val fold with bootstrap CIs at the 95% level. Decision rule below the table.
+V1 spec section 10.2 sets two ship-or-not gates:
+- Stage 1 (basic): Head B output * vol target.
+- Stage 2 (full): Head B + friction-adjusted Kelly (lambda=0.4) + ATR exits + vol target (15% ann) + 30-day timeout + APS conformal floor (0.40).
+
+Stage 2 must beat Stage 1 by >= 0.2 Sharpe OOS at all three cost levels {0.5x, 1.0x, 1.5x} to ship the full pipeline.
+
+Run these 8 variants on the same val fold with bootstrap CIs at the 95% level, AT EACH OF the three cost levels.
 
 | # | Variant | Sizing | Stops | Signal-decay | Description |
 |---|---|---|---|---|---|
-| 1 | Stage 1 baseline | fixed ±1 share | none | none | "always full size when not flat" — current doc 07 Stage 1 |
-| 2 | + signed score | signed score, no Kelly, no vol-target | none | none | Isolates: does signed-score sizing alone help? |
-| 3 | + vol-target | signed × kelly × vol_mult | none | none | Isolates: does vol-target add value? |
-| 4 | + conformal | full sizing formula | none | none | Isolates: does conformal shrinkage add value? |
-| 5 | + hard stop | full sizing | hard ATR only | none | Isolates: does hard stop alone help? |
-| 6 | + trailing | full sizing | hard + trail | none | Isolates: does trailing add over hard alone? |
-| 7 | + session/blackout/re-entry | full sizing | hard + trail + time + session + blackout + re-entry | none | The full V1 stack without signal-decay |
-| 8 | + signal-decay | full sizing | full stops | enabled | Full V1 stack with optional signal-decay |
+| 1 | Stage 1 (V1 basic) | Head B `tanh` * vol_target | none | none | V1 baseline. Was V1 fixed ±1 share. |
+| 2 | + Kelly | Head B + friction-adjusted Kelly (lambda=0.4) + Laplace variance | none | none | Isolates: does friction-adjusted Kelly help? |
+| 3 | + vol-target tightening | Head B + Kelly + vol target 15% ann | none | none | Isolates: does vol-target add value at 15%? |
+| 4 | + APS conformal floor | Head B + Kelly + vol target + APS floor 0.40 | none | none | Isolates: does conformal defensive shutoff add value? |
+| 5 | + hard stop | Stage 2 sizing | hard ATR 2x only | none | Isolates: does hard stop alone help? |
+| 6 | + trailing | Stage 2 sizing | hard 2x + trail 1.5x | none | Isolates: does trailing add over hard? |
+| 7 | + session/blackout/re-entry/timeout | Stage 2 sizing | hard + trail + 30-day timeout + session + blackout + re-entry | none | Stage 2 (V1 full) without signal-decay |
+| 8 | + signal-decay | Stage 2 sizing | full stops | enabled | Stage 2 with optional signal-decay |
 
-**Decision:**
+**V1 Decision rules (gates from V1 spec sections 9.4 and 10.2):**
 
-- Ship variant 7 if its bootstrap-CI lower bound on Sharpe > variant 1's CI upper bound at 7 bp cost. Otherwise ship variant 1 (the simpler model that ties wins).
-- Ship variant 8 over variant 7 only if variant 8's mean Sharpe ≥ variant 7's mean + 30 bp annualized at 7 bp cost.
+- Ship variant 7 (Stage 2 full) if it beats variant 1 (Stage 1 basic) by >= 0.2 Sharpe OOS at ALL THREE cost levels {0.5x, 1.0x, 1.5x} on the test fold. Otherwise ship variant 1 (the simpler model that ties wins).
+- Ship variant 8 over variant 7 only if variant 8's mean Sharpe >= variant 7's mean + 30 bp annualized at 1.5x cost stress (was 7bp in V1).
 - If variant 5 alone matches variant 7, drop trailing + signal-decay. Simplicity wins.
-- If variant 7 fails to beat the GLD buy-and-hold Sharpe (~2.4 over 2020-2025), document honestly. Sharpe 2.0 with 8% MDD on a flat-or-bearish 5-year regime would be a different and equally publishable story.
+- All variants must satisfy V1 Gate 7 (DSR > 1.0) and Gate 8 (per-bucket Sharpe both positive). See doc 06.
+- If variant 7 fails to beat GLD buy-and-hold Sharpe approx 2.4 over 2020-2025, document honestly. V1 reframe: target is 1.0–1.5 OOS net of 2bp, not "beat GLD bull run." A Sharpe 1.2 with 8% MDD on a flat-or-bearish regime is a publishable story.
 
 ---
 
-## Open Questions For Owner Decision
+## Open Questions (V1 — most resolved by spec)
 
-1. **Quarter-Kelly (0.25) or half-Kelly (0.5) at V1 launch?** Quarter is the ML-uncertainty-literature default. Half is the historical default. Recommend quarter; the cost of being wrong on calibration is fatal at half.
-2. **`target_vol = 0.10` or 0.15?** F2F uses 0.15 on gold *futures*. GLD is unleveraged spot, so 0.10 is the conservative analog. Recommend 0.10 V1 with A/B at 0.15 in V2.
-3. **Session-flat at 15:55 ET, no overnight positions: confirm.** Saves us from the after-hours tail; gives up genuine overnight model edge. Recommend yes for V1.
-4. **Enable signal-decay exit by default, or only ship if A/B wins?** Recommend "only ship if A/B wins by 30 bp." Defaults to disabled.
-5. **News blackout entry-only, or also force-flat existing positions before scheduled events?** Recommend entry-only for V1. Force-flat is more conservative but loses any genuine event-driven model edge.
-6. **Min-notional handling on rebalance:** if current = 0.05 share and target = 0.06 share at GLD $200 (delta = $2), submit the rebalance? Recommend yes — `min_notional` only gates entry, not rebalance.
-7. **Exit price recording in vectorized backtest:** `stop_px` (worst case, conservative) or bar close (model's view)? Recommend `stop_px`. Conservative is the right bias for paper-to-live transition.
+V1 spec resolves several V1 open questions. Remaining open questions:
+
+1. ~~Quarter-Kelly (0.25) or half-Kelly (0.5)?~~ → **V1 RESOLVED**: friction-adjusted Kelly with lambda = 0.4 (F2F arXiv:2511.08571).
+2. ~~`target_vol = 0.10` or 0.15?~~ → **V1 RESOLVED**: 0.15 (F2F-anchored).
+3. **Session-flat at 15:55 ET, no overnight positions: confirm.** Kept from V1. Saves us from the after-hours tail; gives up genuine overnight model edge.
+4. **Enable signal-decay exit by default, or only ship if A/B wins?** Only ship if A/B wins by 30 bp annualized at 1.5x cost stress (V1 update).
+5. **News blackout entry-only, or also force-flat existing positions before scheduled events?** Entry-only for V1.
+6. **Min-notional handling on rebalance:** Submit if delta * px >= $1.00. `min_notional` only gates entry.
+7. **Exit price recording in vectorized backtest:** `stop_px` (worst case, conservative). V1 keeps.
+8. **NEW V1 open**: APS floor at 0.40 — is this too defensive? Sweep {0.30, 0.40, 0.50} on val fold and pick the level that maximizes Sharpe at 1.5x cost stress. Lock for OOS.
 
 ---
 
 ## Citations
 
-### Sizing
-- Forecast-to-Fill — arXiv:2511.08571 (Singha, Aguilera-Toste, Lahiri, Nov 2025) — the gold benchmark; w_t = f_t × σ_target / σ_t, λ_Kelly=0.40, σ*=15%
-- Lim, Zohren, Roberts (2019) — arXiv:1904.04912 — Deep Momentum Networks; signed-forecast vol-target framework
-- Zhang, Zohren, Roberts (2019) — arXiv:1911.10107 — DRL for trading; same framework
-- Wright (2026) — arXiv:2601.07852 — Utility-Weighted Forecasting (no conformal, no "30%" claim — the doc 07 citation was fabricated)
-- Kato (2024) — arXiv:2410.16333 — Conformal Predictive Portfolio Selection
-- Utility-Directed Conformal Prediction — arXiv:2410.01767 — modified non-conformity score for utility
-- Guo et al. (2017) — arXiv:1706.04599 — Temperature scaling for NN calibration
-- MacLean, Thorp, Ziemba — Good and Bad Properties of Kelly — fractional Kelly variance/growth tradeoff
-- Downey — fractional Kelly under uncertainty simulations
-- Chalkidis et al. (2021) — arXiv:2110.14914 — Trading via selective classification
+### Sizing (V1 anchors)
+- **Wright et al. (2026) Forecast-to-Fill — arXiv:2511.08571** — V1 PRIMARY ANCHOR. Friction-adjusted Kelly with lambda=0.4, vol target 15% ann, ATR-14 hard stop 2x trailing 1.5x, 30-day timeout, gamma=0.02 sqrt-impact, k=0.7bps. F2F honestly publishes that 1.5x costs collapse Sharpe to -0.03.
+- Lim, Zohren, Roberts (2019) — arXiv:1904.04912 — Deep Momentum Networks; signed-forecast vol-target framework. V1 fallback path.
+- Zhang, Zohren, Roberts (2019) — arXiv:1911.10107 — DRL for trading; same framework.
+- **Daxberger et al. (2021) — arXiv:2106.14806** — Laplace last-layer approximation, `aleximmer/Laplace`. V1 REPLACES MC dropout T=20 for the Kelly variance term.
+- **Angelopoulos et al. (2020) — arXiv:2009.14193** — RAPS (Regularized Adaptive Prediction Sets). V1 conformal floor input.
+- **Zaffran et al. (2022 ICML) — arXiv:2202.07282** — AgACI (Aggregated Adaptive Conformal Inference). V1 online conformal wrapper.
+- **Mukhoti et al. (2020 NeurIPS) — arXiv:2002.09437** — focal loss gamma=3, reduces ECE 30-50% pre-T-scaling. V1 Head A loss.
+- **Xi et al. (2024) — arXiv:2402.04344** — T-scaling on CE logits HARMS APS adaptive coverage; focal-trained logits avoid this conflict. Direct V1 design driver.
+- **Hwang & Zohren (2025) — arXiv:2510.03129** — "MSE-optimal forecasts produce non-optimal allocations." V1 motivation for Head B Sharpe loss.
+- **Saly-Kaufmann/Wood/Zohren (2026) — arXiv:2603.01820** — VLSTM 2.40 Sharpe on daily futures benchmark; trains directly on -Sharpe. V1 design driver and STRONG baseline.
+- Wright (2026) — arXiv:2601.07852 — Utility-Weighted Forecasting (no conformal, no "30%" claim — the V1 fabricated citation was already removed; V1 does not reintroduce it).
+- Kato (2024) — arXiv:2410.16333 — Conformal Predictive Portfolio Selection.
+- Utility-Directed Conformal Prediction — arXiv:2410.01767.
+- Guo et al. (2017) — arXiv:1706.04599 — Temperature scaling for NN calibration. V1 still uses T-scaling on focal logits.
+- MacLean, Thorp, Ziemba — Good and Bad Properties of Kelly — fractional Kelly variance/growth tradeoff.
+- Downey — fractional Kelly under uncertainty simulations.
+- Chalkidis et al. (2021) — arXiv:2110.14914 — Trading via selective classification.
 
 ### Stops
 - Kaminski & Lo (2014) — J. Financial Markets — when do stop-loss rules stop losses; momentum + regime stopping premium

@@ -4,9 +4,25 @@
 
 **Project:** nanoGLD — Karpathy-mode LLM-augmented gold trader on local hardware
 **Owner:** samsiavoshian
-**Status:** Planning complete. Implementation phase.
-**Version:** **V1 — frozen.** Plan does not get a version bump until the owner explicitly says so. All earlier draft labels (V2/V3/V4/V5) collapsed into V1. Agents must not introduce new version stamps.
-**Last verified:** 2026-05-01 (3 verification rounds, 19 specialized Nia research agents, ~30 critical findings absorbed)
+**Status:** ⭐ **DATA PHASE COMPLETE 2026-05-08. V1 ARCHITECTURE FROZEN 2026-05-08.** Single unified dataset on Mac mini ready for model training. Read `plan/V1-SPEC.md` first, then `plan/HANDOFF.md` before starting model phase.
+**Version:** **V1 — frozen.** Replaces V1 (frozen 2026-05-04). Plan does not get a version bump until the owner explicitly says so. Agents must not introduce new version stamps. V1 spec sheet at `plan/V1-SPEC.md` is the authoritative change list; anything not on that list stays as V1.
+**Last verified:** 2026-05-08 (V1 = 9-agent Nia research synthesis on top of V1's 3 verification rounds + 19 Nia agents + ~30 critical findings + 17 leakage hard rules)
+**Data phase complete:** 2026-05-08 (3 paranoid audit iterations × 8 agents = 19 bugs caught + fixed; cron loop continuing)
+
+---
+
+## ⭐ DATA PHASE COMPLETE — READ THIS FIRST
+
+**Single unified dataset:** `/Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt`
+- Mac mini at `root1@100.83.86.5` (Tailscale)
+- 234 MB PyTorch native file
+- 75,993 30-min bars × 681 features (float32) + 40,032 news embeddings (256-dim float16)
+- Train/Val/Test splits: 57,697 / 7,540 / 10,756 (chronological, 2016 → 2026)
+- Zero leakage, zero inf, zero 100%-NaN cols, max |corr| with next_log_return = 0.0117
+
+**For full data-phase context:** read `plan/HANDOFF.md`
+
+**For status of all docs:** read `plan/STATUS.md`
 
 ---
 
@@ -54,6 +70,8 @@ If unsure whether your finding clears the bar, AskUserQuestion before editing th
 ---
 
 ## Execution Mode (Every Agent — Read Before Coding)
+
+**This doc is V1-frozen as of 2026-05-08.** Agents do NOT replan, redesign, or regenerate scope without owner approval. The V1 spec sheet (`plan/V1-SPEC.md`) is the authoritative change list against V1. Read it before reading any individual sub-doc.
 
 **These docs ARE the plan. Do not rewrite them.** Plan how to *execute* what is written. Do not replan, do not redesign, do not regenerate scope. If a doc claim is wrong, write the issue + proposed fix at the bottom of your assigned doc and AskUserQuestion before changing direction. Silent scope drift is a fireable offense.
 
@@ -112,7 +130,7 @@ These replan from scratch. The user said explicitly: *plan to execute the docs, 
 
 ## What We're Building (one paragraph)
 
-A from-scratch encoder-only transformer (~24-60M params) that predicts next-30min direction (UP / FLAT / DOWN) of GLD (gold ETF) using channel-group tokens combining price + volatility + macro + geopolitical features fused with semantic news embeddings from Qwen3-Embedding-4B (frozen, 4-bit MLX). Trained supervised with 3-class cross-entropy via Schedule-Free AdamW + Friendly-SAM on 5y of 30min bars. Sizing layer combines Kelly-lite × vol-target × conformal-confidence. Deployed live via Alpaca with $100 of real money on the Macbook M4 Pro. Artifact is a build-in-public X thread + blog post documenting the journey honestly.
+A from-scratch hybrid encoder (10 transformer blocks + 2 sLSTM blocks at the head, ~30M params) that predicts next-30min direction of GLD (gold ETF) using channel-independent patches (P=4, S=4, T=64 -> 16 patches per channel) over 681 features fused with semantic news embeddings from Qwen3-Embedding-4B (frozen, 4-bit MLX). FiLM regime conditioning every 2 transformer layers on a 12-dim regime vector (VIX terciles, RV terciles, FOMC week, year buckets, HMM P(high-vol)). Sparse Flamingo-gated cross-attention at layers {3, 7, 11} only. Dual head: Head A (3-class focal CE gamma=3) for calibration, Head B (tanh -> position weight, trained on cost-aware Sharpe loss) for sizing. Trained via SimMTM SSL pretrain + linear probe + LLRD fine-tune on Cautious-Schedule-Free-AdamW + Friendly-SAM. Sizing layer = Head B output through friction-adjusted Kelly + vol-target + conformal floor. Deployed live via Alpaca with $100 of real money on the Macbook M4 Pro. Artifact is a build-in-public X thread + blog post documenting the journey honestly.
 
 ## North Stars (read these — they decide every tradeoff)
 
@@ -157,7 +175,7 @@ A from-scratch encoder-only transformer (~24-60M params) that predicts next-30mi
 - PyTorch 2.11.0 pinned (has SDPA fix #174945 for MPS).
 - FP32 weights everywhere (no autocast, no torch.compile, no quantization).
 
-## Architecture Spec (V1, locked May 2026)
+## Architecture Spec (V1, locked 2026-05-08; replaces V1 frozen 2026-05-04)
 
 ```
 DATA PIPELINE (doc 02) — V1 expanded 2026-05-04
@@ -181,7 +199,7 @@ DATA PIPELINE (doc 02) — V1 expanded 2026-05-04
 ├── Calendar event schedule (deterministic FOMC/CPI/NFP/GDP/JOLTS/PCE)
 └── Joined parquet with point-in-time discipline + 15min news latency
 
-FEATURE ENGINEERING (doc 04) — V1 expanded 2026-05-04
+FEATURE ENGINEERING (doc 04) — V1 expanded 2026-05-04, V1 redlines 2026-05-08
 ├── Existing: Price (12) + Risk/Vol (8) + Macro short (12) + Geo (10) = 42
 ├── NEW: Equity ETF features (~72) + Equity ratios incl. gold/silver, GDX/GLD (~9) = 81
 ├── NEW: Treasury curve features (~30) — levels + spreads + butterfly + real rates
@@ -190,11 +208,18 @@ FEATURE ENGINEERING (doc 04) — V1 expanded 2026-05-04
 ├── NEW: WGC central bank (~3) — quarterly net purchases
 ├── NEW: Calendar events (~10) — event proximity windows + sin/cos cyclicals
 ├── + Multi-dim sentiment: polarity + intensity + uncertainty (per arXiv:2603.11408)
-├── Channel-group tokenization (iTransformer-lite, now ~25 group tokens, was ~14)
-├── RevIN per channel-group (Kim ICLR 2022)
+├── V1 NEW: Half-hour-5 intraday momentum r_h5 = log(close_t/close_{t-30min}) at RTH-5 (Gao 2014, Sharpe 5.43 single-feature)
+├── V1 NEW: gld_h5_x_vol_high interaction with high-vol-tercile binary
+├── V1 NEW: gld_spread_bps_t (5-min trailing avg of (ask-bid)/mid * 10000) for triple-barrier neutral and sizing
+├── V1 NEW: VSN feature gate at input (Lim 2021 TFT, ~2M params, +0.92 Sharpe vs plain LSTM in Saly-Kaufmann)
+├── V1 NEW: Series decomposition pre-VSN — trend = MA(x, kernel=24), seasonal = x - trend (xLSTMTime requirement)
+├── V1 update: RevIN per individual channel (681 instances), REPLACES per-group RevIN — Huang & Yang ESWA 2026 dropped RMSE 50%
+├── V1 update: Labels = triple-barrier method (López de Prado), REPLACES fixed 5-bps threshold
+│   ├── Up barrier = +1.0 * ATR-14, down barrier = -1.0 * ATR-14, timeout = 1 bar
+│   ├── Spread-adjusted neutral: even if barrier touched but |ret| < spread_t, label = 0
+│   └── Three columns: label_triple_barrier {-1, 0, +1}, barrier_up, barrier_down (ATR-scaled)
 ├── pandas-ta-classic for indicators (NOT stale `ta`)
 ├── Garman-Klass volatility (NOT Parkinson — same OHLC, more efficient)
-├── Labels: 3-class via 5bps threshold
 └── Z-score with rolling 1000-bar lookback + clip(-10, 10) — extended to 3276 for YoY-bearing macro features
 
 NEWS EMBEDDING (doc 03) — V4 expanded news pipeline + bias-aware aggregator
@@ -214,57 +239,87 @@ NEWS EMBEDDING (doc 03) — V4 expanded news pipeline + bias-aware aggregator
 ├── Anchor-cosine semantic features — V4 anchors are HAND-CRAFTED TEMPLATES (no event provenance, fixes leakage)
 └── Per-article parquet storage (~500MB - 2GB depending on volume)
 
-MODEL ARCHITECTURE (doc 05)
+MODEL ARCHITECTURE (doc 05) — V1 hybrid encoder
 ├── ENCODER-only (no causal mask — bidirectional context for classification)
-├── ~14 channel-group tokens (NOT 64 per-bar tokens — iTransformer pattern)
-├── 12 layers, D=384, num_heads=6, head_dim=64 (Llama 3 / Qwen 3 sweet spot)
-├── RMSNorm + SwiGLU + RoPE (real-form, MPS-safe) + QK-Norm + no-bias
-├── Per-head gating + value residuals (IMU-1 recipe, arXiv:2602.02522)
-├── Partial RoPE (10% of head_dim — arXiv:2603.11611)
-├── F.scaled_dot_product_attention(is_causal=False) with .contiguous() Q/K/V
-├── Perceiver-Resampler-lite + Flamingo-gated cross-attn for news fusion
-├── A/B candidates: TDA (arXiv:2601.12145) + SyPE (arXiv:2602.08983)
-└── Mean-pool over tokens → Linear(D, 3) → softmax
+├── V1: channel-independent + patches (PatchTST style, REPLACES iTransformer-lite)
+│   ├── Patch length P=4 bars, stride S=4, lookback T_bars=64 → 16 patches per channel
+│   ├── 681 channels share one transformer backbone (channel-independent)
+│   ├── Patch projection Linear(P, D), no bias; sinusoidal pos-emb on patches
+│   └── Cross-channel mixing removed from main backbone (recovered via VSN gate at input)
+├── V1 HYBRID BACKBONE: 10 transformer blocks + 2 sLSTM blocks at the head
+│   ├── Layers 1-10: pre-norm transformer (RMSNorm + SwiGLU + partial RoPE + QK-Norm + no-bias)
+│   ├── Layers 11-12: sLSTM blocks (xLSTMTime style, channel-independent)
+│   ├── D=384, num_heads=6, head_dim=64
+│   ├── Per-head gating + value residuals (IMU-1 recipe, arXiv:2602.02522)
+│   ├── Partial RoPE (10% of head_dim — arXiv:2603.11611)
+│   ├── Stochastic depth: linear schedule p_l = 0.2 * l / num_layers (Touvron 2021)
+│   └── F.scaled_dot_product_attention(is_causal=False) with .contiguous() Q/K/V
+├── V1 FiLM regime blocks at layers {2, 4, 6, 8, 10}
+│   ├── 12-dim regime vector: VIX-tercile (3) + RV-tercile (3) + FOMC-week (1) + year-bucket (4) + HMM P(high-vol) (1)
+│   └── gamma_l, beta_l = Linear_l(regime_vec); applied between attn and FFN
+├── V1 SPARSE cross-attn for news at layers {3, 7, 11} only (mPLUG-Owl3 finding)
+│   ├── CFA-style FiLM/orthogonal projector before Flamingo K/V (arXiv:2603.22372)
+│   ├── AECF entropy-gated curriculum masking p ~ U(0.0, 0.9) (arXiv:2505.15417)
+│   ├── is_news_present binary embedding concatenated to news token
+│   └── NEWS_NOT_PRESENT learnable token kept as fallback
+├── V1 DUAL HEAD (multi-task, REPLACES single classification head)
+│   ├── Head A: Linear(D, 3, bias=False), focal loss gamma=3 (arXiv:2002.09437)
+│   ├── Head B: Linear(D, 1, bias=False) → tanh → position weight in [-1, +1]
+│   ├── L_sharpe_net = -mean(w * r_next - cost * |delta_w|) / std(...)
+│   └── Combined: L = 0.5 * L_focal + 0.5 * L_sharpe_net + 0.05 * L_DANN + L_aecf
+└── Sizing pipeline: Head B = primary position weight; Head A conformal interval as defensive shutoff
 
-TRAINING (doc 05)
-├── Stage 1: SSL pretrain (MAE on masked bars, 10 epochs)
-│   [A/B Phase 2: MTS-JEPA arXiv:2602.04643 — replaces MAE]
-├── Stage 2: Linear-probe (frozen encoder, 5-10 epochs head-only)
-├── Stage 3: LLRD fine-tune (decay 0.85, unfreezes encoder)
-├── Optimizer: Schedule-Free AdamW (Defazio ICLR 2025, won AlgoPerf 2024)
-│   [A/B: Muon for 2D weights — DeepSeek V4 / Kimi-2 production]
-├── Sharpness: Friendly-SAM ρ=0.05 (NOT vanilla SAM — F-SAM filters noise)
+TRAINING (doc 05) — V1 update 2026-05-08
+├── Stage 1: SSL pretrain — V1 SimMTM (arXiv:2302.00861, REPLACES plain MAE)
+│   ├── K=3 masked views per sample, similarity-weighted blending of neighbor reps
+│   ├── Mask ratio 0.40 (PatchTST default; V1's 0.20 was image-MAE inheritance)
+│   ├── Patch length 4, decoder depth 2, 15-20 epochs (~25-30% of compute budget)
+│   ├── + CLIP-style bars↔news contrastive head, tau=0.07, ±5 min news window
+│   └── L_pretrain = L_simmtm + 0.5 * L_clip + 0.05 * L_DANN + L_aecf
+├── Stage 2: Linear-probe (frozen encoder, focal CE head only)
+├── Stage 3: LLRD fine-tune (layer-wise LR decay 0.85, Mixout p=0.7 anchored to SSL ckpt)
+│   └── L = 0.5 * L_focal + 0.5 * L_sharpe_net + 0.05 * L_DANN + L_aecf
+├── Optimizer: V1 Cautious-Schedule-Free-AdamW (5-line patch, arXiv:2411.16085, +1.47x sample efficiency)
+│   ├── lr=1e-4 transferred from $5 muP sweep on 2-4M tiny model (Yang 2022)
+│   └── betas=(0.9, 0.95), wd=0.1, warmup=300
+├── Sharpness: Friendly-SAM ρ=0.05 kept (NOT vanilla SAM)
 ├── EMA: decay=0.999 on weights (deployed = EMA, not raw)
-├── Walk-forward: 4 folds at 5y (3y train + 6mo val + 6mo test, 3mo step)
-├── Loss: 3-class CE + class weights + label smoothing 0.1 (NEVER MSE on returns)
-├── Regularization: dropout 0.2 + stoch depth 0.15 + jittering + Manifold Mixup
+├── V1 NEW: FreeLB adversarial perturbation on news embeddings only (K=2, eps=0.5, +30% wall-clock)
+├── V1 NEW: DANN gradient reversal on era-label = year-bucket {2016-2019, 2020-2022, 2023-2024, 2025+}, lambda 0→0.1
+├── Walk-forward: 4 folds (3y train + 6mo val + 6mo test, 3mo step, 1-week embargo)
+├── Loss: focal CE gamma=3 + Sharpe loss + DANN + AECF (NEVER MSE on returns)
+├── V1 augmentation: SimPSI (arXiv:2312.05790) + Wave-Mask (arXiv:2408.10951), REPLACES naive jittering
+│   └── Manifold Mixup alpha=0.2 at hidden states kept (NEVER raw input)
 ├── Cross-asset transfer (bonus): SPY → GLD via LLRD
 └── PyTorch 2.11.0, FP32, num_workers=0 (macOS fork issues)
 
-BACKTEST (doc 06)
-├── Cost model: 5bps round-trip (sensitivity test 3/5/7/10 bps)
+BACKTEST (doc 06) — V1 update 2026-05-08
+├── V1 cost-stress HARD GATE: report Sharpe at {0.5x, 1.0x, 1.5x} cost levels
+│   ├── Half-spread = 0.7 bps base; sqrt-impact gamma=0.02; round-trip ~2 bps base
+│   └── Must show Sharpe > 0.5 at 1.5x cost (Wright F2F died at 1.5x)
+├── V1 PER-BUCKET EVAL HARD: every metric reported separately for {news-present, news-absent, both}
+├── V1 DSR > 1.0 HARD across all reported configs (no cherry-picking)
 ├── bars_per_year = 3276 (NYSE RTH only — NOT 17500)
 ├── Baselines: buy-hold, MA crossover, Donchian, DLinear, TSMixer, TimeMixer,
-│              xLSTMTime (won 2026 finance benchmark per arXiv:2603.01820),
-│              XGBoost (committed config), Forecast-to-Fill replication
+│              xLSTMTime (won 2026 finance benchmark per arXiv:2603.01820), VLSTM (Saly-Kaufmann 2026, 2.40 Sharpe),
+│              XGBoost (committed config), Forecast-to-Fill replication, Gao 2014 half-hour-5 single-feature rule
 ├── Stationary block bootstrap CI on Sharpe (arch.bootstrap)
-├── Deflated Sharpe Ratio (Bailey-Lopez de Prado)
 ├── Regime stratification: vol terciles + FOMC weeks + news density
 ├── Sortino: target downside dev (NOT std of negative subset)
-└── Hard rule: if 24-60M Transformer can't beat all baselines by ≥0.2 Sharpe,
-    SHIP THE BASELINE (TLOB lesson: "MLP can match transformer")
+└── V1 hard rule: if V1 fails to beat simpler ensemble (Gao 2014 + XGBoost) by ≥ 0.2 Sharpe OOS net of costs,
+    SHIP THE SIMPLER ENSEMBLE (TLOB lesson + Gao 2014 GLD-specific bar)
 
-SIZING + EXITS (doc 07 supersedes doc 07 math, 2026-05-04)
-├── Stage 1: fixed (1 share when argmax ≠ flat)
-├── Stage 2: signed-score × quarter-Kelly × vol-target(cap=3.0) × conformal
-│   ├── signed score: s = P_up − P_down  (NOT max_prob − 0.33)
-│   ├── kelly_fraction = 0.25 V1 (ramp to 0.5 only after 6mo OOS)
-│   ├── target_vol = 0.10 (F2F 0.15 in A/B for V2)
-│   ├── σ_t = max(EWMA λ=0.94, 0.5 × 20d_rolling, 1e-3)
-│   ├── vol_mult = min(target_vol / σ_t, 3.0)
-│   ├── continuous conformal shrinkage: set_size {1,2,3} → λ_conf {1.0, 0.5, 0.0}
-│   └── min_signed_signal = 0.05  (skip noise bars)
-│   GATE: full V1 stack must beat Stage 1 by ≥0.2 Sharpe OOS at 7bp cost
+SIZING + EXITS (doc 07 V1 update 2026-05-08; locks F2F machinery on top of dual-head model)
+├── V1 primary signal = Head B output (tanh → position weight in [-1, +1])
+├── Stage 1 (basic): Head B output × vol target
+├── Stage 2 (full): Head B + friction-adjusted Kelly + ATR exits + vol target + 30-day timeout + conformal floor
+│   ├── kelly_size = lambda * edge / variance, lambda=0.4 (half-Kelly-ish)
+│   ├── edge from Head B output; variance from Laplace last-layer posterior + rolling 60-bar realized var
+│   ├── effective_size = kelly_size * max(0, 1 - cost / |edge|) (zero out if cost > edge)
+│   ├── target_vol = 15% annualized (NYSE RTH bars_per_year=3276)
+│   ├── sqrt-impact cost: cost_t = gamma * sqrt(|delta_w|) + k_bps * |delta_w|, gamma=0.02, k=0.7bps
+│   └── conformal floor: if AgACI/RAPS lower bound on top-class prob < 0.40, force position to 0
+│   GATE: Stage 2 must beat Stage 1 by ≥ 0.2 Sharpe OOS to ship the full pipeline (else ship Stage 1)
 ├── Per-trade stop-loss (NEW, doc 07)
 │   ├── Hard ATR stop: 2.0 × ATR(14)_at_entry (frozen at entry)
 │   ├── Trailing ATR stop: 1.5 × ATR(14)_live, ratchet only
@@ -347,20 +402,23 @@ Per-agent details in STATUS.md.
 - **Round 3 (2026 SOTA):** 6 Nia agents on May 2026 releases (Llama 4, Gemma 4, Qwen 3.5, embedding leaderboard, TS foundation models, architecture innovations, finance papers, training optimization). Major pivot: Llama-3.1-8B → Qwen3-Embedding-4B (45× faster). Schedule-Free AdamW replaces cosine + warmup. Forecast-collapse hard rule (NEVER MSE).
 - **Round 4 (V1 dataset expansion + leakage audit, 2026-05-04):** 5 Nia agents verified all sources for the V1 expansion AND audited every existing source for leakage. Found **17 high-severity issues**: bar timestamp = START not END, Alpaca News field = `created_at` not `published_at`, FEDFUNDS is monthly (need DFF), 6 GDELT theme codes refuted, GDELT buffer 30min not 15min, WGC URL was wrong (correct: gold.org/download/8052), WGC is monthly not quarterly, AI-GPR not real-time (30-day lag), GPR no vintage archive, pandas-ta look-ahead bugs (KAMA/Ichimoku/KST/DPO/TRIX/Vortex forbidden), CFTC 2025 shutdown gap, multi-symbol pagination interleaves, `adjustment="all"` is retroactive, WALCL Thursday 4:30pm release-time gating, ICSA Thursday 8:30am release-time gating, anchor-cosine source must precede train period, no `minutes_until_event` features. All fixes encoded as 17 hard rules + 28 mandatory tests in `tests/test_no_leakage.py`.
 - **Round 5 (news pipeline expansion + ML aggregation refactor, 2026-05-04):** 5 Nia agents verified the user's 10-source list (Kitco / Metals Daily / BullionVault / Investing.com / CNBC / Reuters / FT / Trading Economics / FXStreet / WGC) against live URLs + ToS + 10y archive depth, audited bias profiles, surveyed free 10y datasets, and researched multi-document aggregation SOTA from 2024-2026. **Key findings:** FT robots.txt explicitly bans ML training (legal blocker — skip). Reuters paywall + Reuters Connect enterprise-only (defer paid). FNSPID dataset (15.7M articles, 1999-2023, CC BY 4.0, on HF) is the biggest free win for filling pre-2021 gap. Kitco/BullionVault/Investing.com are all free-scrape with 10y depth. Central bank speeches (Fed/ECB/BIS) + government press (Treasury/CFTC) are public-domain (US 17 USC §105). Reddit Arctic Shift dumps free through 2026-04. Aggregation SOTA: per-source PMA + bar-conditioned FiLM Q-Former (K=8) + Flamingo gate is 2025-26 sweet spot (CMTF arXiv:2504.13522, FiCoTS arXiv:2512.00293). Bias debiasing recipe: LAFTR adversarial head (arXiv:1802.06309) + gradient reversal (arXiv:1505.07818) + inverse-frequency reweighting. Plan: 12+ news sources + 12 bias tiers + LAFTR head + new aggregator. doc 03 effort 0.5d → 1.5d.
+- **Round 6 (V1 architecture synthesis, 2026-05-08):** 9-agent Nia synthesis on backbone choice, multimodal fusion, training/SSL recipe, calibration stack, sizing/F2F machinery, eval discipline, and 2025-26 SOTA delta. Major redlines: V1 pure transformer → V1 hybrid (10 transformer + 2 sLSTM head) per Saly-Kaufmann/Wood/Zohren 2026 (VLSTM 2.40 Sharpe vs iTransformer 0.38) + xLSTMTime small-data recipe; iTransformer-lite group tokens → channel-independent + patches (PatchTST P=4, S=4); single classification head → dual head (focal CE gamma=3 + Sharpe loss); MAE → SimMTM + CLIP bars↔news; CE → focal loss (clean T-scaling/APS); MC-dropout → Laplace last-layer; jittering → SimPSI/Wave-Mask; fixed-bp labels → triple-barrier; 15% news dropout → variable U(0.1, 0.9); add cost-stress + DSR + per-bucket as HARD gates; target reframe 2.88 → 1.0-1.5 OOS Sharpe net of 2bp. Full change list at `plan/V1-SPEC.md`.
 
-## Empirical Bar (what success looks like)
+## Empirical Bar (V1, what success actually looks like)
 
-Per Agent 6 (empirical SOTA research) + 2026 finance papers (Agent E):
+V1 chased "beat Wright F2F 2.88 Sharpe." V1 reframes that target. F2F 2.88 is daily gold futures EOD-to-EOD with ~30-day holding. Not comparable to 30-min intraday GLD direction. Apples-to-apples GLD intraday published record is Gao-Han-Li-Zhou 2014 (5.43 Sharpe single-feature half-hour-5 timing). Daily futures DL frontier is Saly-Kaufmann/Wood/Zohren 2026 (arXiv:2603.01820): VLSTM 2.40 Sharpe.
 
+**V1 honest target: 1.0 to 1.5 OOS Sharpe net of 2 bps round-trip costs over 4-fold walk-forward.**
 
-| Tier                  | Threshold                                                                  | Status                   |
-| --------------------- | -------------------------------------------------------------------------- | ------------------------ |
-| Minimum viable        | 38% direction accuracy + Sharpe > 0 + beat XGBoost on same features        | Mandatory to ship        |
-| Real claim            | Sharpe > 1.0, hit rate > 52%, DSR > 1.0, beat ALL baselines by ≥0.2 Sharpe | Mandatory for X thread   |
-| Forecast-to-Fill tier | Sharpe > 2.5, MDD < 5% on 5y walk-forward                                  | Publishable contribution |
+| Tier                  | Threshold                                                                                              | Status                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------ |
+| Minimum viable        | 38% direction accuracy + Sharpe > 0 net of 2bp + beat XGBoost on same 681 features                     | Mandatory to ship        |
+| V1 honest           | OOS Sharpe 1.0-1.5 net of 2bp, DSR > 1.0, beat baselines by ≥ 0.2 Sharpe on ≥ 3 of 4 folds, per-bucket positive | Mandatory for X thread   |
+| Stretch               | OOS Sharpe > 2.0 net of 2bp + survives 1.5x cost stress                                                | Publishable contribution |
 
+**Bars to beat (kept honest, V1):** buy-and-hold GLD net of costs; 50/200 EMA crossover; Donchian breakout; DLinear, TSMixer, TimeMixer; xLSTMTime + VLSTM (these are STRONG; if either ties or wins, ship the simpler one per hard rule 3); XGBoost on same 681 features; F2F replication on daily GLD bars (different problem, separate scoreboard); Gao 2014 half-hour-5 single-feature rule (the GLD-specific bar).
 
-**Forecast-to-Fill (arXiv:2511.08571, Sharpe 2.88) is unreplicated in 2026.** Building our own honest 30min gold benchmark with cost+DSR is genuinely publishable.
+**V1 ship rule:** if V1 fails to beat the simpler ensemble (Gao 2014 + XGBoost) by ≥ 0.2 Sharpe OOS net of costs, the ship recommendation is the simpler ensemble, full stop.
 
 ## Hard Project Rules (apply across all docs)
 
@@ -381,6 +439,52 @@ Per Agent 6 (empirical SOTA research) + 2026 finance papers (Agent E):
 15. **Anchor-cosine anchors must be hand-crafted templates OR pre-train-period samples.** Otherwise anchor set encodes future events.
 16. **News field is `created_at` (Alpaca News).** `published_at` does NOT exist. Never join on `updated_at`.
 17. **Use `DFF` for daily Fed Funds.** `FEDFUNDS` is monthly — using it as daily silently leaks values that don't exist until next month.
+
+### V1 invariants (18-25, added 2026-05-08)
+
+18. **Per-bucket eval is non-negotiable.** Every metric reported separately for {news-present, news-absent, both}. Without this we fly blind on the 51% no-news bars.
+19. **Cost-stress at {0.5x, 1.0x, 1.5x} on every reported Sharpe.** Hard gate: must show Sharpe > 0.5 at 1.5x cost. Wright F2F died at 1.5x; ours likely worse.
+20. **DSR > 1.0 hard gate** across all reported configs (Bailey & López de Prado). Multi-config selection penalty enforced. No cherry-picking.
+21. **SimPSI / Wave-Mask aug only.** Naive jittering FORBIDDEN (Fons 2020 arXiv:2010.15111: net-negative on Sharpe).
+22. **Focal loss gamma=3 (NOT vanilla CE).** Required for clean T-scaling/APS interaction (Mukhoti 2020 + Xi 2024 — T-scaling on CE logits HARMS APS adaptive coverage).
+23. **Triple-barrier labels with spread-adjusted neutral threshold.** ATR-14 up/down barriers, 1-bar timeout, label = 0 if `|return| < spread_t` even when barrier touched.
+24. **Variable per-batch modality dropout `p ~ U(0.1, 0.9)`.** NOT 15% constant. Empirical news-absence rate is 51%; 15% guarantees performance cliff at inference.
+25. **Decision-aware head (multi-task with Sharpe loss) is V1 ship gate.** End-to-end profit metric, not just classification accuracy. Stage 2 sizer must beat Stage 1 by ≥ 0.2 Sharpe OOS to ship the full pipeline.
+
+## V1 Promotion Gates (replaces V1 gates)
+
+Fail any gate, the negative result gets reported. Cherry-picking is fireable.
+
+```
+Gate 1   Walk-forward Sharpe > 1.0 net of 1x cost
+Gate 2   Sharpe > 0.5 net of 1.5x cost (NEW hard)
+Gate 3   Beats best baseline by >= 0.2 Sharpe on >= 3 of 4 folds
+Gate 4   Conformal coverage within ±2% of nominal on val + per-bucket
+Gate 5   Stage 2 sizer (decision-aware head) beats Stage 1 fallback by >= 0.2 Sharpe OOS
+Gate 6   Drawdown circuit breaker tested on >= 2 historical regimes
+Gate 7   Deflated Sharpe Ratio > 1.0 (NEW hard)
+Gate 8   Per-bucket Sharpe (news-present, news-absent) both positive (NEW hard)
+```
+
+## Things explicitly NOT in V1
+
+These were considered and rejected. Revisit only after V1 baseline lands.
+
+- MoE / Switch / Mixtral / OLMoE / Soft MoE. 75K samples too small for sparse routing.
+- KAN / KASPER. KASPER's Sharpe 12.02 is fraud-tier; Renaissance Medallion is ~2.5 net.
+- Mamba / S-Mamba / S5 / Hyena. 0.64 Sharpe on financial benchmark (Saly-Kaufmann 2026).
+- Jamba. 50B+ scale required.
+- Test-Time Training (TTT). V2 candidate; inference cost too high for one-shot.
+- Online learning / EWC. Walk-forward CV already simulates fresh data.
+- Muon optimizer. Speedup inversely proportional to scale; 30M too small.
+- Sophia. Stanford benchmark (arXiv:2509.02046) shows 2x claim collapses under fair tuning.
+- Deep ensembles. 5x compute kills budget; snapshot+EMA matches 80-90% of DE accuracy at 1x.
+- LLaVA-Mini one-token compression. Wrong scale.
+- Cross-Modal Proxy Tokens (CMPT). Deferred to V2 (Decision 4A).
+- Bars-only distillation. Deferred to V2.
+- Set Transformer over present articles. V2 alternative to anchor pooling.
+- Full xLSTMTime swap (encoder-wide). V1 keeps hybrid (10 transformer + 2 sLSTM).
+- End-to-end Sharpe-loss-only head (drops classification). V1 keeps multi-task.
 
 ## Key Citations Driving the Design
 
@@ -463,6 +567,7 @@ If you spawn an agent and it disagrees with the doc, document the disagreement I
 | 2026-05-04 | Wrote `07-SIZING-AND-EXITS.md` (4 parallel research agents — sizing / SL / TP / Forecast-to-Fill + Alpaca constraints). Supersedes doc 07 sizing math and doc 08 line 198 stop-loss. | Owner flagged 3 missing pieces. Findings: (1) Sizing formula in doc 07 was magnitude-only (`max_prob-0.33`), discards signed info, fragile `confidence_scale=3` guess, fabricated "30% lower decision loss" Wright 2026 citation. Replaced with signed score `s = P_up - P_down`, quarter-Kelly default, `vol_mult` capped at 3.0, EWMA+20d-floor σ_t, continuous conformal shrinkage. (2) Per-trade SL absent; literature (Kaminski-Lo, Han-Zhou-Zhu, F2F arXiv:2511.08571) and 5%-of-bars-with-news-tail-risk argue for wide ATR stop. Match F2F: 2.0×ATR14 hard + 1.5×ATR14 trail + 390-bar time-stop + re-entry gate + 15:55 ET session-flat + news blackout. (3) NO fixed take-profit (F2F + Baur-Dimpfl + 5bp cost gate); optional signal-decay exit gated on val A/B ≥30bp lift. (4) Live: Alpaca rejects bracket orders for fractional positions (error 42210000); at $100 + GLD ~$200 every position is fractional, so stops enforced client-side via `cycle.py` polling. |
 | 2026-05-04 | Verification Round 4 — 17 leakage findings encoded as hard rules + 28 mandatory tests | 5 Nia agents audited every source. Bar timestamp=START leakage, FEDFUNDS→DFF, 6 GDELT codes refuted, GDELT 30min buffer, WGC URL fix (monthly not quarterly), AI-GPR not real-time, anchor leakage rule, pandas-ta forbidden indicators, CFTC release-time gate, calendar-binary-only, etc. CI gate via `test_release_ts_lte_t_visible_all_rows`. |
 | 2026-05-04 | News pipeline expansion — 3 sources → 12+ sources + bias-aware LAFTR debiasing + V4 aggregator (per-source PMA + bar-conditioned FiLM Q-Former K=8 + Flamingo gate) | 5 Nia agents verified user's 10-source list + free-news datasets + multi-doc aggregation SOTA. Add Kitco/Investing.com/BullionVault/CNBC/FNSPID/central bank speeches/government press/Reddit/Kaggle. Forbid FT (robots.txt bans ML — legal). Defer Reuters/FXStreet/TE (paid). Skip Metals Daily (syndication dup). Source registry with 12 bias tiers + LAFTR adversarial head fights per-source prior. Aggregator upgrade (CMTF + FiCoTS 2025-26 papers): K=16→8, add bar-conditioned FiLM, add per-source PMA pre-pool. Per-article embedding (was per-source mean-pool). doc 03 effort 0.5d → 1.5d. |
+| 2026-05-08 | V1 → V1 freeze. 9-agent Nia synthesis. Decisions 1B (hybrid xLSTM head: 10 transformer + 2 sLSTM), 2B (channel-independent + patches P=4 S=4), 3B (multi-task: focal CE gamma=3 + Sharpe loss head), 4A (V1 missing-modality fixes only, defer CMPT to V2). Target reframe: 2.88 → 1.0-1.5 OOS Sharpe net of 2bp. | Owner-approved spec sheet at `plan/V1-SPEC.md`. Saly-Kaufmann/Wood/Zohren 2026 (arXiv:2603.01820): VLSTM 2.40 > iTransformer 0.38; xLSTM 1.79 best transaction-cost robustness. xLSTMTime (arXiv:2407.10240): sLSTM small-data winner. PatchTST channel-independent + LPatchTST 2.31 vs iTransformer 0.38. Hwang & Zohren 2025 (arXiv:2510.03129): MSE-optimal forecasts ≠ optimal allocations. Mukhoti 2020 focal loss + Xi 2024 (T-scaling on CE HARMS APS). mPLUG-Owl3 sparse cross-attn at {3, 7, 11}. CFA filter (arXiv:2603.22372) + AECF (arXiv:2505.15417). SimMTM (arXiv:2302.00861) + CLIP bars↔news pretrain. Cautious-SF-AdamW (arXiv:2411.16085) + muP transfer-tune (arXiv:2203.03466) + FreeLB on news only + DANN era-label. SimPSI (arXiv:2312.05790) + Wave-Mask (arXiv:2408.10951) REPLACE jittering (Fons 2020 net-negative). Triple-barrier labels + spread-adjusted neutral. RAPS + AgACI (arXiv:2009.14193 + arXiv:2202.07282) + Laplace last-layer REPLACES MC-dropout. F2F sizing locks Head B → friction-Kelly → vol-target → ATR exits → conformal floor. New invariants 18-25; new 8 promotion gates with cost-stress + DSR + per-bucket as HARD. |
 
 
 ## File Layout (when implementation begins)
@@ -530,7 +635,7 @@ If your deviation breaks another doc's interface, ask user via AskUserQuestion b
 
 ## Glossary (for new agents)
 
-- **nanoGLD:** the project name + the encoder-only transformer model
+- **nanoGLD:** the project name + the V1 hybrid encoder model (10 transformer + 2 sLSTM blocks)
 - **GLD:** SPDR Gold Shares ETF (what Alpaca trades — not GC=F futures)
 - **30min bar:** 30-minute OHLCV candle on NYSE RTH (09:30-16:00 ET, 13 bars/day)
 - **Walk-forward CV:** time-ordered cross-validation with embargo, never random splits
@@ -546,8 +651,8 @@ If your deviation breaks another doc's interface, ask user via AskUserQuestion b
 
 ## Last Note
 
-This plan has been verified across **3 verification rounds, 19 specialized Nia agents, ~30+ critical findings**. Every claim has a citation. Every architectural decision has been challenged. The plan is comprehensive enough to implement without ambiguity.
+This plan has been verified across **6 verification rounds (V1: 5 rounds + 19 Nia agents + 30+ findings + 17 leakage hard rules; V1: 9-agent architecture synthesis 2026-05-08)**. Every claim has a citation. Every architectural decision has been challenged. The plan is exhaustive enough to implement without ambiguity.
 
-But the field moves weekly. **Always run a fresh** `nia search` **on your topic before starting your implementation.** A paper from last week could change your decision. The plan is a snapshot, not a contract. But don't try to change things, we are at a stable point and we need to ship ASAP.
+But the field moves weekly. **Always run a fresh** `nia search` **on your topic before starting your implementation.** A paper from last week could change your decision. The plan is a snapshot, not a contract. **V1 is frozen as of 2026-05-08; agents do NOT replan further without owner approval.** If you find something the V1 spec sheet missed, raise it via AskUserQuestion, do not silently change.
 
 **Now go read your assigned doc. Spawn Nia agents freely. Build the thing.**
