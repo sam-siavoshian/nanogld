@@ -128,6 +128,7 @@ class nanoGLDV1(nn.Module):
         news_mask: Tensor,
         is_news_present: Tensor,
         regime_vec: Tensor,
+        return_pooled: bool = False,
     ) -> dict[str, Tensor]:
         """Full forward pass.
 
@@ -137,9 +138,13 @@ class nanoGLDV1(nn.Module):
             news_mask: (B, S) — 1 = source present.
             is_news_present: (B,) — binary.
             regime_vec: (B, regime_dim) — per-bar regime vector.
+            return_pooled: if True, also return the encoder pooled
+                representation as `pooled` (B, d_model). Used by SSL
+                pretrain so the recon loss has a real signal.
 
         Returns:
             Dict with `logits_3class` (B, n_classes) and `position_weight` (B,).
+            If return_pooled=True, also `pooled` (B, d_model).
         """
         b, t, f = channel_inputs.shape
 
@@ -175,4 +180,7 @@ class nanoGLDV1(nn.Module):
         pooled = pooled_per_channel.mean(dim=1)
 
         logits, pos = self.head(pooled)
-        return {"logits_3class": logits, "position_weight": pos}
+        out: dict[str, Tensor] = {"logits_3class": logits, "position_weight": pos}
+        if return_pooled:
+            out["pooled"] = pooled
+        return out

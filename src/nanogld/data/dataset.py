@@ -11,7 +11,7 @@ Required files (paths relative to data/):
     processed/v1_hmm.joblib             — fitted HMM (built once on train split)
 
 Forward batch dict keys:
-    channel_inputs:    (T, F=681) float32
+    channel_inputs:    (T, F=651) float32
     news_embeddings:   (S, 256)   float16, S = max news slots (default 8)
     news_mask:         (S,)       float32 — 1 = source present
     is_news_present:   ()         long — 0 or 1

@@ -105,9 +105,23 @@ def llrd_finetune(
         p.requires_grad_(True)
 
     groups = _build_llrd_param_groups(model, base_lr=cfg.base_lr, decay=cfg.decay)
-    opt = torch.optim.AdamW(groups, betas=(0.9, 0.95), weight_decay=0.1)
+    try:
+        from schedulefree import AdamWScheduleFree  # noqa: PLC0415
+
+        opt = AdamWScheduleFree(
+            groups,
+            lr=cfg.base_lr,
+            betas=(0.9, 0.95),
+            weight_decay=0.1,
+            warmup_steps=300,
+        )
+        if hasattr(opt, "train"):
+            opt.train()
+    except ImportError:
+        opt = torch.optim.AdamW(groups, betas=(0.9, 0.95), weight_decay=0.1)
 
     mixout = Mixout(ssl_anchor_state, p=cfg.mixout_p)
+    snapshot_state: dict[str, torch.Tensor] = {}
     ema = make_ema(model, decay=cfg.ema_decay)
     freelb = FreeLB(K=cfg.freelb_K, epsilon=cfg.freelb_epsilon)
 
@@ -127,6 +141,7 @@ def llrd_finetune(
             labels = batch["label_3class"].to(device).long()
             next_log_return = batch["next_log_return"].to(device).float()
 
+            snapshot_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             mixout.apply(model)
             opt.zero_grad()
 
@@ -172,6 +187,13 @@ def llrd_finetune(
             if cfg.grad_clip_max_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_max_norm)
             opt.step()
+
+            with torch.no_grad():
+                for name, param in model.named_parameters():
+                    if name in snapshot_state:
+                        delta = param.data - snapshot_state[name].to(param.device)
+                        param.data.copy_(snapshot_state[name].to(param.device) + delta)
+
             ema.update_parameters(model)
 
             n_steps += 1

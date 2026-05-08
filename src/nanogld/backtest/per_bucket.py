@@ -34,14 +34,20 @@ def per_bucket_metrics(
 
     out: dict[str, dict[str, float]] = {}
     out["both"] = compute_metrics(pnl, eq)
+
     if mask.any():
         idx = np.where(mask)[0]
-        out["present"] = compute_metrics(pnl[idx], eq[idx])
+        bucket_pnl = pnl[idx]
+        bucket_eq = np.exp(np.cumsum(bucket_pnl))
+        out["present"] = compute_metrics(bucket_pnl, bucket_eq)
     else:
-        out["present"] = compute_metrics(np.array([]), np.array([]))
+        out["present"] = compute_metrics(np.array([]), np.array([1.0]))
+
     if (~mask).any():
         idx = np.where(~mask)[0]
-        out["absent"] = compute_metrics(pnl[idx], eq[idx])
+        bucket_pnl = pnl[idx]
+        bucket_eq = np.exp(np.cumsum(bucket_pnl))
+        out["absent"] = compute_metrics(bucket_pnl, bucket_eq)
     else:
-        out["absent"] = compute_metrics(np.array([]), np.array([]))
+        out["absent"] = compute_metrics(np.array([]), np.array([1.0]))
     return out
