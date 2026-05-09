@@ -56,6 +56,10 @@ NEEDS_ETFS = pytest.mark.skipif(
     not _have("data/raw/alpaca_bars_SPY_30min.parquet"),
     reason="needs Alpaca SPY 30min parquet",
 )
+NEEDS_DXY = pytest.mark.skipif(
+    not _have("data/raw/yf_dxy_daily.parquet"),
+    reason="needs yfinance DXY daily parquet",
+)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -200,6 +204,7 @@ def test_risk_features_real_data() -> None:
 
 
 @NEEDS_FRED
+@NEEDS_DXY
 def test_macro_features_real_data() -> None:
     df = macro.build_macro_features()
     _assert_basic_contract(df)

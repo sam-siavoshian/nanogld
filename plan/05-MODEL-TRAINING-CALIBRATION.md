@@ -1,11 +1,79 @@
 # 05 — Model + Training + Calibration
 
+## V1 CHANGE SUMMARY (2026-05-08, supersedes V1 frozen 2026-05-04)
+
+V1 redlines this doc against the V1 spec sheet at `plan-edit/V1-SPEC.md`. The V1 stack below is preserved everywhere V1 does not contradict it. All new pieces are tagged "V1:" inline. Net architecture changes here:
+
+- **V1: Hybrid encoder backbone** (Decision 1B). 10 transformer blocks + 2 sLSTM blocks. xLSTMTime style (Alharthi & Mahmood arXiv:2407.10240). Replaces pure 12-layer transformer. Reasons: VLSTM 2.40 / xLSTM 1.79 / iTransformer 0.38 Sharpe on Saly-Kaufmann arXiv:2603.01820 benchmark.
+- **V1: Channel-independent + patches** (Decision 2B). Patch length P=4, stride S=4, 16 patches per channel, 681 channels share one backbone. Replaces channel-group tokens (~14 tokens iTransformer-lite). LPatchTST 2.31 vs iTransformer 0.38 Sharpe.
+- **V1: FiLM regime conditioning** every 2 layers ({2,4,6,8,10}). 12-dim regime vector (VIX-tercile, RV-tercile, FOMC-week, year-bucket, HMM-P-high-vol). ~3840 trainable params total.
+- **V1: Multi-task dual head** (Decision 3B). Head A 3-class direction + Head B position weight in [-1,+1] via tanh, trained jointly with differentiable Sharpe loss. Hwang & Zohren 2025 arXiv:2510.03129; Saly-Kaufmann 2026.
+- **V1: Sparse news cross-attention** at layers [3, 7, 11] only. Was: every layer / every-other. mPLUG-Owl3 arXiv:2408.04840 Table 8.
+- **V1: CFA-style FiLM/orthogonal projector** before Flamingo K/V. Lee et al. arXiv:2603.22372.
+- **V1: AECF entropy-gated curriculum masking** replaces 15% constant modality dropout. Per-batch p~U(0.0, 0.9). Chlon et al. arXiv:2505.15417.
+- **V1: is_news_present binary embedding** concat to news token. Ma et al. CVPR 2022 arXiv:2204.05454.
+- **V1: Variable per-batch modality dropout** p~U(0.1, 0.9) at training. CRITICAL FIX — V1's 15% guaranteed deployment cliff at 51% empirical absence rate.
+- **V1: NEWS_NOT_PRESENT learnable token** kept (V2 candidate to swap to CMPT).
+- **V1: Focal loss gamma=3** replaces vanilla CE / LS=0.05. Mukhoti 2020 arXiv:2002.09437. Critical: Xi 2024 arXiv:2402.04344 shows T-scaling on CE harms APS adaptive coverage.
+- **V1: T-scaling -> RAPS -> AgACI** replaces T-scaling -> APS. Angelopoulos 2020 arXiv:2009.14193 + Zaffran 2022 ICML arXiv:2202.07282.
+- **V1: Laplace last-layer (LLLA)** replaces MC dropout T=20. Daxberger 2021 arXiv:2106.14806.
+- **V1: Mixout p=0.7** anchored to SSL checkpoint, Stage 3 LLRD only. Lee Cho Kang ICLR 2020 arXiv:1909.11299.
+- **V1: Stochastic depth linear schedule 0.0 -> 0.2** replaces uniform 0.15. Touvron 2021.
+- **V1: SimPSI + Wave-Mask augmentation** replaces naive jittering. Ryu AAAI 2024 arXiv:2312.05790, Arabi 2024 arXiv:2408.10951. Critical: naive jittering is net-negative on Sharpe (Fons 2020 arXiv:2010.15111).
+- **V1: Cautious update mask** on Schedule-Free AdamW. Liang 2024 arXiv:2411.16085. 5-line patch.
+- **V1: muP transfer-tune** on 2-4M tiny model first. Yang 2022 arXiv:2203.03466.
+- **V1: FreeLB** on news embeddings only (not bars - PIT risk). Zhu et al. ICLR 2020 arXiv:1909.11764.
+- **V1: DANN gradient reversal** on era-label = year-bucket. Feng 2019 arXiv:1810.09936.
+- **V1: Mask ratio 0.20 -> 0.40** in SSL. PatchTST default.
+- **V1: SimMTM** replaces plain MAE. Dong NeurIPS 2023 arXiv:2302.00861. K=3 masked views, similarity-weighted reconstruction.
+- **V1: CLIP-style bars<->news contrastive head** in SSL. InfoNCE on bar-rep vs news-rep within ±5min, tau=0.07.
+- **V1: Combined loss** by stage. Stage 1 SSL: L_simmtm + 0.5*L_clip + 0.05*L_DANN + L_aecf. Stage 2: L_focal_3class. Stage 3 LLRD: 0.5*L_focal + 0.5*L_sharpe_net + 0.05*L_DANN + L_aecf.
+
+V1 explicitly NOT in scope (deferred or rejected): MoE, KAN, Mamba, TTT, online learning, Muon, Sophia, deep ensembles, CMPT (V2), bars-only distillation (V2), full xLSTMTime swap (encoder-wide), end-to-end Sharpe-only head (drops classification).
+
+V1 NEW invariants (added to V1's 17):
+- (18) Per-bucket eval (news-present / news-absent / both) is non-negotiable.
+- (19) Cost-stress at {0.5x, 1.0x, 1.5x} on every reported Sharpe.
+- (20) DSR > 1.0 hard gate.
+- (21) SimPSI / Wave-Mask aug only; naive jittering FORBIDDEN.
+- (22) Focal loss gamma=3 (NOT vanilla CE) required for clean T-scaling/APS interaction.
+- (23) Triple-barrier labels with spread-adjusted neutral threshold (defined in doc 04, referenced here).
+- (24) Variable per-batch modality dropout p~U(0.1, 0.9), NOT 15% constant.
+- (25) Decision-aware head (multi-task with Sharpe loss) is V1 ship gate.
+
+The full V1 redline rationale lives in `plan-edit/V1-SPEC.md`. This doc updates the parts that touch model architecture, training procedure, calibration, and regularization. Doc 04 owns triple-barrier labels and feature additions; doc 06 owns walk-forward/cost-stress/DSR; doc 07 owns sizing + F2F machinery.
+
+---
+
+## 🎯 START HERE — DATA IS READY
+
+**Unified dataset shipped:** `$NANOGLD_REMOTE/data/processed/training_v1_unified.pt` (remote host, 234 MB)
+
+Single PyTorch file. Load:
+```python
+import torch
+data = torch.load("$NANOGLD_REMOTE/data/processed/training_v1_unified.pt")
+features    = data["features"]            # (75993, 681) float32
+labels      = data["labels"]              # (75993,) int8 — 0=DOWN/1=FLAT/2=UP
+splits      = data["splits"]              # list[75993] — "train"/"val"/"test"
+embeddings  = data["embeddings"]          # (40032, 256) float16
+# Per-bar visible news: embeddings[bar_news_values[bar_news_offsets[T]:bar_news_offsets[T+1]]]
+```
+
+**READ `plan/HANDOFF.md` BEFORE WRITING ANY CODE.** Has full context on what's in the dataset, how it was built, what bugs were caught, and what to validate before training.
+
+Architecture (V1 locked from spec): encoder-only hybrid, D=384, 6 heads. **10 transformer blocks (layers 1-10) + 2 sLSTM blocks (layers 11-12)** xLSTMTime style. Channel-independent + patches (P=4, S=4, T_bars=64 -> 16 patches per channel; 681 channels share one backbone). RMSNorm + SwiGLU + Real-form RoPE (partial 10%, QK-Norm BEFORE RoPE) on transformer layers. FiLM regime conditioning every 2 layers ({2,4,6,8,10}) with 12-dim regime vector. **Multi-task dual head**: Head A 3-class direction (focal loss gamma=3) + Head B position weight (-1 to +1 via tanh, differentiable Sharpe loss). **24-40M params** (sweet spot 30-35M; FiLM blocks add ~3840 params, near-zero).
+
+Training: H100 RunPod $1.99/hr, ~3-5h per run, $60-150 for V1 hyperparam sweep ($5 muP tiny-model sweep added upfront).
+
+---
+
 ## YOU ARE THE MODEL/TRAINING/CALIBRATION AGENT
 
 You own the predictor end-to-end:
-1. **Build the encoder-only transformer** + baseline architectures (DLinear, TSMixer, TimeMixer, xLSTMTime, XGBoost, Forecast-to-Fill).
-2. **Train it** with Schedule-Free AdamW + Friendly-SAM + walk-forward CV + LAFTR adversarial debiasing.
-3. **Calibrate it** — temperature scaling + APS Mondrian conformal prediction + drift detection stack.
+1. **Build the encoder-only hybrid transformer** (V1: 10 transformer + 2 sLSTM blocks; channel-independent + patches; FiLM regime conditioning; multi-task dual head) + baseline architectures (DLinear, TSMixer, TimeMixer, xLSTMTime, VLSTM, XGBoost, Forecast-to-Fill replica, Gao 2014 half-hour-5 single-feature rule).
+2. **Train it** with V1 Cautious-Schedule-Free AdamW (Liang 2024 arXiv:2411.16085) + Friendly-SAM + DANN era-label adversarial debiasing + Mixout p=0.7 anchored to SSL checkpoint + SimMTM SSL pretrain + CLIP bars<->news contrastive head + walk-forward CV (NYSE bars_per_year=3276).
+3. **Calibrate it** — V1 focal loss gamma=3 + temperature scaling + RAPS + AgACI online conformal + Laplace last-layer (LLLA) for epistemic + drift detection stack.
 
 You start when doc 04 (features) hands off a feature DataFrame. You hand off to doc 06 (backtest) a calibrated checkpoint plus the conformal prediction layer.
 
@@ -33,15 +101,16 @@ checkpoints/v1_<hash>.pt   # output: calibrated checkpoint
 
 You're done when:
 
-1. ✅ Forward-pass tests pass (model returns 3-class logits with correct shape)
-2. ✅ Walk-forward training completes 4 folds with EMA tracking
-3. ✅ Loss is 3-class CE + label smoothing 0.05 (V4: dropped from 0.1 per calibration analysis). NEVER MSE on returns.
-4. ✅ Friendly-SAM ρ=0.05 + Schedule-Free AdamW + EMA decay=0.999 wired in
-5. ✅ Temperature scaling fit on val-B fold; classwise Adaptive ECE < 5% post-calibration
-6. ✅ APS Mondrian conformal prediction fit on val-C fold; coverage matches target ±2pts
-7. ✅ Drift detection stack (3 tiers — unlabeled / labeled-daily / labeled-weekly) operational
-8. ✅ All baselines (DLinear / TSMixer / TimeMixer / xLSTMTime / XGBoost / Forecast-to-Fill replica) trainable from a unified config
-9. ✅ Hand-off artifact: `checkpoints/v1_<hash>.pt` + meta JSON with all hyperparams + calibration objects (temperature, APS quantiles, drift baselines)
+1. ✅ Forward-pass tests pass (V1: model returns Head A 3-class logits AND Head B tanh position weight in [-1,+1], correct shapes)
+2. ✅ Walk-forward training completes 4 folds with EMA tracking (NYSE bars_per_year=3276)
+3. ✅ V1: Loss is focal loss gamma=3 (not vanilla CE / not LS=0.05) on Head A + differentiable -Sharpe on Head B + 0.05 * L_DANN (era-label) + L_aecf (entropy-gated curriculum mask). NEVER MSE on returns.
+4. ✅ V1: Cautious-Schedule-Free AdamW + Friendly-SAM ρ=0.05 + EMA decay=0.999 + Mixout p=0.7 anchored to SSL checkpoint (Stage 3 only). muP transfer-tune on 2-4M tiny model done before main run.
+5. ✅ Temperature scaling fit on val-B fold; expect T near 1.0 with focal loss; classwise Adaptive ECE < 5% post-calibration
+6. ✅ V1: T-scaling -> RAPS -> AgACI fit on val-C fold; per-class coverage matches target ±2pts; AgACI maintains coverage under arbitrary distribution shift via expert-advice over gamma grid
+7. ✅ V1: Laplace last-layer (LLLA) posterior fit on val fold; posterior variance feeds Kelly multiplier (replaces MC dropout T=20)
+8. ✅ Drift detection stack (3 tiers — unlabeled / labeled-daily / labeled-weekly) operational
+9. ✅ All baselines (DLinear / TSMixer / TimeMixer / xLSTMTime / VLSTM / XGBoost / Forecast-to-Fill replica / Gao 2014 half-hour-5 rule) trainable from a unified config; per-bucket eval (news-present / news-absent / both) reported on each
+10. ✅ Hand-off artifact: `checkpoints/v1_5_<hash>.pt` + meta JSON with all hyperparams + calibration objects (temperature, RAPS k_reg, AgACI gamma grid + expert weights, Laplace posterior, drift baselines, focal gamma, regime-vector schema)
 
 This doc is **3 parts** combined for one agent — read all of it before starting.
 
@@ -83,17 +152,28 @@ src/nanogld/model/
 ├── attention.py            # CausalSelfAttention with QK-Norm + per-head gating + value residuals
 ├── tda.py                  # [A/B candidate] Threshold Differential Attention
 ├── sype.py                 # [A/B candidate] Symplectic Position Embedding
-├── revin.py                # Reversible Instance Norm per channel-group (Kim ICLR 2022)
-├── news_fuser.py           # Perceiver-Resampler-lite + Flamingo-gated cross-attn
-├── tiny_trader.py          # Main nanoGLDV1 class wiring everything together
-├── baselines.py            # DLinear, TSMixer, TimeMixer, xLSTMTime stubs (full impls in doc 06)
+├── revin.py                # V1: Reversible Instance Norm per individual channel (Kim ICLR 2022; was per-group in V1)
+├── patch_embed.py          # V1 NEW: Linear(P=4, D) patch projection per channel; sinusoidal pos embed
+├── slstm_block.py          # V1 NEW: sLSTM block (xLSTMTime style, channel-independent), used at layers 11-12
+├── film_regime.py          # V1 NEW: FiLM affine modulation per layer, conditioned on 12-dim regime vector
+├── cfa_projector.py        # V1 NEW: CFA-style FiLM/orthogonal projector before Flamingo K/V (Lee arXiv:2603.22372)
+├── aecf_mask.py            # V1 NEW: AECF entropy-gated curriculum masking (Chlon arXiv:2505.15417)
+├── news_fuser.py           # Perceiver-Resampler-lite + Flamingo-gated cross-attn (V1: sparse layers [3,7,11] only; CFA filter; is_news_present binary embedding)
+├── multi_task_head.py      # V1 NEW: Head A (3-class focal) + Head B (tanh position weight, differentiable Sharpe loss)
+├── tiny_trader.py          # Main nanoGLDV1_5 class wiring everything together (10 transformer + 2 sLSTM)
+├── baselines.py            # DLinear, TSMixer, TimeMixer, xLSTMTime, VLSTM, Gao 2014 half-hour-5 rule, Forecast-to-Fill (full impls in doc 06)
 └── cli.py                  # `python -m nanogld.model summary` prints param count + arch table
 
 tests/
-├── test_forward_pass.py    # Synthetic input, verify (B, T_groups, D) → (B, 3) shape
-├── test_param_count.py     # Verify ~24-60M depending on config
+├── test_forward_pass.py    # Synthetic input, verify shapes for both Head A (B,3) and Head B (B,1)
+├── test_param_count.py     # Verify ~24-40M depending on config (V1 sweet spot 30-35M)
 ├── test_rope_correctness.py # Real-form RoPE matches reference impl on small example
-└── test_attention_no_causal.py # Verify is_causal=False (encoder-only)
+├── test_attention_no_causal.py # Verify is_causal=False (encoder-only)
+├── test_patches.py         # V1: 16 patches per channel from T_bars=64 with P=4, S=4
+├── test_slstm_block.py     # V1: sLSTM block forward + backward, channel-independent
+├── test_film_regime.py     # V1: FiLM conditioning produces same shape, gamma/beta apply between attn and FFN
+├── test_multi_task_head.py # V1: Head A logits in (B,3), Head B tanh in [-1,+1]
+└── test_aecf.py            # V1: per-batch p ~ U(0.0, 0.9) sampled correctly, entropy regularizer matches paper
 ```
 
 ### Files You DO NOT Touch
@@ -105,24 +185,38 @@ tests/
 ### Stable Interface You Publish
 
 ```python
-# Other docs (esp. doc 05) instantiate:
-model = nanoGLDV1(
-    numeric_dim: int = 36,
+# V1: Other docs (esp. training pipeline) instantiate:
+model = nanoGLDV1_5(
+    numeric_dim: int = 681,                    # V1: 681 channels (channel-independent)
     n_news_queries: int = 8,
     D: int = 384,
     num_heads: int = 6,
-    num_layers: int = 12,
+    num_transformer_layers: int = 10,          # V1: 10 transformer + 2 sLSTM = 12 total
+    num_slstm_layers: int = 2,                 # V1 NEW
     T_bars: int = 64,
+    patch_len: int = 4,                        # V1 NEW (P)
+    patch_stride: int = 4,                     # V1 NEW (S)
     n_classes: int = 3,
+    regime_dim: int = 12,                      # V1 NEW: VIX-tercile + RV-tercile + FOMC + year-bucket + HMM-P-high-vol
+    cross_attn_layers: tuple = (3, 7, 11),     # V1 NEW: sparse news cross-attn injection points
     dropout: float = 0.2,
-    drop_path: float = 0.15,
+    drop_path_max: float = 0.20,               # V1: linear schedule 0.0 -> 0.2 (was uniform 0.15)
 )
 
-# Forward signature
-def forward(self, channel_inputs: dict[str, torch.Tensor],
-            news_embeddings: torch.Tensor,    # (B, n_sources, 256) — V1: Qwen3 truncated
-            news_mask: torch.Tensor) -> torch.Tensor:  # (B, n_sources)
-    return logits  # (B, 3)
+# V1 Forward signature (multi-task)
+def forward(self,
+            channel_inputs: torch.Tensor,      # (B, T_bars, 681) — channel-independent patched internally
+            news_embeddings: torch.Tensor,     # (B, n_sources, 256) — V1: Qwen3 MRL-256
+            news_mask: torch.Tensor,           # (B, n_sources)
+            is_news_present: torch.Tensor,     # V1 NEW: (B,) int64 — explicit gate signal
+            regime_vec: torch.Tensor,          # V1 NEW: (B, 12) — VIX/RV/FOMC/year/HMM
+            ) -> dict[str, torch.Tensor]:
+    return {
+        "logits_3class": ...,                  # (B, 3)        Head A — focal loss target
+        "position_weight": ...,                # (B,) in [-1,+1]  Head B — differentiable Sharpe target
+        "regime_film_gates": ...,              # (B, num_layers, 2*D)  for diagnostic
+        "aecf_mask_p": ...,                    # (B,) sampled per-batch in [0.0, 0.9] for entropy reg
+    }
 ```
 
 If you change this signature, update STATUS.md + AskUserQuestion before shipping.
@@ -149,14 +243,17 @@ Especially:
 ### Critical V1 Architecture Decisions (DO NOT REVERT)
 
 1. **ENCODER-only** (drop causal mask). Bidirectional context strictly better for next-bar classification.
-2. **Channel-group tokens** (~14 group tokens via iTransformer-lite), NOT 64 per-bar tokens.
-3. **RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias** — Llama 3 / Qwen 3 consensus stack.
-4. **Per-head gating + value residuals** — IMU-1 recipe, ~50K extra params, big sample efficiency gain.
-5. **Partial RoPE** — apply RoPE to 10% of head_dim only.
-6. **head_dim = 64** (D=384, num_heads=6). NOT head_dim=32 (Llama 3 / Qwen consensus).
-7. **dropout = 0.2** (small data regime). NOT 0.1.
-8. **Param count math: ~24-60M depending on D and num_layers.** Don't over-engineer; verify with summary.
-9. **Loss is set in doc 05 (3-class CE).** Your model outputs raw logits — never apply softmax in forward.
+2. **V1: Channel-independent + patches** (Decision 2B). Patch length P=4, stride S=4, T_bars=64 -> 16 patches per channel. 681 channels share one transformer backbone. Replaces channel-group tokens. Reason: LPatchTST 2.31 vs iTransformer 0.38 Sharpe (Saly-Kaufmann arXiv:2603.01820). Channel mixing removed from main backbone; cross-feature signal recovered via VSN feature gate at input (doc 04) + grouped cross-channel mixer at FiLM regime injection points.
+3. **V1: Hybrid encoder** (Decision 1B). Layers 1-10 transformer blocks + layers 11-12 sLSTM blocks (xLSTMTime style, Alharthi & Mahmood arXiv:2407.10240). Reason: VLSTM 2.40 / xLSTM 1.79 / iTransformer 0.38 Sharpe.
+4. **V1: FiLM regime conditioning** every 2 layers ({2, 4, 6, 8, 10}). 12-dim regime vector (VIX-tercile 3 + RV-tercile 3 + FOMC binary 1 + year-bucket {2016-2019, 2020-2022, 2023-2024, 2025+} 4 + HMM P(high-vol) 1). FiLM math: `gamma_l, beta_l = Linear_l(regime_vec)`, applied as `x = gamma_l * x + beta_l` between attention and FFN. ~3840 trainable params total.
+5. **RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias** — Llama 3 / Qwen 3 consensus stack (transformer layers only; sLSTM layers use xLSTMTime spec).
+6. **Per-head gating + value residuals** — IMU-1 recipe, ~50K extra params, big sample efficiency gain.
+7. **Partial RoPE** — apply RoPE to 10% of head_dim only.
+8. **head_dim = 64** (D=384, num_heads=6). NOT head_dim=32 (Llama 3 / Qwen consensus).
+9. **dropout = 0.2** (small data regime). NOT 0.1.
+10. **V1: Param count math: ~24-40M.** FiLM blocks add ~3840 params (negligible). Sweet spot 30-35M. Don't over-engineer; verify with summary.
+11. **V1: Multi-task dual head** (Decision 3B). Head A 3-class direction `nn.Linear(D, 3, bias=False)` on mean-pooled tokens, focal loss gamma=3. Head B position weight `nn.Linear(D, 1, bias=False)` then `tanh` -> [-1, +1], differentiable Sharpe loss. Combined loss documented in training section. Model outputs raw logits + raw position weight — no softmax in forward.
+12. **V1: Sparse news cross-attn at layers [3, 7, 11]** of 12 (NOT every layer). Bottom 2 layers pure-bar. mPLUG-Owl3 Table 8 (arXiv:2408.04840). CFA-style FiLM/orthogonal projector before Flamingo K/V (Lee arXiv:2603.22372).
 
 ### A/B Candidates (post-baseline)
 
@@ -321,51 +418,138 @@ Trapezoidal SSM + complex state + MIMO. Half state size of Mamba-2. MPS-feasible
 ### Updated V1 Architecture Spec
 
 ```
-nanoGLD V1 (May 2026)
+nanoGLD V1 (May 2026 — supersedes V1)
 ═══════════════════════════════════════════════════════════════════
-Backbone:        ENCODER-only transformer
-Tokenization:    Channel-group (iTransformer-lite, ~14 tokens)
-Per-block:       RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias
+Backbone:        ENCODER-only HYBRID
+                 Layers 1-10: transformer blocks (kept)
+                 Layers 11-12: sLSTM blocks (V1 NEW, xLSTMTime style)
+                 Source: Saly-Kaufmann/Wood/Zohren 2026 arXiv:2603.01820
+                 (VLSTM 2.40 Sharpe, xLSTM 1.79 + best transaction-cost robustness)
+Tokenization:    V1: Channel-independent + patches (PatchTST style)
+                 Patch length P=4, stride S=4, T_bars=64 -> 16 patches per channel
+                 681 channels share one transformer backbone
+                 Patch projection: Linear(P, D) per patch, no bias
+                 Position embedding: sinusoidal added (RoPE on Q/K)
+                 Channel mixing removed from main backbone
+                 Source: LPatchTST 2.31 vs iTransformer 0.38 Sharpe
+Per-block:       RMSNorm + SwiGLU + RoPE + QK-Norm + no-bias (transformer layers)
+                 sLSTM block (xLSTMTime: BatchNorm + sLSTM + linear + InstanceNorm)
 ADDITIONS:
   • Per-head gating (IMU-1) — sigmoid scalar per head, learned
   • Value residuals (IMU-1) — Linear shortcut on V across blocks
   • Partial RoPE (apply to 10% of head_dim, leave rest unrotated)
+  • V1: FiLM regime conditioning every 2 layers ({2,4,6,8,10})
+    - 12-dim regime vector: VIX-tercile (3) + RV-tercile (3)
+      + FOMC-week (1) + year-bucket (4) + HMM-P-high-vol (1)
+    - gamma_l, beta_l = Linear_l(regime_vec); x = gamma_l*x + beta_l between attn and FFN
+    - ~3840 trainable params total
   • [A/B candidate] TDA in 1+ blocks — sink-free attention
   • [A/B candidate] SyPE replaces RoPE — symplectic position for cycles
 News fusion:     Perceiver-Resampler-lite + Flamingo-gated cross-attn
+                 V1: SPARSE injection at layers [3, 7, 11] only (NOT every layer)
+                 Source: mPLUG-Owl3 arXiv:2408.04840 Table 8
+                 V1: CFA-style FiLM/orthogonal projector before Flamingo K/V
+                 (Lee et al. arXiv:2603.22372; ref github.com/seunghan96/cfa)
+                 V1: AECF entropy-gated curriculum masking, p ~ U(0.0, 0.9)
+                 (Chlon et al. arXiv:2505.15417; ref github.com/leochlon/aecf)
+                 V1: is_news_present binary embedding `nn.Embedding(2, 8)` concat to news token
+                 (Ma et al. CVPR 2022 arXiv:2204.05454)
+                 V1: Variable per-batch modality dropout p ~ U(0.1, 0.9) at training
+                 (matches empirical 51% absence rate; CRITICAL FIX over V1's 15% constant)
+                 V1: NEWS_NOT_PRESENT learnable token KEPT (V2 candidate to swap to CMPT)
 News embedder:   Qwen/Qwen3-Embedding-4B 4-bit MLX (V1 — replaces Llama-3.1-8B)
-Loss:            3-class CE with class weights + label smoothing 0.1
+Output head:     V1 MULTI-TASK DUAL HEAD (Decision 3B)
+                 Head A (3-class direction): Linear(D, 3, bias=False) on mean-pooled tokens
+                   Loss: focal loss gamma=3 (Mukhoti 2020 arXiv:2002.09437)
+                 Head B (position weight, NEW): Linear(D, 1, bias=False) -> tanh -> [-1, +1]
+                   Loss: differentiable -Sharpe over mini-batch
+                   L_sharpe_net = -mean(w*r_next - cost*|w_t - w_{t-1}|) / (std(...) + eps)
+                 Source: Hwang & Zohren 2025 arXiv:2510.03129; Saly-Kaufmann 2026 (-Sharpe direct)
+Loss:            V1: focal loss gamma=3 (Head A) + differentiable -Sharpe (Head B)
+                 Combined: L = 0.5*L_focal + 0.5*L_sharpe_net + 0.05*L_DANN + L_aecf
                  NEVER MSE on returns (forecast-collapse rule, arXiv:2604.00064)
-Pretrain:        SSL masked-bar reconstruction → linear-probe → LLRD fine-tune
-Optimizer:       SAM ρ=0.05 wrapping AdamW
-                 [A/B candidate] NorMuon — IMU-1 paper, free at our scale
+                 V1: Vanilla CE / LS=0.05 REPLACED by focal (Xi 2024 arXiv:2402.04344
+                 shows T-scaling on CE harms APS adaptive coverage; focal fixes this)
+Pretrain:        V1: SimMTM SSL multi-mask reconstruction (was: plain MAE)
+                 Dong NeurIPS 2023 Spotlight arXiv:2302.00861; ref thuml/SimMTM
+                 K=3 masked views, similarity-weighted reconstruction
+                 V1: Mask ratio 0.40 (was 0.20; PatchTST default)
+                 V1: + CLIP bars<->news contrastive head
+                 InfoNCE on bar-rep vs news-rep within ±5min, tau=0.07
+                 -> linear-probe -> LLRD fine-tune with Mixout p=0.7 anchored to SSL ckpt
+Optimizer:       V1: Cautious-Schedule-Free AdamW (Liang 2024 arXiv:2411.16085)
+                 5-line patch: update *= (sign(update) == sign(grad)).float()
+                 Friendly-SAM ρ=0.05 wrap kept
+                 V1: muP transfer-tune on 2-4M tiny model FIRST ($5), then 30M
+                 Yang 2022 arXiv:2203.03466; ref microsoft/mup
+                 [A/B candidate] NorMuon — DROPPED for V1 (Muon at 30M too small per spec §11)
 EMA weights:     decay=0.999
-Regularization:  Dropout 0.2 + stochastic depth 0.15 + label smoothing 0.1
-Mandatory baselines (doc 06 — UPDATED):
+Regularization:  Dropout 0.2
+                 V1: Stochastic depth LINEAR schedule 0.0 -> 0.2 (was uniform 0.15; Touvron 2021)
+                 V1: Mixout p=0.7 anchored to SSL checkpoint (Stage 3 LLRD only)
+                 (Lee Cho Kang ICLR 2020 arXiv:1909.11299; ref bloodwass/mixout)
+                 V1: SimPSI + Wave-Mask augmentation (replaces naive jittering)
+                 Ryu AAAI 2024 arXiv:2312.05790; Arabi 2024 arXiv:2408.10951
+                 NAIVE JITTERING FORBIDDEN (Fons 2020 arXiv:2010.15111: net-negative on Sharpe)
+                 V1: FreeLB on news embeddings ONLY (not bars - PIT risk)
+                 K=2, epsilon=0.5 (Zhu et al. ICLR 2020 arXiv:1909.11764)
+                 V1: DANN gradient reversal on era-label = year-bucket
+                 Lambda 0->0.1 ramp (Feng 2019 arXiv:1810.09936; +3.11% on stock prediction)
+                 Manifold Mixup α=0.2 at hidden states (NEVER raw input)
+Calibration:     V1: focal-trained logits -> T-scaling -> RAPS -> AgACI
+                 RAPS (Angelopoulos 2020 arXiv:2009.14193): APS with size penalty
+                 AgACI (Zaffran 2022 ICML arXiv:2202.07282): online wrapper, expert-advice
+                 over gamma grid [0.001, 0.005, 0.01, 0.05, 0.1] via BOA aggregator
+                 ref ml-stat-Sustech/TorchCP, mzaffran/AdaptiveConformalPredictionsTimeSeries
+Epistemic:       V1: Laplace last-layer (LLLA) (Daxberger 2021 arXiv:2106.14806)
+                 (replaces MC dropout T=20; faster, better-calibrated, no 20x inference cost)
+                 ref pip install laplace-torch (aleximmer/Laplace)
+                 Posterior variance feeds Kelly multiplier
+                 Snapshot ensemble (last 3 EMA checkpoints) and EMA 0.999: KEPT
+                 Skip deep ensembles (5x compute kills budget)
+Mandatory baselines (doc 06 — V1 UPDATED):
+  • Buy and hold GLD net of costs
   • DLinear (~10K params)
   • TSMixer (~2M)
   • TimeMixer (~5M)
-  • xLSTMTime (~10M) — NEW per arXiv:2603.01820 finding
-  • XGBoost (committed config)
+  • xLSTMTime (~10M) — strong; ship if ties
+  • V1: VLSTM (~10M) — STRONG (2.40 Sharpe in Saly-Kaufmann); ship if ties
+  • XGBoost on the same 681 features (committed config)
+  • V1: Forecast-to-Fill replication on daily GLD bars (separate scoreboard, different problem)
+  • V1: Gao 2014 half-hour-5 single-feature timing rule (THE GLD-specific bar to beat)
+  • V1: 50/200 EMA crossover, Donchian breakout (kept honest)
 ```
 
 ### Loss Function Hard Rule (V1)
 
-> **NEVER use squared loss (MSE) on raw returns. Use 3-class cross-entropy or quantile loss.**
+> **NEVER use squared loss (MSE) on raw returns.**
+>
+> V1 stack: focal loss gamma=3 on Head A (3-class direction) + differentiable -Sharpe on Head B (position weight in [-1,+1]). Vanilla CE / label smoothing REPLACED.
 >
 > Per arXiv:2604.00064 (March 2026): on weak-conditional-structure data, Transformer expressivity increases variance without reducing bias. Squared-loss training is provably worse than linear baselines on majority of windows in noisy financial regimes.
+>
+> V1: focal loss gamma=3 (Mukhoti 2020 arXiv:2002.09437) reduces ECE 30-50% pre-T-scaling and lets T post-fit converge near 1.0. CRITICAL: Xi 2024 arXiv:2402.04344 shows T-scaling on CE logits HARMS APS adaptive coverage. Focal-trained logits avoid this conflict — required for clean T-scaling/RAPS/AgACI interaction.
+>
+> V1: differentiable -Sharpe direct training (Hwang & Zohren 2025 arXiv:2510.03129) targets end-to-end profit not classification accuracy. Saly-Kaufmann 2026 hits 2.40 Sharpe by training directly on -Sharpe.
 
-This rule propagates to doc 05 and 06. Already aligned (we use 3-class CE).
+This rule propagates to doc 05 (here), 06 (eval per-bucket + cost-stress + DSR), 07 (sizing).
 
 ### A/B Test Hierarchy (when implementation begins)
 
 Test in this order (cheapest→most invasive):
 
-1. **Adopt:** per-head gating + value residuals + partial RoPE (IMU-1, ~50K params, no breaks)
-2. **A/B:** TDA in one block (replace `CausalSelfAttention` in middle block, compare val Sharpe over 5 seeds)
-3. **A/B:** SyPE replaces RoPE (single hyperparameter swap, compare on val Sharpe)
-4. **Skip unless context grows:** hybrid linear+softmax attention (Qwen 3.5 pattern)
-5. **Skip unless 24M Transformer fails:** xLSTMTime as full architectural pivot
+1. **Adopt:** per-head gating + value residuals + partial RoPE (IMU-1, ~50K params, no breaks).
+2. **V1: ADOPTED (not A/B):** Hybrid 10-transformer + 2-sLSTM. xLSTMTime style. Skip the A/B; spec already commits.
+3. **V1: ADOPTED (not A/B):** Channel-independent + patches. PatchTST style. Skip the A/B; spec commits.
+4. **V1: ADOPTED (not A/B):** FiLM regime conditioning every 2 layers. ~3840 params, negligible cost.
+5. **V1: ADOPTED (not A/B):** Multi-task dual head (Head A focal + Head B Sharpe). Decision 3B.
+6. **V1: ADOPTED (not A/B):** Sparse news cross-attn at [3, 7, 11]. mPLUG-Owl3 evidence.
+7. **A/B:** TDA in one block (replace `CausalSelfAttention` in middle block, compare val Sharpe over 5 seeds).
+8. **A/B:** SyPE replaces RoPE (single hyperparameter swap, compare on val Sharpe).
+9. **V1: SKIP at our scale:** hybrid linear+softmax attention (Qwen 3.5 pattern). Reconsider only if context expands to T>=1024.
+10. **V1: SKIP — full xLSTMTime swap deferred to V2.** V1 keeps hybrid (10 transformer + 2 sLSTM).
+11. **V1: A/B post-baseline:** SimMTM vs T-JEPA SSL. Spec keeps SimMTM as primary.
+12. **V1: A/B post-baseline:** FreeLB ON vs OFF (some risk of distribution-shift overcorrection).
 
 Decision criterion at each gate: ≥0.1 Sharpe improvement OOS, seed-averaged across 5 seeds. Otherwise revert.
 
@@ -428,26 +612,44 @@ Targets:
 
 You write every line. No HuggingFace `Trainer`. No Unsloth. No `transformers.AutoModel`. Raw PyTorch on MPS. The point is to understand attention, residuals, layer norm, and decoder-only causal masking by typing them.
 
-## Specs
+## Specs (V1)
 
 ```
-Architecture:        ENCODER-only transformer (NO causal mask, bidirectional)
-                     Channel-group tokenization (iTransformer-lite, 6-10 group tokens)
-Parameters:          ~24-60M
-Hidden dim D:        384 (or 512 for ~60M variant)
-Num layers:          12 (deeper > wider per Cerebras/Levine empirical rule, Qwen 3 evidence)
-Num heads:           6  (head_dim = 64 — Llama 3 / Qwen consensus, NOT 32)
-MLP hidden:          round(8D/3, 64) = 1024 at D=384  (SwiGLU, NOT 4D GELU)
-Group tokens:        6-10 (price, macro, geo, news×3 post-Resampler, multi_scale×3)
-Time context:        T=64 30min bars summarized INSIDE each channel token's projection
-Output:              3 logits via mean-pool over group tokens → Linear(D, 3)
-Dropout:             0.2 (small-data regime); + stochastic depth p=0.15
+Architecture:        ENCODER-only HYBRID (NO causal mask, bidirectional)
+                     V1: 10 transformer blocks + 2 sLSTM blocks (xLSTMTime style)
+                     V1: Channel-independent + patches (PatchTST style)
+Parameters:          ~24-40M (V1 sweet spot 30-35M; FiLM blocks add ~3840 params)
+Hidden dim D:        384
+Num layers:          12 total (10 transformer, 2 sLSTM at top)
+Num heads:           6  (head_dim = 64 — Llama 3 / Qwen consensus, NOT 32) [transformer layers]
+MLP hidden:          round(8D/3, 64) = 1024 at D=384  (SwiGLU)
+Patches (V1):      P=4, S=4, T_bars=64 -> 16 patches per channel
+Channels (V1):     681 (channel-independent backbone; one transformer for all)
+Time context:        T=64 30min bars
+Output:              V1 MULTI-TASK
+                       Head A: Linear(D, 3, bias=False) on mean-pooled tokens, focal gamma=3
+                       Head B: Linear(D, 1, bias=False) -> tanh -> [-1, +1], -Sharpe loss
+Dropout:             0.2 (small-data regime); + V1 stochastic depth LINEAR 0.0 -> 0.2
 Norm:                RMSNorm (NOT LayerNorm), pre-norm, eps=1e-6, + QK-Norm
-Position encoding:   RoPE real-form (NOT view_as_complex on MPS) for time tokens
-                     Learned positional for channel-group identity
+Position encoding:   V1: Sinusoidal added to patches (per-channel) + RoPE real-form on Q/K
+                     RoPE partial 10% of head_dim, theta=10000.0
+                     QK-Norm BEFORE RoPE
 Activation:          SwiGLU (NOT GELU) — Shazeer 2020 / Llama / Qwen consensus
 Bias:                NO biases anywhere (Llama / Qwen / Mistral consensus)
-RevIN:               instance norm per channel-group on input (Kim ICLR 2022)
+RevIN:               V1: instance norm per INDIVIDUAL channel (681 instances; was per-group in V1)
+                     Source: Huang & Yang ESWA 2026 — per-feature RevIN drops RMSE 50% / MAPE 54%
+Series decomp:       V1: 24-bar moving-average kernel split into trend + seasonal pre-RevIN
+                     (xLSTMTime requirement; Autoformer-style)
+FiLM regime (V1):  Inserted at layers {2, 4, 6, 8, 10} between attn and FFN
+                     12-dim regime vec: VIX-tercile (3) + RV-tercile over 60 bars (3)
+                       + FOMC-week (1) + year-bucket (4) + HMM P(high-vol) (1)
+                     gamma_l, beta_l = Linear_l(regime_vec) per layer
+                     Total ~3840 trainable params
+News fusion (V1):  Sparse cross-attn at layers [3, 7, 11] only
+                     CFA-style FiLM/orthogonal projector before Flamingo K/V
+                     AECF entropy-gated curriculum mask, p ~ U(0.0, 0.9)
+                     is_news_present `nn.Embedding(2, 8)` concat to news token
+                     Variable per-batch dropout p ~ U(0.1, 0.9) at training
 ```
 
 Param count check:
@@ -464,7 +666,7 @@ Param count check:
 
 To hit 50M: try `D=512, num_layers=10, mlp_hidden=2048`. Calc: per-block ~3.1M × 10 = 31M, plus input/projections, total ~40-45M. Matches target.
 
-To hit 100M: try `D=768, num_layers=12`. ~85-100M. Will fit on Mac mini 16GB but tight during training.
+To hit 100M: try `D=768, num_layers=12`. ~85-100M. Will fit on remote host 16GB but tight during training.
 
 **Recommendation:** start at D=384 / 8 layers / ~24M total. Train it, see if val loss converges. Scale up only if val loss hasn't converged AND OOS Sharpe is improving with capacity (it usually doesn't on financial data — see prior warning).
 
@@ -628,7 +830,7 @@ def test_forward_pass():
     print(f"Param count: {count_params(model):,}")  # ~24M with default config
 ```
 
-## Memory Estimate (Mac mini 16GB)
+## Memory Estimate (remote host 16GB)
 
 For batch B=32, T=64, D=384:
 
@@ -639,7 +841,7 @@ For batch B=32, T=64, D=384:
 - Gradients: 1× params = 96MB FP32
 - News raw embeddings batch: B × T × 3 × 4096 × 4 = 32 × 64 × 12288 × 4 = 100MB
 
-Total: ~600MB-1GB peak during training. Fits trivially on 16GB Mac mini.
+Total: ~600MB-1GB peak during training. Fits trivially on 16GB remote host.
 
 If we scale to D=768 / 12 layers / ~100M params: ~3-5GB peak. Still fits but no margin for OS.
 
@@ -813,7 +1015,21 @@ class RevIN(nn.Module):
 
 
 class NewsFuser(nn.Module):
-    """Perceiver-Resampler-lite + Flamingo-gated cross-attn (Agent 3 recommendation)."""
+    """Perceiver-Resampler-lite + Flamingo-gated cross-attn (Agent 3 recommendation).
+
+    V1 CHANGES (apply at integration time):
+    - Insert ONLY at layers [3, 7, 11] of 12 (sparse, mPLUG-Owl3 arXiv:2408.04840 Table 8).
+    - Add CFA-style FiLM/orthogonal projector before K/V projection (Lee arXiv:2603.22372):
+        text_K = FiLM(gamma_bar, beta_bar) * text_proj(text)
+        text_K = text_K - <text_K, bar_pool> * bar_pool / ||bar_pool||^2
+        Bottleneck d_text=256 -> 64 -> d_model=384 (~50-100k extra params).
+    - Replace 15% constant modality dropout with AECF (Chlon arXiv:2505.15417):
+        Per-batch p ~ U(0.0, 0.9) (curriculum 0 -> 0.9, deployment matches 51% empirical absence).
+        Entropy regularizer L_aecf = -lambda(x) * sum_m p_m log p_m, lambda(x) = MC-dropout entropy estimate.
+    - Concat is_news_present binary embedding `nn.Embedding(2, 8)` to news token (Ma CVPR 2022).
+    - Keep NEWS_NOT_PRESENT learnable token (V2 candidate to swap to CMPT).
+    - Variable per-batch modality dropout p ~ U(0.1, 0.9) at training (CRITICAL FIX over V1's 15%).
+    """
     def __init__(self, d_news=4096, d_model=384, n_sources=3, n_queries=8, n_heads=4):
         super().__init__()
         self.no_news = nn.Parameter(torch.randn(n_sources, d_news) * 0.02)
@@ -845,7 +1061,19 @@ class NewsFuser(nn.Module):
 
 
 class nanoGLDV1(nn.Module):
-    """Encoder-only, channel-group tokenization, full modern stack."""
+    """Encoder-only, channel-group tokenization, full modern stack.
+
+    V1 NOTES (refactor on implementation):
+    - Replace channel-group tokens with channel-independent + patches (P=4, S=4).
+      681 channels share one transformer backbone. Patch projection Linear(P, D), no bias.
+      Sinusoidal pos embedding added; RoPE on Q/K stays.
+    - Replace last 2 transformer blocks (layers 11-12) with sLSTM blocks (xLSTMTime).
+    - Insert FiLM regime conditioning at layers {2, 4, 6, 8, 10} between attn and FFN.
+      12-dim regime vec: VIX-tercile + RV-tercile + FOMC + year-bucket + HMM-P-high-vol.
+    - Sparse news cross-attn only at layers [3, 7, 11], not every layer.
+    - Replace single 3-class head with multi-task dual head (Head A focal + Head B Sharpe).
+    - Stochastic depth LINEAR schedule 0.0 -> 0.2 across depth (was uniform 0.15).
+    """
     def __init__(
         self,
         numeric_dim: int = 36,             # price + risk + macro + geo
@@ -928,11 +1156,26 @@ Param count check at D=384, 12 layers, 6 heads:
 - NewsFuser: ~4.5M
 - **Total: ~40-50M params.** Bigger than earlier 24M target because we kept Channel projections fat. Tune by reducing T-collapse or D.
 
+V1 param-count delta (vs V1 above):
+- Channel-independent + patch projection: Linear(P=4, D=384) shared across 681 channels = 1536 params shared (effectively free vs V1's per-group tokens).
+- 2 sLSTM blocks (layers 11-12) replace 2 transformer blocks: roughly comparable param budget; sLSTM adds gates but loses 4xD^2 attn matrices, net ~1.5-2M per layer (xLSTMTime sLSTM block size).
+- FiLM regime: 5 layers x (2*D=768 params) = 3840 params total. Negligible.
+- Multi-task Head B: Linear(D, 1, bias=False) = 384 params. Negligible.
+- is_news_present `nn.Embedding(2, 8)`: 16 params. Negligible.
+- CFA projector (text_dim=256 -> bottleneck=64 -> D=384): ~50-100k params.
+- DANN domain classifier discriminator: ~50K params.
+- AECF entropy regularizer params: ~3K.
+- **V1 net: still 24-40M sweet spot, with above additions.** Verify with `python -m nanogld.model summary`.
+
 ## Open Questions / TODOs
 
-- [ ] Decide final size (24M / 50M / 100M) after first training run convergence check
+- [ ] Decide final size (24M / 30M / 40M) after first training run convergence check
+- [ ] V1: muP transfer-tune on 2-4M tiny model first ($5 budget); transfer LR / beta_2 / init scale / FSAM rho to 30M one-shot
 - [ ] Test MPS bfloat16 weights vs FP32 — does training still converge?
 - [ ] Profile attention compute — does flash-attention help on MPS? (Probably not yet supported)
+- [ ] V1: A/B SimMTM vs T-JEPA after baseline lands (paper says comparable; SimMTM primary)
+- [ ] V1: A/B FreeLB ON vs OFF after baseline lands (some risk of distribution-shift overcorrection)
+- [ ] V1: Should regime vector include news-density bucket too? Currently no. Defer to post-baseline.
 
 ---
 
@@ -1015,7 +1258,7 @@ model.load_state_dict(checkpoint['ema_state_dict'])
 3. ✅ Val accuracy beats class-prior baseline (44% if always-flat) on at least 3/4 folds
 4. ✅ Walk-forward unit test passes (no overlap, embargo respected)
 5. ✅ Checkpoints saved with EMA state, metadata includes snapshot hash + fold + seed
-6. ✅ Total training time < 12 hrs on M4 Mac mini for 4 folds × 1 seed
+6. ✅ Total training time < 12 hrs on M4 remote host for 4 folds × 1 seed
 7. ✅ wandb workspace public, runs named `fold{N}_seed{N}` for X-thread material
 
 ### Spawn Nia Agents When You Need To
@@ -1029,23 +1272,41 @@ Especially:
 
 ### V1 Critical Decisions (DO NOT REVERT)
 
-1. **Schedule-Free AdamW REPLACES "AdamW + cosine + warmup"** — Defazio ICLR 2025
-2. **Friendly-SAM REPLACES vanilla SAM** — filters gradient noise, drop-in
-3. **3-stage training: SSL pretrain → linear-probe → LLRD fine-tune**
-4. **EMA decay=0.999** — deployed model is EMA, NOT raw
-5. **dropout 0.2 + stoch depth 0.15 + label smoothing 0.1** — small-data regime
-6. **NEVER MSE on returns** (forecast-collapse rule arXiv:2604.00064) — 3-class CE only
-7. **Walk-forward = 4 folds at 5y** (NOT 6-8 — math: floor((60-48)/3) = 4)
-8. **PyTorch 2.11.0 pinned, FP32, num_workers=0**
+1. **V1: Cautious-Schedule-Free AdamW** — 5-line patch on top of Schedule-Free AdamW (Liang 2024 arXiv:2411.16085). `update *= (sign(update) == sign(grad)).float()`. 1.47x sample efficiency at zero hparam cost. Replaces vanilla Schedule-Free AdamW.
+2. **Friendly-SAM REPLACES vanilla SAM** — filters gradient noise, drop-in. ρ=0.05 kept.
+3. **V1: 3-stage training kept, with new losses per stage:**
+   - Stage 1 SSL: SimMTM + CLIP-style bars<->news contrastive head + DANN era-label + AECF.
+     L_pretrain = L_simmtm + 0.5*L_clip + 0.05*L_DANN + L_aecf
+   - Stage 2 linear probe: focal loss gamma=3 only on Head A, encoder frozen. L = L_focal_3class.
+   - Stage 3 LLRD fine-tune: multi-task. L = 0.5*L_focal + 0.5*L_sharpe_net + 0.05*L_DANN + L_aecf.
+   - V1: Stage 3 anchored with Mixout p=0.7 to SSL checkpoint (Lee Cho Kang ICLR 2020 arXiv:1909.11299).
+4. **EMA decay=0.999** — deployed model is EMA, NOT raw. KEPT.
+5. **V1: dropout 0.2 + stochastic depth LINEAR 0.0->0.2 (was uniform 0.15) + focal loss gamma=3 (was LS=0.05)**.
+6. **NEVER MSE on returns** (forecast-collapse rule arXiv:2604.00064). V1: focal gamma=3 + diff-Sharpe.
+7. **Walk-forward = 4 folds.** V1 invariant: NYSE bars_per_year=3276 (NEVER 17500). Train 3y + val 6mo + test 6mo, step 3mo, 1-week embargo.
+8. **PyTorch 2.11.0 pinned, FP32, num_workers=0**. V1: H100 has bf16 but stay FP32 deterministic for V1.
+9. **V1: muP transfer-tune** — spend $5 on a 2-4M tiny model muP-parameterized sweep (LR, beta_2, init scale, FSAM rho). Transfer to 30M one-shot. Yang 2022 arXiv:2203.03466. Saves $30-50 of LR-guess risk on the $60-150 main run.
+10. **V1: Mask ratio 0.40** in SSL (was 0.20; PatchTST default). V1's 0.20 was image-MAE inheritance, too easy.
+11. **V1: SimMTM** replaces plain MAE — K=3 masked views, similarity-weighted reconstruction. Dong NeurIPS 2023 Spotlight arXiv:2302.00861. Beats MAE/TS2Vec/TF-C on UEA classification linear-probe.
+12. **V1: CLIP-style bars<->news contrastive head** in SSL. InfoNCE on bar-rep vs news-rep within ±5 min, tau=0.07. Uses 40K Qwen3 embeddings as positive anchors.
+13. **V1: SimPSI + Wave-Mask augmentation** REPLACES naive jittering. Ryu AAAI 2024 arXiv:2312.05790, Arabi 2024 arXiv:2408.10951. NAIVE JITTERING FORBIDDEN (Fons 2020 net-negative on Sharpe).
+14. **V1: FreeLB on news embeddings ONLY** (not bars - PIT risk). K=2, epsilon=0.5. Zhu et al. ICLR 2020 arXiv:1909.11764.
+15. **V1: DANN gradient reversal** on era-label = year-bucket. Lambda 0->0.1 ramp. Feng 2019 arXiv:1810.09936. ~50K extra params.
+16. **V1: Variable per-batch modality dropout p ~ U(0.1, 0.9)** at training. NOT 15% constant. Training distribution must bracket inference distribution (51% empirical absence).
 
-### A/B Candidates (after baseline ships)
+### A/B Candidates (after V1 baseline ships)
 
 These are alternative components you can test if baseline plateaus:
-- **Muon optimizer** for 2D weights (DeepSeek V4 / Kimi-2 production)
-- **MTS-JEPA** replaces MAE pretrain (Phase 2)
-- **Cross-asset transfer** SPY → GLD via LLRD (bonus experiment)
+- **V1: A/B SimMTM vs T-JEPA** (paper says comparable, SimMTM primary).
+- **V1: A/B FreeLB ON vs OFF** (some risk of distribution-shift overcorrection).
+- **Cross-asset transfer** SPY → GLD via LLRD (bonus experiment).
+- **V2 (post-V1):** CMPT (Cross-Modal Proxy Tokens), bars-only distillation, full xLSTMTime swap, end-to-end Sharpe-only head, ACI online conformal, deep ensembles, TTT, online learning.
 
-A/B gate: ≥0.1 Sharpe improvement OOS (val), seed-averaged 5 seeds.
+V1 explicit NOT (deferred / rejected per spec §11):
+- MoE / KAN / Mamba / TTT / online learning / Muon / Sophia / deep ensembles.
+- 75K samples too small for sparse routing. KASPER Sharpe 12.02 fraud-tier. Mamba 0.64 Sharpe on financial benchmark. Muon speedup inversely proportional to scale; 30M too small. Sophia 2x claim collapses under fair tuning (arXiv:2509.02046). Deep ensembles 5x compute kills budget.
+
+A/B gate: ≥0.2 Sharpe improvement OOS (val), seed-averaged 5 seeds.
 
 ### Hand-off Protocol
 
@@ -1115,29 +1376,36 @@ After earlier draft went live, ran another deep-research pass on training/optimi
 
 ### Changes (V1)
 
-#### 1. Schedule-Free AdamW REPLACES "AdamW + cosine + warmup"
+#### 1. V1: Cautious-Schedule-Free AdamW REPLACES "AdamW + cosine + warmup"
 
 **Defazio et al., ICLR 2025 outstanding paper, arXiv:2405.15682.** Won MLCommons AlgoPerf 2024 across all workloads. Removes the LR schedule entirely via momentum-based iterate averaging. **Anytime-optimal** — checkpoint at any step is the best the model can be at that point.
+
+V1: Apply the **Cautious update mask** patch (Liang 2024 arXiv:2411.16085) on top of Schedule-Free AdamW. 5-line patch. Mask updates where momentum disagrees with gradient. 1.47x sample efficiency at zero hparam cost. Drop-in compatible with SF-AdamW. Reference: `kyleliang919/C-Optim`.
 
 ```python
 # Old draft:
 # optimizer = torch.optim.AdamW(...)
 # scheduler = cosine_lr_schedule(optimizer, warmup_steps, total_steps)
 
-# New (V1):
+# V1 — Schedule-Free:
 import schedulefree
 optimizer = schedulefree.AdamWScheduleFree(
     model.parameters(),
-    lr=1e-4,
+    lr=1e-4,                # V1: replace with muP-transferred LR (tuned on 2-4M tiny model)
     betas=(0.9, 0.95),
     weight_decay=0.1,
     warmup_steps=300,
 )
 
+# V1 — add Cautious update mask (5-line patch inside SF-AdamW step):
+# update = update * (sign(update) == sign(grad)).float()
+# Mask updates where momentum disagrees with gradient.
+# Reference: kyleliang919/C-Optim, arXiv:2411.16085
+
 # In training loop:
 optimizer.train()      # call at start of train phase
 loss.backward()
-optimizer.step()
+optimizer.step()       # V1: cautious mask applied inside
 
 # When validating, call optimizer's eval-mode method (switches to averaged weights)
 # (See schedulefree docs — there is a corresponding state-switch call before validation)
@@ -1155,23 +1423,44 @@ Repo: https://github.com/facebookresearch/schedule_free
 
 Why for us: 16K samples = high gradient noise. Vanilla SAM amplifies noise into perturbation step. F-SAM filters it.
 
-#### 3. Muon optimizer for 2D weight matrices (A/B candidate)
+#### 3. Muon optimizer for 2D weight matrices — V1: SKIP
 
 **Keller Jordan blog 2024 + arXiv:2502.16982 (Moonshot) + arXiv:2603.17970 MUD (March 2026).** Newton-Schulz orthogonalization on 2D gradients. AdamW handles embeddings/heads/norms. **DeepSeek V4 (April 2026) + Kimi-2 ship Muon in production.**
 
-For 24-60M scale: gains modest (most documented wins at 300M+), but Newton-Schulz is matmul-only → MPS-compatible, no CUDA kernel needed. ~52% of AdamW's FLOPs to reach same loss at 1.5B GPT-2 XL.
-
-A/B test: Muon vs Schedule-Free AdamW. If Muon wins by ≥0.5pp val accuracy, adopt.
+V1 SKIP: Muon speedup inversely proportional to scale. 30M is too small. V1 goes with Cautious-Schedule-Free AdamW + muP transfer-tune. (Spec §11.)
 
 Repo: https://github.com/KellerJordan/Muon
 
-#### 4. MTS-JEPA SSL pretrain (Phase 2 candidate)
+#### 4. V1: SimMTM SSL pretrain REPLACES plain MAE
 
-**arXiv:2602.04643 (Feb 2026), Multi-variate Time Series JEPA.** Predict masked target EMBEDDINGS (not raw values) from context embeddings. Avoids MAE pixel-level reconstruction wastage AND contrastive collapse problem.
+V1: plain MAE on masked bars.
 
-For us: Earlier plan used MAE (reconstruct masked OHLCV). JEPA produces smoother representations that transfer better to small-data classification. Larger code change (~1-2 days), highest-ceiling change in the list.
+V1: **SimMTM (Dong NeurIPS 2023 Spotlight, arXiv:2302.00861).** K=3 masked views per sample, encode each, reconstruct via similarity-weighted blending of neighbor representations. Beats MAE/TS2Vec/TF-C on UEA classification linear-probe.
 
-**Plan:** Pilot MTS-JEPA after Schedule-Free + F-SAM are stable. Compare val Sharpe vs MAE pretrain.
+Loss: `L_recon + lambda_sim * L_similarity` where lambda_sim=0.5.
+
+Reference: `thuml/SimMTM`. ~30 LOC over current MAE.
+
+Pretrain config (V1):
+- Patch length 4 (consistent with main backbone). Decoder depth 2 (light decoder = better encoder, MAE finding).
+- Mask ratio 0.40 (was V1's 0.20; PatchTST default). V1's 0.20 was image-MAE inheritance, too easy.
+- 15-20 epochs pretrain. ~25-30% of total compute budget on SSL, 70-75% on stages 2+3.
+
+#### 4b. V1: CLIP-style bars<->news contrastive head (NEW SSL objective)
+
+NEW. Use the 40K Qwen3-256-d news embeddings as anchors. During SSL, add a contrastive InfoNCE loss between bar-rep (CLS) and news-rep for bars within ±5 min of a news event.
+
+`L_clip = -log(exp(sim(z_bar, z_news+) / tau) / sum_neg exp(sim(z_bar, z_neg) / tau))`.
+
+Tau=0.07. ~5% extra pretrain compute. Gives encoder text-semantic priors for free.
+
+#### 4c. V1: Combined SSL loss
+
+Stage 1 SSL: `L_pretrain = L_simmtm + 0.5 * L_clip + 0.05 * L_DANN + L_aecf`.
+
+#### 4d. MTS-JEPA — V1: deferred A/B
+
+**arXiv:2602.04643 (Feb 2026), Multi-variate Time Series JEPA.** Predict masked target EMBEDDINGS (not raw values) from context embeddings. V1 keeps SimMTM as primary SSL; A/B SimMTM vs T-JEPA after baseline lands (paper says comparable).
 
 #### 5. Cross-Asset Transfer Learning (cheap experiment)
 
@@ -1197,22 +1486,57 @@ Add as 3 cheap features in `geo_features` table (arXiv:2603.11408 found these do
 ### Training Stack Summary (V1)
 
 ```
-Optimizer:      Schedule-Free AdamW (β=0.9, β2=0.95, wd=0.1, lr=1e-4, warmup_steps=300)
-                [A/B against Muon-for-2D + AdamW-for-rest]
-LR schedule:    NONE (Schedule-Free handles this) OR WSD if SF underperforms
-Sharpness:      Friendly-SAM ρ=0.05 (replace vanilla SAM)
-EMA:            decay=0.999
-Regularization: dropout 0.2 + stoch depth 0.15 + label smoothing 0.1
-Augmentation:   jittering σ=0.02 + magnitude warping
-Manifold Mixup: at hidden states α=0.2
-Modality dropout: 15% on news embeddings
-SSL pretrain:   MAE on masked bars
-                [A/B with MTS-JEPA — Phase 2, higher ceiling]
-Linear-probe → LLRD fine-tune:
+Optimizer:      V1: Cautious-Schedule-Free AdamW (β=0.9, β2=0.95, wd=0.1, warmup_steps=300)
+                LR from muP transfer-tune on 2-4M tiny model ($5 budget upfront)
+                Cautious patch: update *= (sign(update) == sign(grad)).float()
+                (Liang 2024 arXiv:2411.16085, ref kyleliang919/C-Optim)
+                V1 SKIP: Muon (too small scale per spec §11)
+LR schedule:    NONE (Schedule-Free handles this)
+Sharpness:      Friendly-SAM ρ=0.05 (replace vanilla SAM, KEPT)
+EMA:            decay=0.999 (KEPT)
+Regularization: V1: dropout 0.2 + stochastic depth LINEAR 0.0->0.2 + focal loss gamma=3
+                V1: + Mixout p=0.7 anchored to SSL ckpt (Stage 3 LLRD only)
+                  Lee Cho Kang ICLR 2020 arXiv:1909.11299; ref bloodwass/mixout
+                V1: + DANN gradient reversal on era-label = year-bucket
+                  Lambda 0->0.1 ramp; Feng 2019 arXiv:1810.09936
+                  +3.11% on stock prediction; ~50K extra params for discriminator
+Augmentation:   V1: SimPSI + Wave-Mask (NAIVE JITTERING FORBIDDEN per Fons 2020)
+                  Ryu AAAI 2024 arXiv:2312.05790; Arabi 2024 arXiv:2408.10951
+                  SimPSI reweights aug strength so dominant freq components preserved
+                  Wave-Mask masks DWT coefficients
+                  Both PIT-safe (no time shift)
+Adversarial:    V1: FreeLB on news embeddings ONLY (not bars - PIT risk)
+                  K=2, epsilon=0.5; Zhu et al. ICLR 2020 arXiv:1909.11764
+                  ~30% wall-clock overhead, addresses regime-shift defense
+                  ref zhuchen03/FreeLB
+Manifold Mixup: at hidden states α=0.2 (KEPT, NEVER raw input)
+Modality dropout: V1: VARIABLE per-batch p ~ U(0.1, 0.9) at training (was 15% constant)
+                  CRITICAL FIX: matches empirical 51% absence rate
+                  V1: + AECF entropy-gated curriculum mask in news fusion
+                  Chlon arXiv:2505.15417
+SSL pretrain:   V1: SimMTM (was plain MAE)
+                  K=3 masked views, similarity-weighted reconstruction
+                  Mask ratio 0.40 (was 0.20)
+                  Dong NeurIPS 2023 arXiv:2302.00861; ref thuml/SimMTM
+                V1: + CLIP-style bars<->news contrastive head
+                  InfoNCE on bar-rep vs news-rep within ±5min, tau=0.07
+                  Uses 40K Qwen3 embeddings as positive anchors
+                  ~5% extra pretrain compute
+                Pretrain config: P=4, decoder depth=2, 15-20 epochs, ~25-30% budget
+Loss per stage:
+  Stage 1 SSL:   L = L_simmtm + 0.5*L_clip + 0.05*L_DANN + L_aecf
+  Stage 2 probe: L = L_focal_3class only (encoder frozen, head only)
+  Stage 3 LLRD:  L = 0.5*L_focal + 0.5*L_sharpe_net + 0.05*L_DANN + L_aecf
+  V1: Mixout p=0.7 anchored to SSL checkpoint at Stage 3
+  Layer-wise LR decay 0.85 at Stage 3
+  V1: focal loss gamma=3 (NOT vanilla CE, NOT LS=0.05) per spec invariant 22
+NEVER MSE on returns (forecast-collapse rule arXiv:2604.00064)
+Linear-probe → LLRD fine-tune (KEPT, with V1 stage losses above)
 Cross-asset transfer: SPY→GLD as bonus experiment after baseline
-Conformal calibration: split-CP on val fold for sizing (deploy-side, see doc 07)
-Loss:           3-class CE + label smoothing 0.1 (NEVER MSE on returns — forecast-collapse rule from doc 05)
-Mixed precision: FP32 weights (; FP8 H100-only, unstable for small models)
+Calibration:    V1: T-scaling -> RAPS -> AgACI (was T-scaling -> APS)
+                V1: Laplace last-layer (LLLA) for epistemic (was MC dropout T=20)
+                Snapshot ensemble (last 3 EMA checkpoints) KEPT
+Mixed precision: FP32 weights (V1: H100 has bf16 but stay FP32 deterministic for V1)
 ```
 
 ### What we skip (saved investigation)
@@ -1228,28 +1552,52 @@ For 16K labeled samples, regularization beats capacity. Stack is non-negotiable.
 
 ### Stage 1 — SSL Pretraining (MUST, single biggest win)
 
-Masked autoencoder on same 5y unlabeled bars BEFORE classification fine-tune. Documented 25-50% gain on small-data classification (Financial Fine-tuning paper, SSL4TS literature).
+V1: SimMTM-style multi-mask reconstruction on same 5y unlabeled bars BEFORE classification fine-tune. Documented 25-50% gain on small-data classification (Financial Fine-tuning paper, SSL4TS literature). V1: SimMTM beats plain MAE on UEA classification linear-probe (Dong NeurIPS 2023 Spotlight).
 
 ```python
-# Pretrain head: reconstruct masked bars
-class MAEHead(nn.Module):
-    def __init__(self, D, target_dim):
+# V1 — SimMTM head: K=3 masked views, similarity-weighted reconstruction
+class SimMTMHead(nn.Module):
+    """V1: SimMTM (Dong NeurIPS 2023, arXiv:2302.00861).
+    K=3 masked views per sample, encode each, reconstruct via similarity-weighted blending.
+    Reference: thuml/SimMTM. ~30 LOC over plain MAE.
+    """
+    def __init__(self, D, target_dim, K=3, lambda_sim=0.5):
         super().__init__()
         self.proj = nn.Linear(D, target_dim, bias=False)
-    def forward(self, hidden):
-        return self.proj(hidden)
+        self.K = K
+        self.lambda_sim = lambda_sim
+    def forward(self, hidden_views):
+        # hidden_views: list of K encoded views; produce similarity-weighted reconstructions
+        ...
 
-def mask_bars(x, mask_ratio=0.20):
-    """Mask 20% of input bars for reconstruction objective."""
+def mask_bars_simmtm(x, mask_ratio=0.40, K=3):
+    """V1: Mask 40% of input bars (was 20%; PatchTST default), generate K views."""
     B, T, F = x.shape
     n_mask = int(T * mask_ratio)
-    mask_idx = torch.randperm(T)[:n_mask]
-    x_masked = x.clone()
-    x_masked[:, mask_idx, :] = 0  # or learned [MASK] token
-    return x_masked, mask_idx, x[:, mask_idx, :]  # target = original at mask positions
+    views = []
+    for _ in range(K):
+        mask_idx = torch.randperm(T)[:n_mask]
+        x_masked = x.clone()
+        x_masked[:, mask_idx, :] = 0  # or learned [MASK] token
+        views.append((x_masked, mask_idx, x[:, mask_idx, :]))
+    return views
 ```
 
-Train MAE for ~10 epochs. Save encoder weights. Don't train classification head yet.
+Train SimMTM for ~15-20 epochs (~25-30% of total compute budget). Save encoder weights. Don't train classification head yet.
+
+V1: Also wire **CLIP-style bars<->news contrastive head** during SSL. InfoNCE on bar-rep (CLS) vs news-rep for bars within ±5 min of a news event. Tau=0.07. Uses 40K Qwen3 embeddings as positive anchors.
+
+```python
+# V1 — CLIP-style contrastive head
+def clip_loss_bars_news(z_bar, z_news_pos, z_news_negs, tau=0.07):
+    """InfoNCE: pull bar-rep toward news-rep within +/-5min, push away from negatives."""
+    sim_pos = (z_bar * z_news_pos).sum(-1) / tau
+    sim_negs = (z_bar.unsqueeze(1) * z_news_negs).sum(-1) / tau   # (B, N_neg)
+    return -sim_pos + torch.logsumexp(torch.cat([sim_pos.unsqueeze(1), sim_negs], dim=1), dim=1)
+
+# Combined SSL loss:
+# L_pretrain = L_simmtm + 0.5 * L_clip + 0.05 * L_DANN + L_aecf
+```
 
 ### Stage 2 — Linear-probe (5-10 epochs)
 
@@ -1261,9 +1609,13 @@ for p in model.encoder.parameters():
 # train head only, fast convergence
 ```
 
-### Stage 3 — Full fine-tune with LLRD (layer-wise LR decay 0.85)
+### Stage 3 — Full fine-tune with LLRD (layer-wise LR decay 0.85) + V1: Mixout p=0.7
 
 Unfreeze encoder. Lower layers get smaller LR (preserve general features), upper layers + head get full LR.
+
+V1: Add **Mixout p=0.7** anchored to SSL checkpoint. Bernoulli-mix between current and SSL-anchor weights. Acts as L2-toward-pretrained constraint with adaptive coefficient. Lee, Cho, Kang ICLR 2020 arXiv:1909.11299. Reference impl: `bloodwass/mixout`.
+
+V1: Stage 3 loss is **multi-task**: `L = 0.5 * L_focal + 0.5 * L_sharpe_net + 0.05 * L_DANN + L_aecf`.
 
 ```python
 def llrd_param_groups(model, base_lr=1e-4, decay=0.85):
@@ -1272,33 +1624,72 @@ def llrd_param_groups(model, base_lr=1e-4, decay=0.85):
     for i, block in enumerate(model.blocks):
         lr = base_lr * (decay ** (n_layers - i - 1))
         groups.append({'params': block.parameters(), 'lr': lr})
-    groups.append({'params': model.head.parameters(), 'lr': base_lr})
+    # V1: both heads get full LR (Head A 3-class focal + Head B tanh position)
+    groups.append({'params': model.head_a.parameters(), 'lr': base_lr})
+    groups.append({'params': model.head_b.parameters(), 'lr': base_lr})
     return groups
+
+
+# V1 — Mixout p=0.7 anchor patch
+class Mixout:
+    """V1: Bernoulli-mix current and SSL-anchor weights. p=0.7 default.
+    Acts as L2-toward-pretrained at adaptive coefficient.
+    Lee Cho Kang ICLR 2020 arXiv:1909.11299; ref bloodwass/mixout.
+    """
+    def __init__(self, anchor_state_dict, p=0.7):
+        self.anchor = anchor_state_dict
+        self.p = p
+    def apply(self, model):
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if name in self.anchor:
+                    mask = torch.bernoulli(torch.full_like(p, self.p)).bool()
+                    p.copy_(torch.where(mask, self.anchor[name].to(p.device), p))
 ```
 
-### SAM Optimizer (MUST — 2× compute, big gain)
+### SAM Optimizer (MUST — 2× compute, big gain). V1: Friendly-SAM ρ=0.05.
 
 SAMformer (ICML 2024) showed SAM is the unlock for transformers on time series — **14.33% MSE improvement over TSMixer**, 4× fewer parameters.
 
+V1: Use **Friendly-SAM** (arXiv:2403.12350) instead of vanilla SAM, ρ=0.05. Filters gradient noise; better generalization at same ρ. Wraps the V1 Cautious-Schedule-Free AdamW base optimizer.
+
 ```python
-# pip install sam-pytorch  OR git submodule davda54/sam
-from sam import SAM
+# V1 — Friendly-SAM wrapping Cautious-Schedule-Free AdamW
+import schedulefree
+from friendly_sam import FriendlySAM   # ref arXiv:2403.12350
 
-base_optim = torch.optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.95), weight_decay=0.1)
-optim = SAM(model.parameters(), base_optim, rho=0.05, adaptive=False)
+base_optim = schedulefree.AdamWScheduleFree(
+    model.parameters(),
+    lr=lr_from_mup_transfer,           # V1: muP-tuned on 2-4M tiny model
+    betas=(0.9, 0.95),
+    weight_decay=0.1,
+    warmup_steps=300,
+)
+# Apply Cautious patch: update *= (sign(update) == sign(grad)).float()
+optim = FriendlySAM(model.parameters(), base_optim, rho=0.05, adaptive=False)
 
-# In training loop
+# V1 multi-task loss (Stage 3 LLRD):
+# L = 0.5*focal_loss_v15(logits, labels, gamma=3.0) + 0.5*sharpe_loss_v15(position_weight, r_next, w_prev)
+#     + 0.05*dann_loss(z, era_label) + l_aecf
 def closure():
-    loss = F.cross_entropy(model(x), y)
+    out = model(x_bars, x_news, news_mask, is_news_present, regime_vec)
+    loss = (0.5 * focal_loss_v15(out["logits_3class"], y, gamma=3.0)
+            + 0.5 * sharpe_loss_v15(out["position_weight"], r_next, w_prev)
+            + 0.05 * dann_loss(out["z"], era_label)
+            + l_aecf_from_aecf_module(out["aecf_mask_p"]))
     loss.backward()
     return loss
 
 # First step
-loss = F.cross_entropy(model(x), y)
+out = model(x_bars, x_news, news_mask, is_news_present, regime_vec)
+loss = (0.5 * focal_loss_v15(out["logits_3class"], y, gamma=3.0)
+        + 0.5 * sharpe_loss_v15(out["position_weight"], r_next, w_prev)
+        + 0.05 * dann_loss(out["z"], era_label)
+        + l_aecf_from_aecf_module(out["aecf_mask_p"]))
 loss.backward()
 optim.first_step(zero_grad=True)
 # Second step
-F.cross_entropy(model(x), y).backward()
+closure()  # recompute loss with perturbed weights, backward
 optim.second_step(zero_grad=True)
 ```
 
@@ -1333,22 +1724,37 @@ def manifold_mixup(hidden, labels, alpha=0.2):
 
 Apply ONLY at hidden states (between blocks), NEVER on raw input (destroys temporal structure).
 
-### Augmentation: Jittering + Magnitude Warping (MUST)
+### Augmentation: V1 SimPSI + Wave-Mask (NAIVE JITTERING FORBIDDEN)
+
+V1 invariant 21: SimPSI / Wave-Mask only; naive jittering FORBIDDEN. Fons 2020 (arXiv:2010.15111) shows naive jittering is NET NEGATIVE on Sharpe.
+
+V1 augmentation stack:
+- **SimPSI** (Ryu et al. AAAI 2024 arXiv:2312.05790): reweights aug strength so dominant frequency components preserved (jittering kills trend signal).
+- **Wave-Mask** (Arabi 2024 arXiv:2408.10951): masks DWT coefficients.
+- Both PIT-safe (no time shift).
 
 ```python
-def augment(x, jitter_sigma=0.02, mag_warp_sigma=0.02):
-    if np.random.rand() < 0.5:
-        x = x + torch.randn_like(x) * jitter_sigma  # jittering
-    if np.random.rand() < 0.5:
-        # Magnitude warping (smooth random scaling)
-        knot_count = 4
-        knots = torch.randn(knot_count) * mag_warp_sigma + 1.0
-        warp_curve = F.interpolate(knots.view(1, 1, -1), size=x.size(-2), mode='linear').view(-1, 1)
-        x = x * warp_curve
-    return x
+# V1 — SimPSI + Wave-Mask. NAIVE JITTERING FORBIDDEN.
+def augment_v15(x):
+    """V1 augmentation. Spec invariant 21: SimPSI / Wave-Mask only.
+    Reweights aug by spectral importance so dominant frequencies preserved.
+    Both PIT-safe (no time shift).
+    """
+    # SimPSI spectral-preserving:
+    # 1. Compute spectral importance per channel via FFT on rolling window
+    # 2. Apply jitter scaled INVERSELY by spectral importance per freq band
+    # Wave-Mask:
+    # 1. DWT of x
+    # 2. Random mask of high-freq detail coefs (preserve approximation)
+    # 3. Inverse DWT
+    ...
+
+# DO NOT USE: naive jittering or magnitude warping (Fons 2020 net-negative on Sharpe)
 ```
 
-NEVER raw-input mixup — destroys temporal structure.
+Manifold Mixup α=0.2 at hidden states: KEPT.
+
+NEVER raw-input mixup — destroys temporal structure AND can leak future across mixup pairs.
 
 ### TTA at validation (K=5)
 
@@ -1363,16 +1769,27 @@ def tta_predict(model, x, K=5):
 
 Use for validation and offline backtest. Skip for live (latency).
 
-### Modality Dropout (15% on news embeddings)
+### V1: Modality Dropout — Variable per-batch p ~ U(0.1, 0.9) (REPLACES 15% constant)
+
+V1 invariant 24: Variable per-batch modality dropout p~U(0.1, 0.9), NOT 15% constant. Training distribution must bracket inference distribution. 15% guarantees performance cliff at 51% empirical no-news rate.
 
 ```python
-def modality_dropout(news_mask, p=0.15, training=True):
-    """Randomly drop news sources during training to force robustness."""
+def modality_dropout_v15(news_mask, training=True):
+    """V1: per-batch dropout probability sampled in [0.1, 0.9].
+    Matches empirical 51% absence rate.
+    CRITICAL FIX over V1's 15% constant.
+    """
     if not training:
         return news_mask
+    # Sample one p per batch
+    p = torch.rand(1).item() * 0.8 + 0.1  # uniform in [0.1, 0.9]
     drop = torch.rand_like(news_mask.float()) < p
     return news_mask & ~drop
 ```
+
+V1 also wires **AECF entropy-gated curriculum mask** in news fusion (see news_fuser.py change above; Chlon arXiv:2505.15417). Curriculum: 0.0 -> 0.9 over training. Entropy regularizer `L_aecf = -lambda(x) * sum_m p_m log p_m`, lambda(x) = MC-dropout entropy estimate. PAC-bound on calibration across 2^M-1 modality subsets.
+
+V1 also concats **`is_news_present` binary embedding** `nn.Embedding(2, 8)` to news token. Explicit gate signal so model does not infer presence from zero values (Ma et al. CVPR 2022 arXiv:2204.05454). Trivial cost.
 
 ### Implementation Order (by ROI)
 
@@ -1396,28 +1813,40 @@ Expected total stack lift: +0.3-0.6 Sharpe at val (baseline ~0.5-1.0). Compoundi
 **Owner:** samsiavoshian
 **Implementation effort:** 1 day after model + features land
 
-## Locked Specs
+## Locked Specs (V1)
 
 | Component | Choice | Why |
 |-----------|--------|-----|
-| Optimizer | AdamW | Per-param adaptive LR, decoupled weight decay, standard for transformers |
+| Optimizer | **V1: Cautious-Schedule-Free AdamW** | Liang 2024 arXiv:2411.16085 + Defazio ICLR 2025; 1.47x sample efficiency at zero hparam cost; anytime-optimal |
 | betas | (0.9, 0.95) | Llama / GPT convention; β2=0.95 makes second-moment more responsive |
-| Peak LR | **1e-4** (default) | 3e-4 too aggressive for 24M model on 16K samples; sweep 1e-4 → 3e-4 after LR-range test |
+| Peak LR | **V1: muP-transferred** | Tune on 2-4M tiny model first ($5), transfer to 30M; Yang 2022 arXiv:2203.03466 |
 | Weight decay | 0.1 | Standard transformer regularization |
-| Weight decay groups | bias + LayerNorm + pos_embed = no decay | Standard practice |
-| LR schedule | Cosine with linear warmup | Smoother than step decay, empirically better |
-| Warmup | 10% of total steps | Standard |
-| Min LR | 0.1 × peak | Decay floor |
-| Loss | Class-weighted cross-entropy | Handles ~30/40/30 class imbalance |
-| Class weights | Inverse-frequency (`N / (3 * N_i)`) | Equivalent to sklearn 'balanced' |
-| Label smoothing | 0.0 default, 0.1 if overconfident | Try if val accuracy plateaus |
+| Weight decay groups | bias + RMSNorm + pos_embed = no decay | Standard practice |
+| LR schedule | **V1: NONE** (Schedule-Free) | Anytime-optimal; ablate epoch count without anxiety |
+| Warmup | 300 steps | Schedule-Free default |
+| Sharpness regularizer | Friendly-SAM ρ=0.05 | Filters gradient noise from vanilla SAM; arXiv:2403.12350 |
+| Loss (Head A) | **V1: focal loss gamma=3** | Mukhoti 2020 arXiv:2002.09437; required for clean T-scaling/RAPS interaction (Xi 2024 arXiv:2402.04344) |
+| Loss (Head B, V1) | **differentiable -Sharpe** | L_sharpe_net = -mean(w*r_next - cost*|w_t-w_{t-1}|) / std(...); Hwang & Zohren 2025 arXiv:2510.03129 |
+| Combined loss S3 | 0.5*L_focal + 0.5*L_sharpe_net + 0.05*L_DANN + L_aecf | Multi-task decision-aware (V1 invariant 25) |
+| Class weights | None | Class imbalance handled by triple-barrier neutral threshold (doc 04) + per-class reporting; class weights would break calibration |
+| Label smoothing | **V1: REPLACED by focal** | LS=0.1/0.05 dropped; focal gamma=3 subsumes the calibration role |
 | Gradient clipping | max_norm 1.0 | Prevents gradient explosion on outlier batches |
-| Dropout | 0.1 (in attention + MLP) | Set in model |
-| Mixed precision | FP32 phase 1, bfloat16 phase 2 if needed | MPS support partial |
-| Batch size | 32 train, 64 val/test | Fits 16GB Mac mini comfortably |
+| Dropout | 0.2 (in attention + MLP) | Set in model |
+| Stochastic depth | **V1: linear 0.0 -> 0.2** | Concentrates regularization at higher layers; Touvron 2021 |
+| Mixout (V1, S3 only) | p=0.7 anchored to SSL ckpt | Lee Cho Kang ICLR 2020 arXiv:1909.11299 |
+| DANN (V1) | era-label = year-bucket; lambda 0->0.1 ramp | Feng 2019 arXiv:1810.09936; +3.11% on stock prediction |
+| FreeLB (V1) | News embeddings only, K=2, ε=0.5 | Zhu et al. ICLR 2020 arXiv:1909.11764; bars excluded (PIT risk) |
+| Mixed precision | FP32 phase 1, bfloat16 phase 2 if needed | MPS support partial; V1 keeps FP32 deterministic |
+| Batch size | 32 train, 64 val/test | Fits 16GB remote host comfortably; H100 use 64-128 |
 | Epochs per fold | 20 max with early stopping | Usually converges in 5-12 |
 | Early stopping | **Patience 5, min_delta=1e-4** | Small val sets noisy; 3 fires too early |
 | Random seed | 42 default, multi-seed in week 4+ | Single-seed for week 1, 5-seed for confidence |
+| Walk-forward (V1) | **NYSE bars_per_year=3276** (NEVER 17500) | V1 invariant 5; 4 folds, 1-week embargo, train 3y + val 6mo + test 6mo, step 3mo |
+| Modality dropout (V1) | Variable per-batch p ~ U(0.1, 0.9) | Matches 51% empirical absence; invariant 24 |
+| News cross-attn layers (V1) | [3, 7, 11] sparse | mPLUG-Owl3 arXiv:2408.04840 Table 8 |
+| FiLM regime (V1) | Layers {2, 4, 6, 8, 10} | 12-dim regime vec, ~3840 params |
+| Mask ratio SSL (V1) | 0.40 (was 0.20) | PatchTST default; V1's 0.20 was too easy |
+| SSL objective (V1) | SimMTM + 0.5*L_clip + 0.05*L_DANN + L_aecf | SimMTM K=3 views; CLIP bars<->news InfoNCE tau=0.07 |
 
 ## Walk-Forward Cross-Validation
 
@@ -1428,6 +1857,22 @@ Anchored walk-forward with 1-week embargo:
 - Step: 3 months (slide forward)
 
 For 5y of data: **4 folds exactly** (60mo - 48mo overhead) / 3mo step = 4. To get 6 folds, shorten train window from 3y to 2.5y.
+
+V1 invariant 5: **NYSE bars_per_year = 3276** (NEVER 17500). 30-min RTH bars only. All Sharpe annualization, vol target conversion, and walk-forward arithmetic uses 3276.
+
+V1 also adds (per spec §9 + invariants 18-20, owned by doc 06 but referenced here):
+- Per-bucket eval: every metric reported separately for {news-present, news-absent, both}.
+- Cost-stress: report Sharpe at {0.5x, 1.0x, 1.5x} cost levels. Hard gate Sharpe > 0.5 at 1.5x cost.
+- DSR > 1.0 hard gate (Bailey & López de Prado).
+- V1 promotion gates (per spec §9.4):
+   1. Walk-forward Sharpe > 1.0 net of 1x cost (was 0.8).
+   2. Sharpe > 0.5 net of 1.5x cost (NEW hard).
+   3. Beats best baseline by >= 0.2 Sharpe on >= 3 of 4 folds.
+   4. Conformal coverage within ±2% of nominal on val + per-bucket.
+   5. Stage 2 sizer (decision-aware head) beats Stage 1 fallback by >= 0.2 Sharpe OOS.
+   6. Drawdown circuit breaker tested on >= 2 historical regimes.
+   7. Deflated Sharpe Ratio > 1.0 (NEW hard).
+   8. Per-bucket Sharpe (news-present, news-absent) both positive (NEW hard).
 
 ```python
 @dataclass
@@ -1478,9 +1923,13 @@ def walk_forward_splits(
 
 ## Optimizer Configuration
 
+V1: This V1 vanilla AdamW snippet is REPLACED by Cautious-Schedule-Free AdamW (see "V1: Cautious-Schedule-Free AdamW" section above). Kept here for reference of the WD groups pattern.
+
 ```python
-def configure_optimizer(model: nn.Module, lr: float = 3e-4, weight_decay: float = 0.1) -> torch.optim.AdamW:
-    """AdamW with no decay on biases / LayerNorm / pos_embed."""
+def configure_optimizer_v1_legacy(model: nn.Module, lr: float = 3e-4, weight_decay: float = 0.1) -> torch.optim.AdamW:
+    """V1 LEGACY — superseded by V1 Cautious-Schedule-Free AdamW.
+    AdamW with no decay on biases / LayerNorm / pos_embed.
+    """
     decay_params = []
     no_decay_params = []
     for name, p in model.named_parameters():
@@ -1498,6 +1947,36 @@ def configure_optimizer(model: nn.Module, lr: float = 3e-4, weight_decay: float 
         ],
         lr=lr, betas=(0.9, 0.95), eps=1e-8,
     )
+
+
+# V1 — Cautious-Schedule-Free AdamW
+def configure_optimizer_v15(model: nn.Module, lr: float, weight_decay: float = 0.1):
+    """V1: Cautious-Schedule-Free AdamW.
+    LR comes from muP transfer-tune on 2-4M tiny model.
+    Cautious patch (Liang 2024 arXiv:2411.16085): mask updates where momentum disagrees with grad.
+    """
+    import schedulefree
+    decay_params, no_decay_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.endswith('.bias') or 'norm' in name.lower() or 'pos_embed' in name:
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
+
+    optimizer = schedulefree.AdamWScheduleFree(
+        [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0},
+        ],
+        lr=lr,
+        betas=(0.9, 0.95),
+        warmup_steps=300,
+    )
+    # Wrap step() with Cautious mask: update *= (sign(update) == sign(grad)).float()
+    # See kyleliang919/C-Optim for the 5-line patch.
+    return optimizer
 ```
 
 ## LR Schedule
@@ -1517,11 +1996,47 @@ def cosine_lr_schedule(optimizer, warmup_steps: int, total_steps: int, min_lr_ra
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 ```
 
-## Class Weights
+## V1: Loss — Focal gamma=3 (REPLACES class-weighted CE / LS)
+
+V1 invariant 22: focal loss gamma=3 (NOT vanilla CE) required for clean T-scaling/RAPS interaction.
+
+V1: class-weighted CE + LS=0.05.
+V1: focal gamma=3, no class weights, no label smoothing. Class imbalance handled by triple-barrier neutral threshold (doc 04 — barrier_up = +1*ATR-14, barrier_down = -1*ATR-14, spread-adjusted neutral) and per-class reporting in eval. Class weights would solve recall but break calibration.
 
 ```python
-def compute_class_weights(labels: torch.Tensor, num_classes: int = 3) -> torch.Tensor:
-    """weight_i = N_total / (num_classes * N_i). Equivalent to sklearn 'balanced'."""
+def focal_loss_v15(logits, targets, gamma=3.0, reduction='mean'):
+    """V1: focal loss gamma=3 (Mukhoti 2020 arXiv:2002.09437).
+    Reduces ECE 30-50% pre-T-scaling. T post-fit converges near 1.0.
+    CRITICAL: T-scaling on CE harms APS adaptive coverage (Xi 2024 arXiv:2402.04344).
+    Focal-trained logits avoid this conflict.
+    Reference: torrvision/focal_calibration.
+    """
+    log_p = torch.log_softmax(logits, dim=-1)
+    p = log_p.exp()
+    log_p_target = log_p.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    p_target = p.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    loss = -((1 - p_target) ** gamma) * log_p_target
+    if reduction == 'mean':
+        return loss.mean()
+    elif reduction == 'sum':
+        return loss.sum()
+    return loss
+
+
+def sharpe_loss_v15(position_weight, r_next, w_prev=None, cost=2e-4, eps=1e-8):
+    """V1: differentiable -Sharpe over mini-batch (Hwang & Zohren 2025 arXiv:2510.03129).
+    Cost-aware: penalizes |w_t - w_{t-1}| by per-trade cost.
+    L_sharpe_net = -mean(w*r_next - cost*|delta_w|) / (std(...) + eps)
+    """
+    pnl = position_weight * r_next
+    if w_prev is not None:
+        pnl = pnl - cost * (position_weight - w_prev).abs()
+    return -pnl.mean() / (pnl.std() + eps)
+
+
+# DEPRECATED — V1 class weights, NOT used in V1
+def compute_class_weights_v1(labels: torch.Tensor, num_classes: int = 3) -> torch.Tensor:
+    """V1 LEGACY (NOT V1). weight_i = N_total / (num_classes * N_i). Equivalent to sklearn 'balanced'."""
     counts = torch.bincount(labels, minlength=num_classes).float()
     N = counts.sum()
     return N / (num_classes * counts)
@@ -1557,6 +2072,16 @@ class CheckpointTracker:
 ```
 
 ## Full Training Loop (one fold)
+
+V1 NOTE: The loop below is the V1 single-head reference. For V1 multi-task training:
+- Stage 2 (linear probe) loop uses ONLY `focal_loss_v15(logits, labels, gamma=3.0)` on Head A.
+- Stage 3 (LLRD fine-tune) loop uses combined: `0.5 * focal_loss_v15 + 0.5 * sharpe_loss_v15(position_weight, r_next, w_prev) + 0.05 * dann_loss + l_aecf`.
+- Replace `F.cross_entropy(logits, labels, weight=class_weights, label_smoothing=label_smoothing)` with focal everywhere. NO class weights, NO label smoothing.
+- Both heads forward in single pass: `out = model(...)`; `logits = out["logits_3class"]`; `position_weight = out["position_weight"]`.
+- Track Mixout state at Stage 3 entry (anchor = SSL checkpoint).
+- Track Schedule-Free `optimizer.train()` / averaged-weights switch; Cautious patch is internal to step.
+
+
 
 ```python
 import torch
@@ -1770,29 +2295,47 @@ _(was doc 05-MODEL-TRAINING-CALIBRATION.md before V5 merge — content unchanged
 ## Why This Doc Exists
 
 The plan covers calibration in fragments across 5 docs:
-- **Earlier sections of this doc (model arch + training)** mention label smoothing 0.1 + dropout + stochastic depth (training-time regularization that incidentally affects calibration).
-- **doc 07 (sizing)** sketches temperature scaling + split conformal but cites a fabricated "30% lower decision loss" Wright 2026 number and uses naive split-CP.
-- **doc 07 (exits Part 2)** uses a 3-bucket discrete conformal shrinkage {1: 1.0, 2: 0.5, 3: 0.0} and signed score for sizing.
-- **doc 08 (live trading)** has a single-signal drift detector (entropy z-score > 2 sigma + KL on argmax).
+- **Earlier sections of this doc (model arch + training)** V1 mention focal loss gamma=3 (replacing LS=0.05) + dropout + stochastic depth linear schedule + Mixout (Stage 3 only).
+- **doc 07 (sizing)** sketches temperature scaling + split conformal; V1 replaces with T-scaling -> RAPS -> AgACI + LLLA Kelly multiplier.
+- **doc 07 (exits Part 2)** V1 uses smooth p-value shrinkage on top of set-size gate.
+- **doc 08 (live trading)** has a single-signal drift detector (entropy z-score > 2 sigma + KL on argmax). V1 keeps the 3-tier stack.
 
 This doc consolidates and upgrades. Three parallel research agents on 2026-05-04 produced ~9000 words of analysis on:
 - Which scalar best measures confidence for a 3-class weak-signal financial model (signed for sizing, MSP for gate, entropy for drift, set size for abstention, MC dropout decomposition for aleatoric/epistemic split).
 - Which post-hoc calibration method (temperature primary, Dirichlet-ODIR fallback; skip Platt / isotonic / BBQ / matrix / vector / spline / Mix-n-Match).
-- Which conformal variant (APS + Mondrian, not naive split-CP, not RAPS, not ACI in V1).
+- Which conformal variant. **V1 UPDATE: T-scaling -> RAPS -> AgACI replaces V1's T-scaling -> APS** (Angelopoulos 2020 arXiv:2009.14193 + Zaffran 2022 ICML arXiv:2202.07282; AgACI online wrapper provides coverage under arbitrary distribution shift via expert-advice over gamma grid).
 - Which metrics survive class imbalance (classwise AdaECE + macro Brier + NLL, not top-label ECE).
 - How to monitor drift before realized PnL collapses (3-tier stack with named thresholds).
+- **V1 UPDATE: Laplace last-layer (LLLA) replaces MC dropout T=20** (Daxberger 2021 arXiv:2106.14806 + ref `aleximmer/Laplace`; faster, better-calibrated epistemic, no 20x inference cost; posterior variance feeds Kelly multiplier).
 
 ## Glossary
 
 - **MSP:** max softmax probability = max(P_down, P_flat, P_up). Used as confidence gate post-temperature.
 - **Signed score:** s = P_up - P_down ∈ [-1, +1]. Used as sizing magnitude × direction.
 - **APS:** Adaptive Prediction Sets (Romano-Sesia-Candès 2020). Cumulative-sum non-conformity score.
+- **V1 RAPS:** Regularized APS (Angelopoulos 2020 arXiv:2009.14193). APS + size penalty `lambda * max(0, rank - kreg)`.
+- **V1 AgACI:** Aggregated Adaptive Conformal Inference (Zaffran 2022 ICML arXiv:2202.07282). Online wrapper aggregating over a gamma grid via expert advice (BOA aggregator). Maintains target coverage under arbitrary distribution shift.
 - **Mondrian CP:** class-conditional conformal prediction. Per-class quantile, per-class coverage guarantee.
 - **AdaECE:** Adaptive Expected Calibration Error. Equal-mass binning instead of equal-width. Roelofs 2020.
 - **Classwise ECE:** ECE evaluated per class (one-vs-rest), then macro-averaged. Kull 2019.
-- **Aleatoric uncertainty:** irreducible noise. E[H[p]] over MC samples.
-- **Epistemic uncertainty:** model uncertainty. H[E[p]] - E[H[p]] (mutual information / BALD).
+- **V1 LLLA:** Laplace last-layer approximation (Daxberger 2021 arXiv:2106.14806). Posterior `N(MAP_weights, H^{-1})` over last-layer weights. Single-pass posterior; replaces MC dropout T=20.
+- **Aleatoric uncertainty:** irreducible noise. E[H[p]] over MC samples (V1) / entropy of MAP softmax (V1).
+- **Epistemic uncertainty:** model uncertainty. H[E[p]] - E[H[p]] (mutual information / BALD) (V1) / posterior variance (V1 via LLLA).
 - **Snapshot ensemble:** average over the last K EMA checkpoints from a single training run. Huang 2017.
+- **V1 Focal loss:** `(1 - p_t)^gamma * log(p_t)` with gamma=3 (Mukhoti 2020 arXiv:2002.09437). Replaces vanilla CE / label smoothing on Head A.
+- **V1 Diff-Sharpe loss:** `L_sharpe_net = -mean(w * r_next - cost * |w_t - w_{t-1}|) / (std(...) + eps)` on Head B (Hwang & Zohren 2025 arXiv:2510.03129).
+- **V1 Multi-task head:** Head A (3-class direction, focal) + Head B (position weight in [-1, +1], diff-Sharpe), trained jointly on the same backbone.
+- **V1 FiLM regime:** affine modulation `gamma * x + beta` between attn and FFN, conditioned on a 12-dim regime vector (VIX-tercile + RV-tercile + FOMC + year-bucket + HMM-P-high-vol).
+- **V1 sLSTM block:** xLSTMTime sLSTM block (Alharthi & Mahmood arXiv:2407.10240). Layers 11-12 of V1 hybrid encoder.
+- **V1 SimMTM:** SSL multi-mask reconstruction with similarity-weighted blending (Dong NeurIPS 2023 arXiv:2302.00861).
+- **V1 AECF:** entropy-gated curriculum masking for multimodal fusion (Chlon et al. arXiv:2505.15417).
+- **V1 Mixout:** Bernoulli-mix between current and SSL-anchor weights, p=0.7 at Stage 3 LLRD (Lee Cho Kang ICLR 2020 arXiv:1909.11299).
+- **V1 Cautious update mask:** `update *= (sign(update) == sign(grad)).float()` patch on Schedule-Free AdamW (Liang 2024 arXiv:2411.16085).
+- **V1 muP transfer-tune:** parameterize at small scale, transfer hparams to large (Yang 2022 arXiv:2203.03466).
+- **V1 FreeLB:** adversarial perturbation on news embeddings only, K=2 inner ascent steps, epsilon=0.5 (Zhu et al. ICLR 2020 arXiv:1909.11764).
+- **V1 DANN:** domain-adversarial gradient reversal on era-label = year-bucket (Feng et al. IJCAI 2019 arXiv:1810.09936).
+- **V1 SimPSI / Wave-Mask:** spectral-preserving augmentation (Ryu AAAI 2024 arXiv:2312.05790; Arabi 2024 arXiv:2408.10951). Replaces forbidden naive jittering.
+- **V1 DSR:** Deflated Sharpe Ratio (Bailey & López de Prado). Hard gate > 1.0.
 
 ---
 
@@ -1828,23 +2371,35 @@ class Confidence:
 
 ## PART B — Training-Time Calibration
 
-### Loss Function (modifies the training section above in this doc)
+### V1: Loss Function — Focal gamma=3 (REPLACES LS=0.05)
+
+V1 invariant 22: focal loss gamma=3 (NOT vanilla CE).
 
 ```python
-loss = F.cross_entropy(
-    logits,
-    labels,
-    label_smoothing=0.05,        # was 0.1 — dropped per Müller arXiv:1906.02629
-    weight=None,                 # do NOT class-weight — would solve recall, break calibration
-    reduction='mean',
-)
+# V1 — focal loss on Head A (3-class)
+def focal_loss_v15(logits, labels, gamma=3.0):
+    """V1: Mukhoti 2020 arXiv:2002.09437.
+    Reduces ECE 30-50% pre-T-scaling. T post-fit converges near 1.0.
+    CRITICAL: T-scaling on CE harms APS adaptive coverage (Xi 2024 arXiv:2402.04344).
+    Focal-trained logits avoid this conflict.
+    Reference: torrvision/focal_calibration.
+    """
+    log_p = torch.log_softmax(logits, dim=-1)
+    log_p_t = log_p.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+    p_t = log_p_t.exp()
+    return -((1 - p_t) ** gamma) * log_p_t
+
+loss_focal = focal_loss_v15(logits, labels, gamma=3.0).mean()
+# NO label smoothing (subsumed by focal)
+# NO class weights (would break calibration; class imbalance handled by triple-barrier neutral threshold + per-class reporting)
 ```
 
-**Rationale:**
-- LS=0.1 + Friendly-SAM + EMA 0.999 + dropout 0.2 + stoch depth 0.15 is **5 layers of regularization** on 16K labeled samples. Over-regularized for a weak-edge target.
-- LS uniformly squashes the logit distribution (Müller-Kornblith-Hinton arXiv:1906.02629) — the same job temperature scaling does post-hoc, but tunable. Move that mass to T-scaling.
-- LS=0.05 is a conservative halfway step. A/B option: LS=0.0. Pick the one that minimizes val-B NLL.
-- Class weights would solve a different problem (recall on minority classes) at the cost of probability calibration. Class imbalance is handled by **stratified sampling in val-B** (T-fitter sees balanced classes) and **per-class reporting** (classwise AdaECE).
+**V1 Rationale:**
+- V1's LS=0.05 + Friendly-SAM + EMA 0.999 + dropout 0.2 + stoch depth 0.15 was already over-regularized for a weak-edge target.
+- LS uniformly squashes the logit distribution (Müller-Kornblith-Hinton arXiv:1906.02629). T-scaling does the same job post-hoc, but tunable.
+- V1: focal gamma=3 absorbs LS's calibration role AND directly addresses the T-scaling/APS-RAPS conflict (Xi 2024 arXiv:2402.04344). Mukhoti shows ECE drops 30-50% pre-T-scaling, T post-fit lands near 1.0.
+- Class weights would solve a different problem (recall on minority classes) at the cost of probability calibration. Class imbalance is handled by **triple-barrier neutral threshold** (doc 04) + **stratified sampling in val-B** (T-fitter sees balanced classes) + **per-class reporting** (classwise AdaECE).
+- V1: T-scaling bounds [0.7, 3.0] kept; expect T to land near 1.0 with focal-trained logits — existing guard rarely activates (a feature, not a bug).
 
 ### Snapshot Ensemble (modifies the training section above in this doc)
 
@@ -1908,15 +2463,67 @@ Trigger only if post-T classwise-AdaECE > 0.10 on UP or DOWN. Kull et al. arXiv:
 
 ---
 
-## PART D — Conformal Prediction Recipe
+## PART D — Conformal Prediction Recipe (V1: T-scaling -> RAPS -> AgACI)
 
-### APS Score Function
+V1 REPLACES V1's "T-scaling -> APS Mondrian" with **T-scaling -> RAPS -> AgACI**. Two upgrades:
+1. **RAPS** (Angelopoulos 2020 arXiv:2009.14193): APS with size penalty `lambda * max(0, rank - kreg)`. Sharper sets, prevents pathological full-set predictions on 3-class.
+2. **AgACI** (Zaffran 2022 ICML arXiv:2202.07282): online wrapper updates `alpha_t` based on miscoverage history, aggregates over gamma grid `[0.001, 0.005, 0.01, 0.05, 0.1]` via expert advice (BOA aggregator). Provably maintains target coverage under arbitrary distribution shift.
+
+References: `mzaffran/AdaptiveConformalPredictionsTimeSeries` (R, port to PyTorch ~50 LOC). `aangelopoulos/conformal_classification`. Or use `ml-stat-Sustech/TorchCP` (production library, has RAPS/SAPS/ConfTS).
+
+### V1 invariant 5.1 (per spec): focal-trained logits required
+
+CRITICAL: Xi 2024 arXiv:2402.04344 shows **T-scaling on CE logits HARMS APS adaptive coverage**. Focal-trained logits (gamma=3) fix this. Without focal, the T-scaling -> RAPS -> AgACI stack collapses. This is why V1 invariant 22 (focal gamma=3) is non-negotiable.
+
+### APS Score Function (still the basis for RAPS)
 
 Cumulative softmax mass up to and including the true class, in descending-probability order.
 
 For each test point, sort classes by probability descending. The non-conformity score for class y is the cumulative sum from the top down to y. Calibration takes the (1-alpha)(1+1/n) quantile of calibration scores. At inference, include classes (in descending prob order) until cumulative mass exceeds q_hat.
 
-### Why Mondrian Is Mandatory
+### V1: RAPS Adds Size Penalty
+
+RAPS = APS + size-penalty term `lambda * max(0, rank - kreg)` per included class. Prevents the K=3 case from pathologically hitting full-set on weak-confidence bars (which would size to 0 by our shrinkage rule, wasting trades).
+
+```python
+# V1 — RAPS (sketch). Use TorchCP for production impl.
+def raps_score_v15(probs, label, lambda_reg=0.01, k_reg=1):
+    """V1: RAPS non-conformity score (Angelopoulos 2020 arXiv:2009.14193)."""
+    sorted_p, sorted_idx = torch.sort(probs, descending=True)
+    rank_of_label = (sorted_idx == label).nonzero(as_tuple=True)[0].item()
+    cum_p = sorted_p[:rank_of_label + 1].sum()
+    size_penalty = lambda_reg * max(0, rank_of_label + 1 - k_reg)
+    return cum_p + size_penalty
+```
+
+### V1: AgACI Online Wrapper
+
+AgACI maintains a grid of gamma candidates and aggregates predictions via expert-advice (BOA aggregator). Fast adaptation to distribution shift without manual gamma tuning.
+
+```python
+# V1 — AgACI (sketch). Use mzaffran/AdaptiveConformalPredictionsTimeSeries port.
+class AgACI:
+    """V1: Aggregated ACI (Zaffran 2022 ICML arXiv:2202.07282).
+    Online wrapper over RAPS quantiles. Expert-advice aggregator over gamma grid.
+    Provably maintains target coverage under arbitrary distribution shift.
+    """
+    def __init__(self, gamma_grid=(0.001, 0.005, 0.01, 0.05, 0.1), alpha=0.1):
+        self.gammas = gamma_grid
+        self.alphas = [alpha for _ in gamma_grid]
+        self.weights = [1.0 / len(gamma_grid) for _ in gamma_grid]
+        self.alpha_target = alpha
+    def update(self, miscoverage_t):
+        # Per-expert ACI update: alpha_i <- alpha_i + gamma_i * (alpha_target - 1{miscovered})
+        for i, gamma in enumerate(self.gammas):
+            self.alphas[i] += gamma * (self.alpha_target - miscoverage_t)
+        # BOA expert-advice weight update on observed coverage loss
+        ...
+    def predict_set(self, calibrated_probs):
+        alpha_t = sum(w * a for w, a in zip(self.weights, self.alphas))
+        return raps_set(calibrated_probs, alpha_t)
+```
+
+### Why Mondrian Is Mandatory (KEPT from V1)
 
 With 70/15/15 imbalance, marginal CP at alpha=0.10 typically achieves:
 - Marginal coverage: ~90%
@@ -1924,15 +2531,15 @@ With 70/15/15 imbalance, marginal CP at alpha=0.10 typically achieves:
 - UP coverage: ~75% (under-covered)
 - DOWN coverage: ~75% (under-covered)
 
-UP and DOWN are the directions we trade. Mondrian uses 3 separate quantiles, each calibrated on its own class, and guarantees >= 1-alpha coverage per class. ~10 LOC for 3 quantiles. ~750 cal points per class on a 3000-bar val fold — well above the 50-point minimum (Ding et al. 2023).
+UP and DOWN are the directions we trade. Mondrian uses 3 separate quantiles, each calibrated on its own class, and guarantees >= 1-alpha coverage per class. ~10 LOC for 3 quantiles. ~750 cal points per class on a 3000-bar val fold — well above the 50-point minimum (Ding et al. 2023). V1: apply Mondrian on top of RAPS+AgACI (per-class quantiles, online-adapted).
 
-### Why Not RAPS
+### V1 promotes RAPS from "skip" to "primary"
 
-RAPS regularizes APS to prevent giant sets in low-confidence regimes. Designed for K=1000 ImageNet where APS could include 50+ classes. With K=3, max set size is already 3. RAPS = APS when k_reg >= 1. Save the hyperparameter tuning.
+V1 (this doc previously) said: "RAPS = APS when k_reg >= 1, K=3 is small, save the tuning." V1 OVERRULES that. The size-penalty term in RAPS becomes meaningful because focal gamma=3 changes the probability mass distribution: sets that were trivial-singletons under CE become smooth-confidence-weighted under focal. RAPS k_reg=1, lambda=0.01 default.
 
-### Why Not ACI in V1
+### V1 promotes AgACI from "V2 only" to "primary"
 
-ACI (Gibbs-Candès arXiv:2106.00170) auto-adapts alpha_t per bar. Strong theoretical guarantee. 10 LOC. **But** adds a misconfiguration failure mode: gamma too high → alpha oscillates → coverage thrashes; gamma too low → adapts too slowly. For a $100 account during V1 launch, the safer V1 is static split-CP recalibrated weekly + reactive on Tier-2 triggers. Add ACI in V2 after observing real coverage drift in shadow mode.
+V1 deferred ACI to V2 (gamma misconfiguration risk). V1 sidesteps the gamma-tuning failure mode by using **AgACI** (aggregated over a gamma grid via expert advice). No manual gamma to tune. Gibbs-Candès arXiv:2106.00170 stays the foundation; AgACI is the production-safe wrapper.
 
 ### Continuous Confidence Scalar
 
@@ -1953,25 +2560,51 @@ The discrete set-size acts as a hard gate; the p-value adds smooth magnitude ins
 
 ---
 
-## PART E — MC Dropout (Aleatoric vs Epistemic)
+## PART E — V1: Laplace Last-Layer (LLLA) (REPLACES MC Dropout T=20)
 
-### Algorithm Sketch
+V1 invariant 5.3: LLLA replaces MC dropout. Rationale: faster (1 forward pass, not 20), better-calibrated epistemic, no 20x inference cost. Posterior variance feeds Kelly multiplier.
 
-T=20 forward passes with dropout enabled at inference. Stack T probability vectors (T, B, K). Compute:
+Source: Daxberger 2021 arXiv:2106.14806. Reference impl: `pip install laplace-torch` (`aleximmer/Laplace`).
+
+### LLLA Algorithm Sketch
+
+Fit a Laplace approximation around the trained MAP weights of the **last layer** (Head A 3-class). Posterior is `N(MAP_weights, H^{-1})` where H is the Hessian of the log-posterior at MAP.
+
+```python
+# V1 — LLLA (sketch). Use laplace-torch for production.
+from laplace import Laplace
+
+la = Laplace(model, 'classification', subset_of_weights='last_layer', hessian_structure='kron')
+la.fit(train_loader)
+la.optimize_prior_precision()
+
+# At inference:
+pred_dist = la(x)   # posterior predictive over (B, K)
+mean_p = pred_dist.mean
+epistemic = pred_dist.variance.sum(-1)  # posterior variance feeds Kelly multiplier
+# Kelly multiplier: min(1, sigma_target / sigma_posterior)
+```
+
+### V1 LEGACY: MC Dropout (kept for reference; not used in V1)
+
+V1 ran T=20 forward passes with dropout enabled at inference. Stack T probability vectors (T, B, K). Compute:
 - mean_p = mean over T → calibrated point estimate
 - H_mean = entropy of mean_p → total predictive uncertainty
 - E_H = mean over T of entropy(p_t) → expected entropy = aleatoric
 - epistemic = H_mean - E_H → mutual information / BALD
 
+V1 SKIPS this. LLLA gives a single-pass posterior with comparable epistemic decomposition at 1x cost.
+
 ### Cost on Macbook M4 Pro
 
-- Single forward: ~80-150 ms (24-60M params, FP32, MPS).
-- T=20: ~1.6-3 s per cycle. Easily fits the 30-min cycle budget.
-- T=20 is the convergence elbow from Gal arXiv:1506.02142 §4.3 — variance estimate stable, returns diminish past T=50.
+- Single forward: ~80-150 ms (24-40M params, FP32, MPS).
+- V1: LLLA single forward + posterior sample = ~100 ms per cycle (was 1.6-3 s for MC T=20).
 
 ### Decomposition
 
-H[E[p]] = aleatoric + epistemic = E[H[p]] + (H[E[p]] - E[H[p]])
+V1: H[E[p]] = aleatoric + epistemic = E[H[p]] + (H[E[p]] - E[H[p]]) (MC dropout decomposition).
+
+V1: with LLLA, epistemic = posterior variance over logits (Hessian-based); aleatoric = entropy of MAP softmax. Same downstream actions (halve / abstain).
 
 - **Aleatoric high → mean prediction is high-entropy → "data is genuinely ambiguous."** Action: halve size via the conformal shrinkage path.
 - **Epistemic high → MC samples disagree → "model is out of training distribution."** Action: abstain (size = 0). Different members predicting different classes is the classical OOD signal.
@@ -1983,7 +2616,9 @@ V1 baselines (calibrated on val of fold 0, replaced after 30 days of paper tradi
 
 ### Combine With Snapshot Ensemble
 
-The snapshot ensemble (3 EMA checkpoints) and MC dropout (T=20) are independent uncertainty estimates. Combine multiplicatively. Cost: 3 snapshot + 20 MC = 23 forward passes ≈ 2-3.5 s. Budget OK.
+V1: snapshot ensemble (3 EMA checkpoints) + MC dropout (T=20) combined multiplicatively. Cost: 23 forward passes ≈ 2-3.5 s.
+
+V1: snapshot ensemble (3 EMA checkpoints) + LLLA posterior on each. Cost: 3 forward passes + 3 LLLA samples ≈ 0.5 s. Budget reclaimed for other inference work.
 
 ---
 
@@ -2088,7 +2723,7 @@ Cost: < 10 seconds per fold. Scheduled task:
 
 Same procedure but on detection of a Tier-2 trigger between scheduled refits.
 
-### Retrain Triggers (Full Transformer Fit, ~12 h on Mac mini)
+### Retrain Triggers (Full Transformer Fit, ~12 h on remote host)
 
 - **Scheduled:** every 6 months (walk-forward fold rotation).
 - **Performance:** macro-F1 < 0.40 for 10 consecutive trading days.
@@ -2129,21 +2764,32 @@ For live trailing-window recalibration: use trailing 390 bars but split 60/40 (T
 ---
 
 
-## PART J — Hyperparameter Table (Consolidated)
+## PART J — Hyperparameter Table (Consolidated, V1)
 
 | Pillar | Param | V1 default | Source |
 |---|---|---|---|
-| Loss | label_smoothing | 0.05 | Müller arXiv:1906.02629 |
+| **V1: Loss (Head A)** | **focal gamma** | **3.0** | **Mukhoti 2020 arXiv:2002.09437; required by Xi 2024 arXiv:2402.04344** |
+| **V1: Loss (Head B)** | **diff -Sharpe coef** | **0.5** | **Hwang & Zohren 2025 arXiv:2510.03129** |
+| **V1: Loss combined** | **lambda_DANN** | **0.05** | **Feng 2019 arXiv:1810.09936** |
+| **V1: Loss combined** | **lambda_aecf** | **MC-dropout entropy estimate** | **Chlon arXiv:2505.15417** |
+| Loss | label_smoothing | **V1: 0.0 (REPLACED by focal)** | Müller arXiv:1906.02629 (V1 used 0.05) |
 | Loss | class_weight | None | preserve calibration |
 | Snap-ensemble | K | 3 (epochs N-2, N-1, N) | Huang arXiv:1704.00109 |
-| MC dropout | T | 20 | Gal arXiv:1506.02142 §4.3 |
-| MC dropout | aleatoric_z halve | 1.5 | this doc |
-| MC dropout | epistemic_z abstain | 2.0 | this doc |
+| **V1: Epistemic** | **method** | **Laplace last-layer (LLLA)** | **Daxberger 2021 arXiv:2106.14806; ref aleximmer/Laplace** |
+| **V1: Epistemic** | **kelly multiplier** | **min(1, sigma_target / sigma_posterior)** | this doc |
+| MC dropout | T (V1 LEGACY) | **V1: REPLACED by LLLA** | Gal arXiv:1506.02142 §4.3 (V1 used T=20) |
+| MC dropout | aleatoric_z halve | 1.5 (KEPT — applied to LLLA aleatoric) | this doc |
+| MC dropout | epistemic_z abstain | 2.0 (KEPT — applied to LLLA epistemic) | this doc |
 | Temperature | optimizer | LBFGS, lr=0.1, max_iter=50, strong-wolfe | Guo arXiv:1706.04599 |
-| Temperature | sanity bounds | T in [0.7, 3.0] | this doc |
+| Temperature | sanity bounds | T in [0.7, 3.0] (V1: expect T near 1.0 with focal) | this doc |
 | Conformal | alpha | 0.10 (90% coverage) | this doc |
-| Conformal | score | APS (deterministic) | Romano arXiv:2006.02544 |
-| Conformal | mondrian | True (per-class) | Vovk 2012; Ding 2023 |
+| **V1: Conformal** | **score** | **RAPS (was APS)** | **Angelopoulos 2020 arXiv:2009.14193; ref TorchCP** |
+| **V1: Conformal** | **RAPS k_reg** | **1** | this doc |
+| **V1: Conformal** | **RAPS lambda** | **0.01** | this doc |
+| **V1: Conformal** | **online wrapper** | **AgACI** | **Zaffran 2022 ICML arXiv:2202.07282; ref mzaffran/AdaptiveConformalPredictionsTimeSeries** |
+| **V1: Conformal** | **AgACI gamma grid** | **(0.001, 0.005, 0.01, 0.05, 0.1)** | spec §5.2 |
+| **V1: Conformal** | **AgACI aggregator** | **BOA expert advice** | spec §5.2 |
+| Conformal | mondrian | True (per-class, applied on top of RAPS+AgACI) | Vovk 2012; Ding 2023 |
 | Conformal | min cal points / class | 50 | Ding 2023 |
 | Conformal | set_size = 1 shrinkage | sigmoid(5 * (p_top - alpha)) | this doc |
 | Conformal | set_size = 2 shrinkage | 0.5 * sigmoid(5 * (p_top - alpha)) | this doc |
@@ -2176,32 +2822,63 @@ For live trailing-window recalibration: use trailing 390 bars but split 60/40 (T
 | Val split | val-B T scaling | 25% | this doc |
 | Val split | val-C conformal | 25% | this doc |
 | Val split | val-B stratification | balanced 250 / class | imbalance |
-| (V2) ACI | gamma | 0.01 | Gibbs-Candès 2021 |
-| (V2) Deep ensembles | members | 5 | Lakshminarayanan 2017 |
+| **V1: ACI** | **promoted to V1 via AgACI wrapper** | gamma grid above | spec §5.2 |
+| (V2) Deep ensembles | members | DROPPED — 5x compute kills budget; snapshot+EMA matches 80-90% (Abe 2022 arXiv:2202.06985) | Lakshminarayanan 2017 |
+| **V1: Mixout** | **p (Stage 3 LLRD only)** | **0.7** | **Lee Cho Kang ICLR 2020 arXiv:1909.11299** |
+| **V1: Stoch depth** | **schedule** | **linear 0.0 -> 0.2** | **Touvron 2021** |
+| **V1: SSL** | **method** | **SimMTM** | **Dong NeurIPS 2023 arXiv:2302.00861; ref thuml/SimMTM** |
+| **V1: SSL** | **mask ratio** | **0.40 (was 0.20)** | **PatchTST default** |
+| **V1: SSL** | **K masked views** | **3** | spec §7.2 |
+| **V1: SSL** | **CLIP head tau** | **0.07** | spec §7.3 |
+| **V1: SSL** | **CLIP coefficient** | **0.5** | spec §7.5 |
+| **V1: Optimizer** | **method** | **Cautious-Schedule-Free AdamW** | **Liang 2024 arXiv:2411.16085 + Defazio ICLR 2025** |
+| **V1: muP** | **transfer-tune budget** | **$5 (2-4M tiny model)** | **Yang 2022 arXiv:2203.03466; ref microsoft/mup** |
+| **V1: FreeLB** | **scope** | **news embeddings only (NOT bars)** | **Zhu et al. ICLR 2020 arXiv:1909.11764; PIT risk on bars** |
+| **V1: FreeLB** | **K, epsilon** | **2, 0.5** | spec §6.6 |
+| **V1: DANN** | **era-label** | **year-bucket {2016-2019, 2020-2022, 2023-2024, 2025+}** | **Feng 2019 arXiv:1810.09936** |
+| **V1: DANN** | **lambda ramp** | **0 -> 0.1 over training** | spec §6.7 |
+| **V1: News fusion** | **cross-attn layers** | **[3, 7, 11] sparse** | **mPLUG-Owl3 arXiv:2408.04840 Table 8** |
+| **V1: News fusion** | **CFA projector** | **bottleneck d_text=256 -> 64 -> D=384** | **Lee arXiv:2603.22372; ref github.com/seunghan96/cfa** |
+| **V1: News fusion** | **AECF curriculum p** | **U(0.0, 0.9)** | **Chlon arXiv:2505.15417; ref github.com/leochlon/aecf** |
+| **V1: News fusion** | **is_news_present** | **`nn.Embedding(2, 8)`** | **Ma CVPR 2022 arXiv:2204.05454** |
+| **V1: Modality dropout** | **per-batch p** | **U(0.1, 0.9)** | spec invariant 24; CRITICAL FIX over V1's 15% |
+| **V1: FiLM regime** | **layers** | **{2, 4, 6, 8, 10}** | spec §1.5 |
+| **V1: FiLM regime** | **vec dim** | **12** (VIX-tercile 3 + RV-tercile 3 + FOMC 1 + year-bucket 4 + HMM-P-high-vol 1) | spec §1.5 |
+| **V1: Patches** | **P, S** | **4, 4 -> 16 patches** | spec §2B |
+| **V1: Patches** | **channels** | **681 (channel-independent)** | spec §2B |
+| **V1: Hybrid** | **transformer layers** | **10** | spec §1B |
+| **V1: Hybrid** | **sLSTM layers** | **2 (top of stack)** | spec §1B; xLSTMTime arXiv:2407.10240 |
+| **V1: Aug** | **method** | **SimPSI + Wave-Mask** | **Ryu AAAI 2024 arXiv:2312.05790; Arabi 2024 arXiv:2408.10951** |
+| **V1: Aug** | **naive jittering** | **FORBIDDEN (invariant 21)** | **Fons 2020 arXiv:2010.15111** |
+| **V1: Multi-task** | **head A loss coef** | **0.5** | spec §3B |
+| **V1: Multi-task** | **head B loss coef** | **0.5** | spec §3B |
+| **V1: Walk-forward** | **bars_per_year** | **3276 (NEVER 17500)** | invariant 5 |
 
 ---
 
-## PART K — Ablation Plan
+## PART K — Ablation Plan (V1)
 
 Run on the same val fold with bootstrap CIs. Decision rules below.
 
 | # | Variant | Loss | Post-hoc | Conformal | Uncertainty | Live drift |
 |---|---|---|---|---|---|---|
-| 1 | Baseline doc 05/05/07 | CE+LS=0.1 | none | naive split-CP | none | entropy z only |
-| 2 | + LS=0.05 | CE+LS=0.05 | none | naive split-CP | none | entropy z only |
-| 3 | + Temperature | CE+LS=0.05 | T-scaling | naive split-CP | none | entropy z only |
-| 4 | + APS | CE+LS=0.05 | T-scaling | APS marginal | none | entropy z only |
-| 5 | + Mondrian | CE+LS=0.05 | T-scaling | APS Mondrian | none | entropy z only |
-| 6 | + MC dropout | CE+LS=0.05 | T-scaling | APS Mondrian | MC T=20 | entropy z only |
-| 7 | + Snap ensemble | CE+LS=0.05 | T-scaling | APS Mondrian | MC + snap | entropy z only |
-| 8 | + 3-tier drift | CE+LS=0.05 | T-scaling | APS Mondrian | MC + snap | 3-tier |
-| 9 | + Dirichlet-ODIR fallback | CE+LS=0.05 | T+Dirichlet | APS Mondrian | MC + snap | 3-tier |
+| 1 | Baseline V1 reference | CE+LS=0.05 | none | naive split-CP | none | entropy z only |
+| 2 | + Focal gamma=3 (V1) | **focal gamma=3** | none | naive split-CP | none | entropy z only |
+| 3 | + Temperature | focal gamma=3 | T-scaling | naive split-CP | none | entropy z only |
+| 4 | + RAPS (V1) | focal gamma=3 | T-scaling | **RAPS marginal** | none | entropy z only |
+| 5 | + Mondrian | focal gamma=3 | T-scaling | RAPS Mondrian | none | entropy z only |
+| 6 | + AgACI online (V1) | focal gamma=3 | T-scaling | **RAPS Mondrian + AgACI** | none | entropy z only |
+| 7 | + LLLA (V1) | focal gamma=3 | T-scaling | RAPS+AgACI Mondrian | **LLLA** | entropy z only |
+| 8 | + Snap ensemble | focal gamma=3 | T-scaling | RAPS+AgACI Mondrian | LLLA + snap | entropy z only |
+| 9 | + 3-tier drift | focal gamma=3 | T-scaling | RAPS+AgACI Mondrian | LLLA + snap | 3-tier |
+| 10 | + Dirichlet-ODIR fallback | focal gamma=3 | T+Dirichlet | RAPS+AgACI Mondrian | LLLA + snap | 3-tier |
+| 11 | + Multi-task Sharpe head (V1) | **focal + diff-Sharpe** | T-scaling | RAPS+AgACI Mondrian | LLLA + snap | 3-tier |
 
-Decision:
-- Ship variant 8 (full V1 stack without Dirichlet) if classwise-AdaECE macro < 0.04 AND worst < 0.10 on val.
-- Escalate to variant 9 only if 8 fails the worst-class threshold on UP or DOWN.
-- If variant 5 alone matches variant 8 on all calibration metrics AND on val Sharpe (via doc 07 sizing path), drop MC dropout + snap ensemble + Tier-1 epistemic gate from V1. Simplicity wins.
-- If variant 3 alone matches variant 5 on coverage AND val Sharpe, drop Mondrian. (Unlikely given imbalance.)
+Decision (V1):
+- Ship variant 11 (full V1 stack with multi-task head) if classwise-AdaECE macro < 0.04 AND worst < 0.10 on val AND Stage 3 multi-task beats Stage 2 single-task by >= 0.2 Sharpe OOS (V1 promotion gate 5).
+- Escalate to variant 10 (Dirichlet fallback) only if 9 fails the worst-class threshold on UP or DOWN.
+- If variant 5 alone matches variant 9 on all calibration metrics AND on val Sharpe (via doc 07 sizing path), drop LLLA + snap ensemble + AgACI from V1. Simplicity wins.
+- If Stage 3 multi-task fails to beat Stage 2 single-task by >= 0.2 Sharpe OOS, ship the simpler (Head A only) per V1 invariant 25 + V1 invariant 3 (ship simpler if ties).
 
 ---
 
@@ -2209,37 +2886,76 @@ Decision:
 
 To ship V1 calibration, ALL must pass on every walk-forward fold:
 
-1. ✅ T fits within sanity bounds (T in [0.7, 3.0]).
+1. ✅ T fits within sanity bounds (T in [0.7, 3.0]). V1: expect T near 1.0 with focal gamma=3.
 2. ✅ classwise-AdaECE macro < 0.04, worst-class < 0.10.
-3. ✅ Marginal CP coverage on test fold >= 0.88 (target 0.90, 2pp margin).
-4. ✅ Per-class CP coverage >= 0.83 each (1pp margin).
+3. ✅ V1: Marginal CP coverage on test fold >= 0.88 with **RAPS+AgACI** (target 0.90, 2pp margin).
+4. ✅ V1: Per-class CP coverage >= 0.83 each via Mondrian on top of RAPS+AgACI.
 5. ✅ Macro Brier < 0.62.
 6. ✅ Macro-F1 > 0.40.
-7. ✅ MC dropout aleatoric + epistemic decomposition checks (sum to total predictive entropy +/- 1e-5).
-8. ✅ End-to-end calibration latency < 100 ms per bar (excluding MC dropout).
-9. ✅ MC dropout latency < 5 s per cycle.
+7. ✅ V1: LLLA aleatoric + epistemic decomposition checks (posterior variance + MAP entropy match within 1e-5; replaces V1's MC dropout decomposition test).
+8. ✅ V1: End-to-end calibration latency < 100 ms per bar (LLLA single forward replaces MC T=20).
+9. ✅ V1: LLLA + snapshot ensemble combined latency < 0.5 s per cycle (was MC dropout 5 s budget in V1).
 10. ✅ Snapshot ensemble adds < 1 s per cycle.
 11. ✅ Drift monitor unit tests all pass.
 12. ✅ Friday recalibration job runs end-to-end on a synthetic week.
+13. ✅ V1: focal loss gamma=3 trained logits stored alongside checkpoint (required for AgACI clean coverage; CE-trained logits would silently break coverage per Xi 2024 arXiv:2402.04344).
+14. ✅ V1: per-bucket eval metrics (news-present / news-absent / both) reported on every Sharpe / accuracy / coverage figure (invariant 18).
+15. ✅ V1: cost-stress at {0.5x, 1.0x, 1.5x} reported on every Sharpe (invariant 19).
+16. ✅ V1: Deflated Sharpe Ratio > 1.0 (invariant 20).
+17. ✅ V1: Stage 3 multi-task head beats Stage 2 single-task fallback by >= 0.2 Sharpe OOS (invariant 25 / promotion gate 5). If fail, ship simpler.
 
 If any fail on any fold, document under `## DEVIATION FROM SPEC: <date> - <issue>` at the top of this doc and AskUserQuestion.
 
 ---
 
-## PART M — Open Questions For Owner Decision
+## PART M — Open Questions For Owner Decision (V1 status updated)
 
-1. **LS=0.05 or LS=0.0?** Recommend 0.05 as conservative halfway. A/B on val NLL.
-2. **MC dropout T=20 or T=30?** T=20 is the convergence elbow per Gal 2016; T=30 is more conservative but adds 50% latency. Recommend 20.
-3. **Snapshot ensemble size: 3 or 5 EMA checkpoints?** 3 captures most of the gain (Huang 2017). 5 = more storage, more inference cost. Recommend 3.
-4. **Mondrian or marginal CP for V1?** Recommend Mondrian — minority class coverage matters for trading. ~10 LOC cost.
-5. **Recalibration window: 390 bars (30d) or 195 bars (15d) or 780 bars (60d)?** Recommend 390. 30d is the empirical sweet spot for intraday financial models per Bandi/Mykland.
-6. **ACI in V1 or V2?** Recommend V2. V1 stays static-recal. Re-evaluate after first 3 months of paper trading.
-7. **Dirichlet-ODIR auto-trigger or manual?** Recommend auto-trigger if classwise-AdaECE worst > 0.10 on UP/DOWN after T-scaling.
-8. **Retrain trigger thresholds — calibrate now or after first 30 days of paper trading?** Recommend lock the structure now, recalibrate the exact threshold values on day 31 from observed baselines.
+1. ~~**LS=0.05 or LS=0.0?**~~ **V1 RESOLVED**: focal loss gamma=3 replaces label smoothing entirely (invariant 22).
+2. ~~**MC dropout T=20 or T=30?**~~ **V1 RESOLVED**: Laplace last-layer (LLLA) replaces MC dropout (spec §5.3).
+3. **Snapshot ensemble size: 3 or 5 EMA checkpoints?** 3 captures most of the gain (Huang 2017). 5 = more storage, more inference cost. Recommend 3 (KEPT).
+4. **Mondrian or marginal CP for V1?** Recommend Mondrian on top of RAPS+AgACI — minority class coverage matters for trading. ~10 LOC cost (KEPT).
+5. **Recalibration window: 390 bars (30d) or 195 bars (15d) or 780 bars (60d)?** Recommend 390. 30d is the empirical sweet spot for intraday financial models per Bandi/Mykland (KEPT).
+6. ~~**ACI in V1 or V2?**~~ **V1 RESOLVED**: AgACI (online wrapper around RAPS) is now in V1 (spec §5.2). Removes V1's gamma misconfiguration risk by aggregating over a gamma grid via expert advice.
+7. **Dirichlet-ODIR auto-trigger or manual?** Recommend auto-trigger if classwise-AdaECE worst > 0.10 on UP/DOWN after T-scaling (KEPT, applies to focal-trained logits).
+8. **Retrain trigger thresholds — calibrate now or after first 30 days of paper trading?** Recommend lock the structure now, recalibrate the exact threshold values on day 31 from observed baselines (KEPT).
+9. **V1 NEW: muP transfer-tune budget — $5 confirmed?** Spec says $5 on 2-4M tiny model before 30M one-shot. Owner approved.
+10. **V1 NEW: SimMTM vs T-JEPA — A/B after baseline?** Paper says comparable. Spec primary = SimMTM. Defer A/B to post-baseline.
+11. **V1 NEW: FreeLB ON vs OFF?** Some risk of distribution-shift overcorrection. Defer A/B to post-baseline.
+12. **V1 NEW: Should regime vector include news-density bucket?** Currently no (12-dim: VIX-tercile + RV-tercile + FOMC + year-bucket + HMM-P-high-vol). Defer to post-baseline.
+13. **V1 NEW: Hyperparameter freeze date** — post-muP sweep, before main H100 run.
 
 ---
 
 ## Citations
+
+### V1 NEW Citations (architecture, training, calibration)
+
+- Saly-Kaufmann, Wood, Zohren — DL futures benchmark (VLSTM 2.40 / xLSTM 1.79 Sharpe) — arXiv:2603.01820
+- Alharthi, Mahmood — xLSTMTime — arXiv:2407.10240
+- Hwang, Zohren — multi-task Sharpe loss — arXiv:2510.03129
+- Lee et al. — CFA Constrained Fusion Adapter — arXiv:2603.22372 (ref github.com/seunghan96/cfa)
+- Chlon et al. — AECF entropy-gated curriculum masking — arXiv:2505.15417 (ref github.com/leochlon/aecf)
+- Ma et al. — is_present binary embedding — CVPR 2022 arXiv:2204.05454
+- mPLUG-Owl3 — sparse cross-attn ablation — arXiv:2408.04840
+- Mukhoti et al. — focal calibration gamma=3 — arXiv:2002.09437 (ref torrvision/focal_calibration)
+- Xi et al. — T-scaling on CE harms APS — arXiv:2402.04344
+- Angelopoulos et al. — RAPS — arXiv:2009.14193 (ref aangelopoulos/conformal_classification)
+- Zaffran et al. — AgACI online conformal — ICML 2022 arXiv:2202.07282 (ref mzaffran/AdaptiveConformalPredictionsTimeSeries)
+- TorchCP — production conformal library — github.com/ml-stat-Sustech/TorchCP
+- Daxberger et al. — Laplace last-layer — arXiv:2106.14806 (ref aleximmer/Laplace, pip install laplace-torch)
+- Lee, Cho, Kang — Mixout — ICLR 2020 arXiv:1909.11299 (ref bloodwass/mixout)
+- Touvron et al. — stochastic depth linear schedule — DeiT 2021
+- Ryu et al. — SimPSI spectral-preserving aug — AAAI 2024 arXiv:2312.05790
+- Arabi et al. — Wave-Mask DWT aug — arXiv:2408.10951
+- Fons et al. — naive jittering net-negative on Sharpe — arXiv:2010.15111
+- Liang — Cautious update mask — arXiv:2411.16085 (ref kyleliang919/C-Optim)
+- Yang — muP transfer-tune — arXiv:2203.03466 (ref microsoft/mup)
+- Zhu et al. — FreeLB adversarial training — ICLR 2020 arXiv:1909.11764 (ref zhuchen03/FreeLB)
+- Feng et al. — DANN gradient reversal on era-label — IJCAI 2019 arXiv:1810.09936
+- Dong et al. — SimMTM SSL — NeurIPS 2023 Spotlight arXiv:2302.00861 (ref thuml/SimMTM)
+- Defazio et al. — Schedule-Free AdamW — ICLR 2025 arXiv:2405.15682 (ref github.com/facebookresearch/schedule_free)
+- Abe et al. — snapshot+EMA matches deep ensembles — arXiv:2202.06985
+- Bailey, López de Prado — Deflated Sharpe Ratio — V1 invariant 20
 
 ### Calibration (training-time + post-hoc)
 - Müller, Kornblith, Hinton — "When Does Label Smoothing Help?" — arXiv:1906.02629
@@ -2281,32 +2997,49 @@ If any fail on any fold, document under `## DEVIATION FROM SPEC: <date> - <issue
 
 ---
 
-## Implementation Day Plan
+## Implementation Day Plan (V1)
 
 | Hour | Task |
 |---|---|
-| 1 | TemperatureScaler class + test_temperature_argmax_preserved |
-| 2 | metrics.py: AdaECE + classwise-AdaECE + macro Brier + NLL + tests |
-| 3 | APSConformal (marginal) + test_aps_coverage |
-| 4 | APSConformal Mondrian + test_mondrian_per_class_coverage |
-| 5 | mc_dropout_predict + test_mc_dropout_decomposition |
-| 6 | snapshot_ensemble + test_snapshot_ensemble_avg |
-| 7 | DriftMonitor Tier 1 + test_drift_tier1_thresholds |
-| 8 | DriftMonitor Tier 2 + Tier 3 + tests |
-| 9 | val split protocol + test_val_split_no_leakage |
-| 10 | Friday recalibration job + integration test |
-| 11 | Live cycle integration patch (cycle.py) |
-| 12 | Ablation runner (variants 1-9) + bootstrap CIs |
+| 1 | V1: focal loss gamma=3 + sharpe loss + test_focal_argmax + test_focal_ECE_improvement |
+| 2 | TemperatureScaler class + test_temperature_argmax_preserved (expect T near 1.0 with focal) |
+| 3 | metrics.py: AdaECE + classwise-AdaECE + macro Brier + NLL + DSR + per-bucket eval + tests |
+| 4 | V1: RAPS (Angelopoulos arXiv:2009.14193) + test_raps_coverage; integrate TorchCP if available |
+| 5 | V1: AgACI online wrapper (Zaffran arXiv:2202.07282) + test_agaci_distribution_shift |
+| 6 | RAPS+AgACI Mondrian per-class + test_mondrian_per_class_coverage_under_shift |
+| 7 | V1: LLLA via laplace-torch + test_llla_decomposition (replaces mc_dropout_predict) |
+| 8 | snapshot_ensemble + test_snapshot_ensemble_avg |
+| 9 | DriftMonitor Tier 1 + test_drift_tier1_thresholds |
+| 10 | DriftMonitor Tier 2 + Tier 3 + tests |
+| 11 | val split protocol + test_val_split_no_leakage |
+| 12 | V1: Mixout p=0.7 + test_mixout_anchor_invariant |
+| 13 | V1: SimPSI + Wave-Mask aug + test_aug_pit_safe + test_no_naive_jitter |
+| 14 | V1: Cautious patch on Schedule-Free AdamW + test_cautious_mask |
+| 15 | V1: muP transfer-tune script (2-4M tiny model) + test_mup_lr_transfer |
+| 16 | V1: FreeLB on news embeddings only + test_freelb_news_only |
+| 17 | V1: DANN gradient reversal on era-label + test_dann_lambda_ramp |
+| 18 | V1: SimMTM SSL pretrain + CLIP bars<->news head + test_simmtm_K_views |
+| 19 | V1: AECF entropy-gated curriculum mask + test_aecf_p_uniform_curriculum |
+| 20 | V1: is_news_present `nn.Embedding(2, 8)` + test_is_news_present |
+| 21 | V1: variable per-batch modality dropout + test_modality_dropout_uniform |
+| 22 | V1: FiLM regime conditioning every 2 layers + test_film_gamma_beta |
+| 23 | V1: sLSTM block (xLSTMTime style) + test_slstm_block + test_hybrid_10_2 |
+| 24 | V1: channel-independent + patches + test_patches_16_per_channel |
+| 25 | V1: multi-task dual head + test_head_a_focal + test_head_b_tanh |
+| 26 | V1: sparse cross-attn at [3,7,11] + CFA projector + test_sparse_layers |
+| 27 | Friday recalibration job + integration test |
+| 28 | Live cycle integration patch (cycle.py) |
+| 29 | Ablation runner (V1 variants 1-11) + bootstrap CIs |
 
-Total: 1.5 days for a competent agent. Concurrent with doc 07 changes; sequential with doc 08 changes.
+Total: ~3-4 days for a competent agent (V1 added significant scope). Concurrent with doc 07 changes; sequential with doc 08 changes. muP tiny-model sweep ($5) goes first to lock LR / beta_2 / init scale / FSAM rho before main run.
 
 ---
 
-## Hand-off Protocol
+## Hand-off Protocol (V1)
 
-1. Update STATUS.md with: T per fold, classwise-AdaECE per fold, marginal + per-class coverage per fold, MC dropout baseline distributions, Friday recal job status.
-2. Within this doc (Parts 1+2): use LS=0.05 in the loss config.
-3. doc 07 (sizing+exits): use the calibrated probs + APS p-values from Part 3 of this doc, not raw softmax. Sizing math: set_size_gate × sigmoid(5 × (p_top - alpha)).
-4. doc 08 (live): wire the 3-tier DriftMonitor; add Friday EOD launchd plist for recalibration.
+1. Update STATUS.md with: V1 multi-task head outputs (Head A logits + Head B position weight), T per fold (expect near 1.0 with focal), classwise-AdaECE per fold, marginal + per-class coverage per fold, **RAPS+AgACI** quantiles per fold, **LLLA** posterior precision per fold, snapshot ensemble checkpoint hashes, Friday recal job status, **per-bucket eval** results (news-present / news-absent / both), **cost-stress** results at {0.5x, 1.0x, 1.5x}, **DSR** per fold.
+2. Within this doc (Parts 1+2): use **focal loss gamma=3** (NOT LS=0.05) + **multi-task dual head** (Head A focal + Head B diff-Sharpe).
+3. doc 07 (sizing+exits): use the calibrated probs + **RAPS+AgACI** p-values from Part 3 of this doc, not raw softmax. Use **LLLA posterior variance** for Kelly multiplier. Position weight from Head B is the primary; Head A conformal interval scales position down when uncertainty high. Sizing math (V1): set_size_gate × sigmoid(5 × (p_top - alpha)) × Head_B_position × min(1, sigma_target / sigma_LLLA).
+4. doc 08 (live): wire the 3-tier DriftMonitor; add Friday EOD launchd plist for recalibration; add per-bucket eval reporting; add cost-stress reporting.
 
 Now go build.

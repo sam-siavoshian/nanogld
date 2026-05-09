@@ -1,0 +1,82 @@
+# nanoGLD V1 main training config (RunPod H100).
+#
+# Used by `python -m nanogld.training run --config configs/v1_main.yaml --fold N`.
+
+model:
+  numeric_dim: 681
+  d_model: 384
+  num_heads: 6
+  num_transformer_layers: 10
+  num_slstm_layers: 2
+  t_bars: 64
+  patch_len: 4
+  patch_stride: 4
+  n_classes: 3
+  regime_dim: 12
+  d_text: 256
+  n_news_slots: 8
+  dropout: 0.2
+  drop_path_max: 0.2
+  decomposition_kernel: 24
+
+dataloader:
+  batch_size: 8
+  num_workers: 0
+  lookback_T: 64
+  n_news_slots: 8
+  label_mode: triple_barrier
+
+ssl:
+  epochs: 15
+  mask_ratio: 0.40
+  k_views: 3
+  lambda_sim: 0.5
+  lambda_clip: 0.5
+  lambda_aecf: 1.0
+  grad_clip_max_norm: 1.0
+  log_every_n_steps: 100
+
+probe:
+  epochs: 5
+  lr: 1e-3
+  grad_clip_max_norm: 1.0
+  focal_gamma: 3.0
+
+llrd:
+  epochs: 10
+  base_lr: 1e-4
+  decay: 0.85
+  mixout_p: 0.7
+  ema_decay: 0.999
+  grad_clip_max_norm: 1.0
+  focal_gamma: 3.0
+  cost_bps: 2.0
+  focal_weight: 0.5
+  sharpe_weight: 0.5
+  aecf_weight: 0.05
+  freelb_K: 2
+  freelb_epsilon: 0.5
+
+calibration:
+  alpha_target: 0.10
+  raps_lambda: 0.01
+  raps_kreg: 1
+  t_scaling_max_iter: 50
+
+walk_forward:
+  train_years: 3.0
+  val_months: 6.0
+  test_months: 6.0
+  step_months: 3.0
+  embargo_days: 7
+
+reproducibility:
+  seed: 42
+  deterministic: true
+
+paths:
+  unified: data/processed/training_v1_unified.pt
+  sidecar: data/processed/training_v1_sidecar.pt
+  hmm: data/processed/v1_hmm.joblib
+  output_dir: checkpoints/v1
+  reports_dir: reports

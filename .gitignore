@@ -4,79 +4,64 @@ __pycache__/
 *$py.class
 *.so
 .Python
-*.egg-info/
-.eggs/
-*.egg
 build/
 dist/
-.venv/
-venv/
-env/
-.tox/
+*.egg-info/
+*.egg
+.eggs/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
-# Jupyter
-.ipynb_checkpoints/
+# Virtual envs
+.venv/
+venv/
+env/
+.uv-cache/
 
-# OS
-.DS_Store
-Thumbs.db
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+service-account*.json
+credentials.json
+hf_token*
+*api_key*
 
-# Editors
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-.claude/
+.DS_Store
 
-# Secrets — never commit
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-secrets/
-credentials.json
-service-account*.json
-alpaca-*
+# Data artifacts (kept on Mac mini / HF Hub)
+data/raw/
+data/processed/training_v1_unified.pt
+data/processed/training_v1_sidecar*.pt
+data/processed/v1_hmm*.joblib
+data/cache/
+*.parquet
 
-# ML artifacts (regenerable, large, content-addressed)
-# anchor to repo root so src/nanogld/data/ (code) is NOT ignored.
-# Per-subdir exclusion (rather than /data/) so data/README.md can be tracked.
-/data/raw/
-/data/snapshots/
-/data/embeddings/
-/data/anchors/
-/data/processed/
-/checkpoints/
-/runs/
+# Checkpoints (kept on HF Hub)
+checkpoints/
+runs/
 wandb/
 mlruns/
-lightning_logs/
-.neptune/
-.comet/
-outputs/
-.hydra/
-*.parquet
-*.npy
-*.npz
-*.pkl
-*.pt
-*.pth
-*.ckpt
-*.safetensors
-*.h5
-
-# Coverage
-.coverage
-htmlcov/
 
 # Logs
 *.log
 logs/
+.heartbeat
 
-# Pre-pivot planning artifacts (kept local, not for repo)
-samsiavoshian-main-design-*.md
-timeline.jsonl
+# Tmp
+tmp/
+*.tmp
+*.bak
+
+# OS
+Thumbs.db

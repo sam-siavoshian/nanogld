@@ -1,5 +1,31 @@
 # 02 — Feature Engineering
 
+## ✅ STATUS: COMPLETE 2026-05-08
+
+**681 features per bar in the unified dataset.** Composition:
+- v1 base (635 cols): per-asset OHLCV+lag1, 4 log-ret horizons + 2 RV horizons + RS-vs-SPY + 30d gold-corr × 27 assets, plus 7 cross-asset ratios, 117 macro YoY/MoM, treasury term structure, COT, GPR, WGC, GDELT, calendar
+- v2 engineered (46 cols, src/nanogld/features/v2_engineered.py): cross-asset interactions (4), volatility regime (5), calendar/event (7), regime+microstructure (8), macro term structure (6), momentum extensions (10), news×price (5), news anchor cosines (14)
+
+**3 paranoid audit iterations × 8 agents each = 19 bugs caught and fixed** before shipping. Final state: zero leakage (max |corr| with next_log_return = 0.0117), zero inf, zero 100%-NaN cols, all rolling windows PIT-correct, all warmup periods correctly NaN.
+
+**Output baked into unified dataset:** `data["features"]` is `(75993, 681) float32` inside `training_v1_unified.pt`. Column names in `data["feature_names"]`.
+
+**Read `plan/HANDOFF.md` for full context.** Original spec retained below for archival.
+
+---
+
+## V1 HARD RULES (2026-05-08, additive to V1)
+
+The V1 spec sheet (`plan-edit/V1-SPEC.md`) overrides any conflicting V1 line below. Hard rules specific to feature engineering:
+
+1. **Triple-barrier labels with spread-adjusted neutral threshold.** Replaces fixed 5-bps threshold from V1. ATR-14 barriers, 1-bar timeout. See section "Triple-Barrier Labels (V1)".
+2. **Half-hour-5 feature mandatory.** `gld_h5_log_return` + `gld_h5_x_vol_high` interaction. Gao-Han-Li-Zhou 2014 single-feature 5.43 Sharpe prior, GLD-specific.
+3. **SimPSI / Wave-Mask augmentation only.** Naive jittering FORBIDDEN (Fons 2020 arXiv:2010.15111 net-negative on Sharpe). Manifold Mixup at hidden states only, never raw input.
+4. **VSN feature gate at input is mandatory.** Variable Selection Network (Lim 2021, arXiv:1912.09363). Lives in `src/nanogld/model/`, but documented here because it shapes how the 681-feature input is consumed.
+5. **Order of operations: decomp -> RevIN -> VSN -> patch projection -> backbone.** Series decomposition (24-bar MA kernel) splits trend + seasonal pre-RevIN. RevIN is per-channel (681 instances), not per-group.
+
+---
+
 ## YOU ARE THE FEATURE ENGINEER AGENT
 
 You own feature construction. You take immutable parquet snapshots from doc 02 + cached embeddings from doc 03 and produce the feature DataFrame that doc 05 (training) consumes.
@@ -34,9 +60,12 @@ src/nanogld/features/
 ├── cot.py                  # NEW V1 expansion — CFTC COT positioning features
 ├── wgc.py                  # NEW V1 expansion — WGC central bank flow features
 ├── calendar.py             # NEW V1 expansion — event proximity + cyclical (sin/cos) features
-├── labels.py               # 3-class label construction with threshold sweep
+├── h5.py                   # V1 NEW — half-hour-5 intraday momentum (Gao 2014 prior, 2 dims)
+├── spread.py               # V1 NEW — bid-ask spread feature (5-min trailing avg, 1 dim)
+├── decomposition.py        # V1 NEW — 24-bar MA series decomposition (trend + seasonal)
+├── labels.py               # V1: triple-barrier with spread-adjusted neutral (replaces 5-bps fixed)
 ├── normalize.py            # Rolling z-score with clip(-10, 10)
-├── revin.py                # RevIN instance norm per channel-group
+├── revin.py                # V1: RevIN per individual channel (681 instances, was per-group)
 ├── anchor_cosines.py       # Computes 4 anchor cosines per news source per bar
 ├── build.py                # End-to-end pipeline: snapshot → feature DataFrame
 └── cli.py                  # `python -m nanogld.features build`
@@ -144,17 +173,18 @@ Now read the implementation specifics below.
 - ❌ Anchor-cosine claimed novel → ✅ prior art exists (FinAnchor arXiv:2602.20859, FINEAS arXiv:2111.00526). Cite, don't claim novelty. Add anchor-cohesion test (intra-anchor pairwise cosine > 0.6)
 - ❌ Z-score returns can blow up at near-zero std → ✅ add `clip(-10, 10)` after z-scoring
 - ❌ News embeddings raw into projection → ✅ **L2-normalize 4096-dim before** projection + `LayerNorm(256)` after (StockTime pattern)
-- ⚠️ Class imbalance is mild (28/44/28). Consider plain unweighted CE OR Cui-style β=0.999 effective-number weighting (arXiv:1901.05555). Default `len/(num_classes × N_i)` is fine but A/B compare.
-- ⚠️ 5bps label threshold is research approximation. For live trading, consider triple-barrier with vol-scaled barriers (Lopez de Prado AFML Ch.3) — TODO for v2.
+- ⚠️ Class imbalance is mild (28/44/28). Consider plain unweighted CE OR Cui-style β=0.999 effective-number weighting (arXiv:1901.05555). Default `len/(num_classes × N_i)` is fine but A/B compare. **V1 update:** focal loss gamma=3 replaces vanilla CE (Mukhoti 2020 arXiv:2002.09437) per spec section 5.1, doc 05 owns the loss config.
+- ✅ **V1 PROMOTED:** the "5bps fixed threshold is approximation, triple-barrier TODO for v2" note is now resolved. Triple-barrier with ATR-14 barriers + spread-adjusted neutral threshold is the V1 default. See "Label Construction (V1)" section below.
 **Owner:** samsiavoshian
 **Implementation effort:** 1 day after data pipeline lands
 
-## Per-Bar Input Vector (V1 expanded 2026-05-04)
+## Per-Bar Input Vector (V1 expanded 2026-05-04, V1 +3 dims 2026-05-08)
 
 ```
-Total: ~1000 dims per bar (was ~804 pre-expansion)
+Total: ~1000 dims per bar (was ~804 pre-expansion). 681 numeric features in
+the unified dataset locked 2026-05-08; V1 adds 3 dims (h5 ×2 + spread ×1).
 
-NUMERIC FEATURES (~232 dims):
+NUMERIC FEATURES (~232 dims pre-V1, +3 V1 = ~235):
 ├── Price features                  (12 dims)
 ├── Risk/volatility features        (8 dims)
 ├── Macro short (FX/VIX/oil/GPR)    (12 dims)
@@ -165,7 +195,9 @@ NUMERIC FEATURES (~232 dims):
 ├── Macro bundle                    (~60 dims — 19 series × 3 features + 3 derived)
 ├── COT positioning                 (~6 dims — managed money / commercial / OI z-score / changes)
 ├── WGC central bank flows          (~3 dims — total + YoY + isPositive)
-└── Calendar event features         (~10 dims — event proximity + cyclical sin/cos)
+├── Calendar event features         (~10 dims — event proximity + cyclical sin/cos)
+├── Half-hour-5 (V1 NEW)          (2 dims — gld_h5_log_return + gld_h5_x_vol_high)
+└── Spread (V1 NEW)               (1 dim — gld_spread_bps_t, 5-min trailing avg)
 
 NEWS EMBEDDINGS (V4: 1024 dims = 8 latent tokens × 128, see doc 03):
 └── Bar-conditioned aggregation of per-article embeddings from 12+ sources
@@ -572,6 +604,129 @@ def calendar_features(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
 
 **Why event windows beat raw "minutes-to-event":** the model can learn higher vol + reversion patterns around CPI/NFP/FOMC; but `minutes_until_NFP` injects deterministic future-time information that breaks point-in-time discipline in subtle ways (it's "information about when the future is", which the model could exploit to memorize calendar artifacts). Window indicators are simpler and safer.
 
+## Category 13 — Half-Hour-5 Intraday Momentum (V1 NEW, 2 dims)
+
+Gao-Han-Li-Zhou 2014 found a single feature, the log return of the 5th RTH half-hour (~11:30-12:00 ET), predicts the last half-hour with **Sharpe 5.43 on GLD specifically**, concentrated on high-vol days. This is the published apples-to-apples intraday GLD record. Gating it through a vol-tercile interaction captures the concentration effect.
+
+```python
+def h5_features(df: pd.DataFrame, vol_tercile_high: pd.Series) -> pd.DataFrame:
+    """Half-hour-5 intraday momentum (Gao 2014 prior).
+    H5 = the 5th RTH half-hour bar (approx 11:30-12:00 ET).
+    NaN outside RTH-5 window propagates forward to end of day.
+    """
+    out = pd.DataFrame(index=df.index)
+
+    # Identify H5 bar by ET time of day
+    et_times = df.timestamp.dt.tz_convert("America/New_York")
+    is_h5 = (et_times.dt.hour == 11) & (et_times.dt.minute == 30)
+
+    # 30-min log return at H5 bar; forward-fill within day, NaN at SOD
+    h5_logret = np.where(
+        is_h5,
+        np.log(df.close.shift(1) / df.close.shift(2)),  # close at H5 / close at H4
+        np.nan,
+    )
+    h5_logret = pd.Series(h5_logret, index=df.index).groupby(et_times.dt.date).ffill()
+
+    out["gld_h5_log_return"]  = h5_logret.astype("float32")
+    out["gld_h5_x_vol_high"]  = (h5_logret * vol_tercile_high.astype("float32")).astype("float32")
+
+    return out  # 2 dims
+```
+
+**Why this matters:** the 681-feature ensemble is wide. A single feature with published Sharpe 5.43 on the same instrument we're trading is a non-negotiable inclusion. The interaction term `r_h5 * vol_tercile_high` lets the model attend to it primarily on high-vol days where the prior holds. Reference: Gao-Han-Li-Zhou 2014 (cited in V1 spec section 4.1).
+
+## Category 14 — Spread Feature (V1 NEW, 1 dim)
+
+```python
+def spread_feature(quotes: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+    """5-min trailing average bid-ask spread in bps. Used by triple-barrier neutral
+    threshold and by sizing layer (doc 07). Quote feed must be PIT-correct: every
+    quote carries a t_visible = quote.timestamp + epsilon."""
+    out = pd.DataFrame(index=df.index)
+
+    quotes = quotes.sort_values("t_visible")
+    spread_bps = ((quotes.ask - quotes.bid) / ((quotes.ask + quotes.bid) / 2)) * 10_000
+
+    # 5-minute trailing avg, joined as-of bar close
+    spread_trailing = spread_bps.rolling("5min", on=quotes.t_visible).mean()
+    joined = pd.merge_asof(
+        df[["timestamp"]].rename(columns={"timestamp": "T_close"}),
+        pd.DataFrame({"t_visible": quotes.t_visible, "spread_5min_avg": spread_trailing}),
+        left_on="T_close",
+        right_on="t_visible",
+        direction="backward",
+        allow_exact_matches=False,
+    )
+
+    out["gld_spread_bps_t"] = joined["spread_5min_avg"].astype("float32")
+    return out  # 1 dim
+```
+
+**Why:** triple-barrier labeling needs a per-bar neutral threshold so micro-moves inside the spread don't get labeled directional. Sizing layer (doc 07) also gates positions when spread spikes (cost-aware adjustment).
+
+## Series Decomposition (V1 NEW, no new columns)
+
+Pre-VSN, pre-RevIN: split each of the 681 channels into trend + seasonal via 24-bar moving-average kernel. xLSTMTime (Alharthi & Mahmood, arXiv:2407.10240) requires this; Autoformer-style.
+
+```python
+def decompose_series(x: np.ndarray, kernel: int = 24) -> tuple[np.ndarray, np.ndarray]:
+    """Causal moving-average decomposition. center=False so the kernel only sees past.
+    x shape: (T, 681). Returns (trend, seasonal) each (T, 681)."""
+    df = pd.DataFrame(x)
+    trend = df.rolling(kernel, min_periods=1, center=False).mean().to_numpy()
+    seasonal = x - trend
+    return trend, seasonal
+```
+
+Both trend and seasonal feed RevIN separately, then sum back. Lives in `src/nanogld/features/decomposition.py` (or under `src/nanogld/model/` since it's coupled to RevIN). Order of operations: **decomp -> RevIN per-channel -> VSN -> patch projection -> backbone**.
+
+## RevIN per-Channel (V1 upgrade)
+
+V1: RevIN per channel-group (~14 to ~25 groups).
+
+V1: RevIN per individual channel (681 instances of learnable affine, one per feature). Trivial cost (~1.4K extra params), strictly more expressive. Justification: Huang & Yang ESWA 2026 — per-feature RevIN drops RMSE 50% / MAPE 54% on cross-market stock data.
+
+```python
+class RevINPerChannel(nn.Module):
+    """Per-channel reversible instance norm. 681 learnable (gamma, beta) pairs."""
+    def __init__(self, num_channels: int = 681, eps: float = 1e-5):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(num_channels))
+        self.beta  = nn.Parameter(torch.zeros(num_channels))
+        self.eps = eps
+        self._mean = None
+        self._std  = None
+
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, C=681)
+        self._mean = x.mean(dim=1, keepdim=True)  # (B, 1, C)
+        self._std  = x.std(dim=1, keepdim=True) + self.eps
+        x = (x - self._mean) / self._std
+        return x * self.gamma + self.beta
+
+    def denormalize(self, x: torch.Tensor) -> torch.Tensor:
+        x = (x - self.beta) / self.gamma
+        return x * self._std + self._mean
+```
+
+Lives in `src/nanogld/model/revin.py` per V1 file layout (model layer). Documented here because feature engineering decides what one channel is and how 681 channels are ordered.
+
+## VSN Feature Gate at Input (V1 NEW)
+
+Variable Selection Network (Lim 2021, TFT, arXiv:1912.09363) sits at the input layer **after** RevIN, **before** patch projection. Math:
+
+```
+gate_i = softmax_i(GRN(x_i))      for i in {1..681}
+x_gated = gate * x                # element-wise across 681 channels
+```
+
+GRN (Gate Residual Network) = 2-layer MLP with ELU activation + GLU + LayerNorm. Cost: ~2M extra params (one GRN per feature group, parameter-shared inside group).
+
+**Why pay 2M params:** VLSTM (LSTM + VSN) hits 2.40 Sharpe on the Saly-Kaufmann/Wood/Zohren 2026 benchmark (arXiv:2603.01820), versus plain LSTM at 1.48 Sharpe. **+0.92 Sharpe delta from VSN alone.** Even half that delta on our setup pays for itself many times over.
+
+This is a model-side artifact (file lives in `src/nanogld/model/vsn.py`), but documented here because it shapes what 681 features mean to the backbone. Doc 05 owns the implementation.
+
 ## Conflict-Anchor Cosine (semantic features beyond raw embeddings)
 
 ```python
@@ -629,29 +784,77 @@ ANCHOR_TEMPLATES = {
 
 Each gets ONE anchor vector per news source (computed once, frozen). Per bar = 4 cheap cosine features per source = potentially 12 extra features. Currently included as 2 of the 10 geo features (conflict_sim_alpaca, conflict_sim_gdelt). Can expand later if useful.
 
-## Label Construction
+## Label Construction (V1: Triple-Barrier replaces fixed 5-bps threshold)
+
+V1 used `label = sign(next_log_return)` thresholded at fixed 5 bps. V1 replaces this with López de Prado's triple-barrier method ("Advances in Financial Machine Learning", Ch. 3) plus a spread-adjusted neutral guard from the TLOB lesson.
+
+**Triple-barrier rule per bar T:**
+- Compute ATR-14 at bar T close.
+- Set `barrier_up = +1.0 * ATR_14`, `barrier_down = -1.0 * ATR_14`, `timeout = 1 bar (30 min)`.
+- Step forward in time. Label `+1` if up barrier hit first, `-1` if down barrier hit first, `0` if timeout reached without either touched.
+- **Spread-adjusted neutral guard:** even if a barrier is touched, force `label = 0` when `|return| < spread_t` (move smaller than the spread is unactionable).
 
 ```python
-THRESHOLD_BPS = 5  # tune in {3, 5, 10}
+def triple_barrier_labels(
+    df: pd.DataFrame,
+    spread_bps: pd.Series,
+    atr_period: int = 14,
+    barrier_mult: float = 1.0,
+    timeout_bars: int = 1,
+) -> pd.DataFrame:
+    """López de Prado triple-barrier labels with spread-adjusted neutral guard.
+    Returns DataFrame with label_triple_barrier (-1/0/+1), barrier_up, barrier_down."""
+    out = pd.DataFrame(index=df.index)
 
-def make_labels(df: pd.DataFrame, threshold_bps: int) -> pd.Series:
-    """Labels for bar T are based on bar T+1's return."""
+    # ATR-14 at bar T close (PIT: only past bars used)
+    high_low   = (df.high.shift(1) - df.low.shift(1)).abs()
+    high_close = (df.high.shift(1) - df.close.shift(2)).abs()
+    low_close  = (df.low.shift(1)  - df.close.shift(2)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr_14 = tr.rolling(atr_period).mean()
+
+    barrier_up   = barrier_mult * atr_14
+    barrier_down = -barrier_mult * atr_14
+
+    out["barrier_up"]   = barrier_up.astype("float32")
+    out["barrier_down"] = barrier_down.astype("float32")
+
+    # 30-min log return between bar T close and bar T+1 close
     next_log_return = np.log(df.close.shift(-1) / df.close)
-    threshold = threshold_bps / 10_000
 
-    labels = pd.Series(np.full(len(df), 1, dtype=int), index=df.index)  # default flat=1
-    labels[next_log_return > threshold] = 2   # up
-    labels[next_log_return < -threshold] = 0  # down
+    # Spread per bar in absolute log-return units (bps -> ratio)
+    spread_abs = (spread_bps / 10_000).astype("float32")
 
-    return labels
+    # Triple-barrier with timeout=1 bar: simply check next return vs barriers
+    label = pd.Series(0, index=df.index, dtype="int8")  # 0 = timeout/neutral
+    label[next_log_return >=  barrier_up.values]   = 1
+    label[next_log_return <= barrier_down.values] = -1
+
+    # Spread-adjusted neutral: micro-moves inside the spread are unactionable
+    label[next_log_return.abs() < spread_abs] = 0
+
+    out["label_triple_barrier"] = label  # int8 in {-1, 0, +1}
+    # CE-friendly mapping for the 3-class head: {-1, 0, +1} -> {0, 1, 2}
+    out["label_ce"] = (label + 1).astype("int8")
+    return out
 ```
 
-**Class distribution at threshold = 5bps on 30min GLD typically:**
-- DOWN (0): ~28%
-- FLAT (1): ~44%
-- UP (2): ~28%
+**Three new columns:**
+- `label_triple_barrier` (int8 in {-1, 0, +1}, mapped to {0, 1, 2} as `label_ce` for 3-class CE head)
+- `barrier_up` (float32 ATR-scaled, kept for backtest cross-check)
+- `barrier_down` (float32 ATR-scaled)
 
-Class-weighted cross-entropy weights = `len(df) / (3 * class_count)` per class.
+**Why triple-barrier over 5-bps fixed:**
+- ATR-scaled barriers adapt to regime. A 5-bps move during 2020 March chaos is noise; a 5-bps move during 2017 calm is signal. Fixed thresholds collapse that asymmetry into a single class boundary.
+- Spread-adjusted neutral kills the "predict a 4-bps move when spread is 8 bps" trap. The TLOB paper showed this matters: micro-direction predictions inside the spread don't translate to PnL.
+- López de Prado's method is the practitioner standard for exactly this reason. Reference: AFML Ch. 3, plus the V1 spec sheet section 4.5.
+
+**Class distribution sanity (expected on 30min GLD):**
+- DOWN (-1): ~25-30%
+- NEUTRAL (0): ~40-50% (depends on ATR / spread regime)
+- UP (+1): ~25-30%
+
+Class-weighted CE weights = `len(df) / (3 * class_count)` per class. Or use focal loss gamma=3 (V1 default per spec section 5.1, doc 05 owns the loss config).
 
 ## Normalization (Point-in-Time Z-Scoring)
 
@@ -668,10 +871,10 @@ Apply to ALL continuous features. Categorical features (session_phase, is_FOMC_w
 
 News embeddings are NOT z-scored per-feature (they're 256-dim each). They're already roughly normalized by the LLM and the learned projection layer.
 
-## Final Pipeline
+## Final Pipeline (V1)
 
 ```python
-def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_path: str) -> pd.DataFrame:
+def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_path: str, quotes_path: str) -> pd.DataFrame:
     raw = pd.read_parquet(snapshot_path)
 
     # Raw feature engineering
@@ -689,16 +892,25 @@ def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_
     wgc = wgc_features(raw, wgc_data=...)
     cal = calendar_features(raw, calendar=...)
 
+    # V1 expansion (2026-05-08)
+    quotes = pd.read_parquet(quotes_path)
+    spread = spread_feature(quotes, raw)                  # 1 dim: gld_spread_bps_t
+    vol_tercile_high = compute_vol_tercile_high(risk["realized_vol_48"])
+    h5 = h5_features(raw, vol_tercile_high)               # 2 dims: gld_h5_log_return + gld_h5_x_vol_high
+
     # Concat
     numeric = pd.concat([
         price, risk, macro, geo,                    # existing 36 dims
-        equity, equity_ratios,                       # NEW V1: 72 + 9 = 81 dims
-        treasury,                                    # NEW V1: ~30 dims
-        macro_full,                                  # NEW V1: ~60 dims
-        cot, wgc, cal,                               # NEW V1: 6 + 3 + 10 = 19 dims
+        equity, equity_ratios,                       # V1: 72 + 9 = 81 dims
+        treasury,                                    # V1: ~30 dims
+        macro_full,                                  # V1: ~60 dims
+        cot, wgc, cal,                               # V1: 6 + 3 + 10 = 19 dims
+        spread, h5,                                  # V1: 1 + 2 = 3 dims
     ], axis=1)
 
-    # Z-score
+    # Z-score (per-channel, point-in-time). Note: per-channel RevIN happens later
+    # at the model-input layer (src/nanogld/model/revin.py); this z-score keeps
+    # the feature table on a sane scale before training-time RevIN.
     for col in numeric.columns:
         if col not in CATEGORICAL_COLS:
             numeric[col] = rolling_zscore(numeric[col], lookback=1000)
@@ -710,7 +922,7 @@ def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_
     news_emb = pd.read_parquet(llama_embeddings_path)  # cols: alpaca_emb_<0..4095>, gdelt_emb_<0..4095>, rss_emb_<0..4095>
 
     # Anchor cosines (fill conflict_sim_alpaca, conflict_sim_gdelt)
-    anchors_npz = np.load(anchors_path)  # safe numpy native, not pickle
+    anchors_npz = np.load(anchors_path)  # safe numpy-native .npz format
     anchors = {k: anchors_npz[k] for k in anchors_npz.files}
     geo['conflict_sim_alpaca'] = compute_cosine(news_emb['alpaca_emb_*'], anchors['conflict'])
     geo['conflict_sim_gdelt']  = compute_cosine(news_emb['gdelt_emb_*'],  anchors['conflict'])
@@ -718,14 +930,65 @@ def build_feature_table(snapshot_path: str, llama_embeddings_path: str, anchors_
     # Combine: numeric + news embeddings (raw 4096-dim, projection happens in model)
     features = pd.concat([numeric, news_emb], axis=1)
 
-    # Labels
-    features['label'] = make_labels(raw, threshold_bps=5)
+    # V1 Labels: triple-barrier with spread-adjusted neutral
+    label_table = triple_barrier_labels(
+        raw,
+        spread_bps=spread["gld_spread_bps_t"],
+        atr_period=14,
+        barrier_mult=1.0,
+        timeout_bars=1,
+    )
+    features = pd.concat([features, label_table], axis=1)
 
     # Drop rows with NaN (rolling features at start of dataset)
     features = features.dropna()
 
     return features
 ```
+
+**Note on order of operations at training time** (doc 05 owns this; documented here for clarity):
+
+```
+features (681 dim, z-scored) -> series_decompose(kernel=24) -> trend, seasonal
+                              -> RevIN_per_channel(trend) + RevIN_per_channel(seasonal)
+                              -> sum back
+                              -> VSN gate (681 -> 681, learnable softmax weights per feature)
+                              -> patch projection (P=4, S=4, T_bars=64 -> 16 patches)
+                              -> backbone (10 transformer + 2 sLSTM, FiLM regime conditioning)
+```
+
+## Augmentation (V1: SimPSI + Wave-Mask, naive jittering BANNED)
+
+V1 used jittering (Gaussian noise sigma=0.02) + magnitude warping. V1 bans naive jittering: Fons 2020 (arXiv:2010.15111) showed jittering is **net negative on Sharpe** in financial time series because it destroys the dominant-frequency components that carry the trend signal.
+
+V1 uses two PIT-safe, spectral-preserving augmentations:
+
+1. **SimPSI** (Ryu et al. AAAI 2024, arXiv:2312.05790). Reweights augmentation strength per frequency component so dominant components are preserved. Math:
+   - `X_freq = FFT(x)`
+   - `mask = softmax(|X_freq|^2 / tau)` -- low-energy bins get more aug, high-energy preserved
+   - `x_aug = IFFT(X_freq * (1 + epsilon * (1 - mask) * noise))`
+
+2. **Wave-Mask** (Arabi 2024, arXiv:2408.10951). Masks DWT (discrete wavelet transform) coefficients at random scales, then inverse-DWT. Both PIT-safe (no time-axis shifts).
+
+3. **Manifold Mixup** (alpha=0.2, kept from V1) -- applied at hidden states only, **never on raw input**. Lives in doc 05 training loop.
+
+Forbidden in V1:
+- Jittering (Gaussian additive noise on raw input) -- net-negative Sharpe per Fons 2020.
+- Time warping / scaling -- breaks PIT alignment with labels.
+- Window slicing with offset -- same PIT break.
+
+```python
+def simpsi_augment(x: np.ndarray, epsilon: float = 0.1, tau: float = 1.0) -> np.ndarray:
+    """SimPSI spectral-preserving augmentation. x shape (T, C). PIT-safe."""
+    X = np.fft.rfft(x, axis=0)
+    energy = np.abs(X) ** 2
+    mask = softmax(energy / tau, axis=0)  # high energy -> high mask -> preserved
+    noise = np.random.randn(*X.shape) + 1j * np.random.randn(*X.shape)
+    X_aug = X * (1 + epsilon * (1 - mask) * noise)
+    return np.fft.irfft(X_aug, n=x.shape[0], axis=0)
+```
+
+Lives in `src/nanogld/training/augment.py` (doc 05 owns implementation; documented here because it shapes feature semantics during training).
 
 ## Validation Tests
 
@@ -735,12 +998,27 @@ def test_no_future_leakage(features, raw):
     # Modify raw[T+1] arbitrarily, recompute features[T], ensure unchanged
     ...
 
-def test_label_alignment(features, raw):
-    """For each row T, features.label[T] should match np.sign(raw.close[T+1] - raw.close[T]) thresholded."""
+def test_label_alignment_triple_barrier(features, raw, spread):
+    """For each row T, features.label_triple_barrier[T] is +1 iff
+    next_log_return >= barrier_up[T] AND |next_log_return| >= spread[T].
+    Mirror checks for -1 and 0."""
     ...
 
 def test_z_score_no_global_leakage(features, raw):
     """Z-score at row T uses only past data."""
+    ...
+
+def test_h5_feature_pit(features, raw):
+    """gld_h5_log_return is NaN before the first H5 bar of each day; it carries
+    the same value forward within a day; it resets at SOD next day."""
+    ...
+
+def test_spread_pit(features, quotes):
+    """gld_spread_bps_t at bar T uses only quotes with t_visible < bar T close."""
+    ...
+
+def test_atr_14_pit(raw):
+    """ATR-14 at bar T uses only bars [T-14, T-1]; never bar T itself."""
     ...
 ```
 

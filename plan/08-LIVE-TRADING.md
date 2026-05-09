@@ -179,7 +179,7 @@ Now read the implementation specifics.
 
 ## What's Locked
 
-- launchd cron on Macbook (not Mac mini — that's the trainer)
+- launchd cron on Macbook (not remote host — that's the trainer)
 - Alpaca SDK (alpaca-py) for orders + data
 - Paper trading for week 1-2, real $100 from week 3
 - Two-key separation: paper keys in dev `.env`, live keys ONLY in production cron environment
