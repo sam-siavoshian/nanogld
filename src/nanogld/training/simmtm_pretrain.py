@@ -29,7 +29,7 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 
-from nanogld.training.losses import aecf_entropy_reg, clip_infonce, simmtm_loss
+from nanogld.training.losses import clip_infonce, simmtm_loss
 
 LOG = logging.getLogger("nanogld.training.simmtm_pretrain")
 
@@ -77,14 +77,24 @@ def _generate_masked_views(
 
 
 class SimMTMReconHead(nn.Module):
-    """Small linear head that predicts bar values from pooled encoder output."""
+    """Auxiliary heads for SSL: bar reconstruction + news projection.
 
-    def __init__(self, d_model: int, target_dim: int) -> None:
+    - `recon(pooled)`: maps (B, K, d_model) → (B, K, target_dim) for SimMTM
+      reconstruction against time-pooled actual bars.
+    - `news_proj(news_pool)`: maps (B, d_text) → (B, d_model) so CLIP can
+      compute z_bar @ z_news.t() with matching dims.
+    """
+
+    def __init__(self, d_model: int, target_dim: int, d_news: int = 256) -> None:
         super().__init__()
         self.proj = nn.Linear(d_model, target_dim, bias=False)
+        self.news_proj = nn.Linear(d_news, d_model, bias=False)
 
     def forward(self, pooled: Tensor) -> Tensor:
         return self.proj(pooled)
+
+    def project_news(self, news_pool: Tensor) -> Tensor:
+        return self.news_proj(news_pool)
 
 
 def pretrain_simmtm(
@@ -108,6 +118,12 @@ def pretrain_simmtm(
     """
     model.train()
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        loader_len = len(train_loader)  # type: ignore[arg-type]
+    except TypeError:
+        loader_len = -1
+    if loader_len == 0:
+        raise RuntimeError("pretrain_simmtm received an empty train_loader; refusing to run")
 
     target_dim = None
     recon_head = None
@@ -126,9 +142,11 @@ def pretrain_simmtm(
 
             if target_dim is None:
                 target_dim = channel_inputs.shape[-1]
-                recon_head = SimMTMReconHead(d_model=model.d_model, target_dim=target_dim).to(
-                    device
-                )
+                recon_head = SimMTMReconHead(
+                    d_model=model.d_model,
+                    target_dim=target_dim,
+                    d_news=news_embeddings.shape[-1],
+                ).to(device)
                 optimizer_aux = torch.optim.Adam(recon_head.parameters(), lr=1e-3)
 
             views, targets = _generate_masked_views(
@@ -144,30 +162,31 @@ def pretrain_simmtm(
                     news_mask=news_mask,
                     is_news_present=is_news_present,
                     regime_vec=regime_vec,
+                    return_pooled=True,
                 )
-                logits = out["logits_3class"]
-                pooled_proxy = logits.mean(dim=-1, keepdim=True).expand(-1, model.d_model)
-                view_pooled_list.append(pooled_proxy)
+                view_pooled_list.append(out["pooled"])
 
             views_pooled = torch.stack(view_pooled_list, dim=1)
-            target_per_view_proj = recon_head(views_pooled)
+            pred_per_view = recon_head(views_pooled)
+            target_per_view = targets.mean(dim=2)
 
             l_simmtm = simmtm_loss(
-                views=views_pooled,
-                targets=target_per_view_proj,
+                views=pred_per_view,
+                targets=target_per_view,
                 lambda_sim=cfg.lambda_sim,
             )
             mask_for_news = news_mask.bool()
             mask_count = mask_for_news.sum(dim=1, keepdim=True).clamp(min=1)
-            news_pool = (news_embeddings * mask_for_news.unsqueeze(-1)).sum(dim=1) / mask_count
+            news_pool_raw = (news_embeddings * mask_for_news.unsqueeze(-1)).sum(dim=1) / mask_count
+            news_pool = recon_head.project_news(news_pool_raw)
             bar_pool = views_pooled.mean(dim=1)
             l_clip = clip_infonce(bar_pool, news_pool, tau=0.07)
-            l_aecf = aecf_entropy_reg(
-                gate_dist=torch.softmax(bar_pool, dim=-1).clamp(min=1e-8),
-                lambda_x=cfg.lambda_aecf,
-            )
 
-            loss = l_simmtm + cfg.lambda_clip * l_clip + l_aecf
+            loss = l_simmtm + cfg.lambda_clip * l_clip
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"non-finite SSL loss at step {n_steps}: {float(loss):.4f}; aborting"
+                )
 
             _aux = optimizer_aux
             _loss = loss
@@ -193,15 +212,19 @@ def pretrain_simmtm(
             final_loss = float(loss.detach().cpu().item())
             if n_steps % cfg.log_every_n_steps == 0:
                 LOG.info(
-                    "ssl epoch %d step %d loss=%.4f (simmtm=%.4f clip=%.4f aecf=%.4f)",
+                    "ssl epoch %d step %d loss=%.4f (simmtm=%.4f clip=%.4f)",
                     epoch,
                     n_steps,
                     final_loss,
                     float(l_simmtm.detach().item()),
                     float(l_clip.detach().item()),
-                    float(l_aecf.detach().item()),
                 )
 
+    if n_steps == 0:
+        raise RuntimeError("pretrain_simmtm produced no steps; refusing to write checkpoint")
+    _opt_to_infer = getattr(optimizer, "eval", None)
+    if _opt_to_infer is not None:
+        _opt_to_infer()
     ckpt = {
         "model_state": model.state_dict(),
         "config": {"mask_ratio": cfg.mask_ratio, "k_views": cfg.k_views, "epochs": cfg.epochs},
@@ -209,6 +232,13 @@ def pretrain_simmtm(
         "n_steps": n_steps,
     }
     out_path = cfg.output_dir / "ssl_anchor.pt"
-    torch.save(ckpt, out_path)
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    torch.save(ckpt, tmp_path)
+    import os as _os  # noqa: PLC0415
+
+    _os.replace(tmp_path, out_path)
+    _opt_to_train = getattr(optimizer, "train", None)
+    if _opt_to_train is not None:
+        _opt_to_train()
     LOG.info("ssl pretrain done: %d steps, final_loss=%.4f, ckpt=%s", n_steps, final_loss, out_path)
     return {"final_loss": final_loss, "n_steps": float(n_steps)}

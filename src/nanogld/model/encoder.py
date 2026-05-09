@@ -1,15 +1,17 @@
 """V1 hybrid encoder — 10 transformer blocks + 2 sLSTM blocks at the head.
 
 Layer plan (1-indexed):
-    1, 2:    pure transformer (no cross-attn). Bottom layers form numerical
-             features before fusing news.
+    1:       pure transformer (no FiLM, no cross-attn).
+    2:       transformer + FiLM.
     3:       transformer + cross-attn (NewsFuser).
-    4:       transformer + FiLM regime conditioning.
-    5, 6:    transformer + FiLM (every-2 layer pattern).
+    4:       transformer + FiLM.
+    5:       pure transformer.
+    6:       transformer + FiLM.
     7:       transformer + cross-attn.
     8:       transformer + FiLM.
-    9, 10:   transformer + FiLM.
-    11:      sLSTM block + cross-attn (cross-attn at last attention layer).
+    9:       pure transformer.
+    10:      transformer + FiLM.
+    11:      sLSTM block (cross-attn at layer 11 deferred — see V1-SPEC §2.1).
     12:      sLSTM block.
 
 FiLM injection layers: {2, 4, 6, 8, 10} (every-2).
@@ -76,7 +78,9 @@ class HybridEncoder(nn.Module):
         self.cross_attn_layers = set(cross_attn_layers)
         self.d_model = d_model
 
-        drop_path_schedule = [drop_path_max * (i + 1) / TOTAL_LAYERS for i in range(TOTAL_LAYERS)]
+        drop_path_schedule = [
+            drop_path_max * i / max(1, TOTAL_LAYERS - 1) for i in range(TOTAL_LAYERS)
+        ]
 
         transformer_blocks = []
         for layer_idx in range(num_transformer_layers):

@@ -3,17 +3,16 @@
 Run sequence (per fold, post-training):
   1. T-scaling on val_b → fitted T in [0.7, 3.0]
   2. RAPS Mondrian quantile fit on val_c → q_hat per class
-  3. Laplace last-layer fit on train (or train_subset) → posterior
-  4. AgACI online wrapper initialized with target alpha=0.10
+  3. AgACI online wrapper initialized with target alpha=0.10
 
 Saves artifacts to `output_dir / "calibration_<fold>"`:
   t_scaler.pt
   raps_quantiles.json
-  laplace.joblib
   agaci_state.json
   meta.json
 
-Spec: plan/V1-SPEC.md §5.6.
+Spec: plan/V1-SPEC.md §5.2 (RAPS + AgACI), §5.4 (T-scaling).
+Laplace last-layer (§5.3) wiring deferred — see task #38.
 """
 
 from __future__ import annotations
@@ -141,7 +140,7 @@ def load_calibration(artifact_dir: Path) -> dict:
     if not artifact_dir.exists():
         raise FileNotFoundError(f"calibration dir not found: {artifact_dir}")
 
-    t_scaler = torch.load(artifact_dir / "t_scaler.pt", weights_only=False)
+    t_scaler = torch.load(artifact_dir / "t_scaler.pt", weights_only=True)
     with open(artifact_dir / "raps_quantiles.json") as f:
         raps = json.load(f)
     with open(artifact_dir / "agaci_state.json") as f:

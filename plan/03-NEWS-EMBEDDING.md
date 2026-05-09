@@ -1,5 +1,15 @@
 # 04 — News Embedding
 
+## ✅ STATUS: COMPLETE 2026-05-08
+
+**40,032 articles embedded** with Qwen3-Embedding-4B (frozen, FP16 MPS) + MRL truncation 2560→256 + L2-norm. **99.7% corpus coverage** (112 dropped on remote host final-batch OOM at bs=2).
+
+**Output baked into unified dataset:** `data["embeddings"]` is `(40032, 256) float16` inside `training_v1_unified.pt`. Per-bar visible articles via `data["bar_news_offsets"]` + `data["bar_news_values"]` CSR index. **48.9% of bars have visible news** (4h lookback × strict-< t_visible PIT).
+
+**Read `plan/HANDOFF.md` for full context.** Original spec retained below for archival.
+
+---
+
 ## YOU ARE THE NEWS EMBEDDING AGENT
 
 You own the news-text-to-vector pipeline. You set up Qwen3-Embedding-4B (swap from Llama-3.1-8B-mean-pool), embed all news for all bars once, cache to disk. You also compute the anchor embeddings used by doc 04 for semantic features.
@@ -615,7 +625,7 @@ If the M4 mini is also doing nanoGLD training simultaneously (memory pressure):
 
 ## CRITICAL CORRECTIONS (Nia round 2 — kept)
 
-- ❌ Llama-3.1-8B-FP16 path → ✅ **DROP**. 16GB Mac mini cannot fit 8B-FP16 (16GB just for weights). Use **`mlx-community/Llama-3.1-8B-Instruct-4bit`** (~5GB on disk) OR **Llama-3.2-3B-BF16** if going transformers route.
+- ❌ Llama-3.1-8B-FP16 path → ✅ **DROP**. 16GB remote host cannot fit 8B-FP16 (16GB just for weights). Use **`mlx-community/Llama-3.1-8B-Instruct-4bit`** (~5GB on disk) OR **Llama-3.2-3B-BF16** if going transformers route.
 - ❌ "Use HF transformers + MPS for simplicity" → ⚠️ no clean 4-bit path on MPS (`bitsandbytes` is CUDA-only). **Two real options:**
   - **(a) MLX-LM with CaptureWrapper pattern** ([ml-explore/mlx#3285](https://github.com/ml-explore/mlx)). Wrap `model.model.layers[i]`, swap, run forward, restore. ~30 lines, fast (~30-50 t/s on M4 Pro), proven pattern.
   - **(b) HF transformers + Llama-3.2-3B-Instruct in BF16** (skip 4-bit). Slower per-token but no MLX-specific code. Embeddings are 3072-dim instead of 4096.
@@ -634,7 +644,7 @@ If the M4 mini is also doing nanoGLD training simultaneously (memory pressure):
 
 ## Goal
 
-Convert each piece of news text per source per bar into a fixed-dim vector that captures semantic meaning. Use frozen Llama-3.1-8B-4bit running locally on Mac mini. Cache to disk so the LLM never coexists with TinyTransformer training (memory headroom).
+Convert each piece of news text per source per bar into a fixed-dim vector that captures semantic meaning. Use frozen Llama-3.1-8B-4bit running locally on remote host. Cache to disk so the LLM never coexists with TinyTransformer training (memory headroom).
 
 ## Why Llama-3.1-8B and Not Smaller
 
@@ -646,7 +656,7 @@ User upgraded from Llama-3.2-1B to 8B in the the pivot. Tradeoffs:
 | Llama-3.2-3B-4bit | ~2GB | ~80 t/s | Better, broader knowledge |
 | **Llama-3.1-8B-4bit** | **~5GB** | **~40 t/s** | **Best, financial news in pretraining** |
 
-8B fits Mac mini's 16GB unified memory comfortably (LLM only, not coexisting with training). Inference quality meaningfully better for financial / geopolitical text. Tradeoff: precompute time. At 40 t/s with ~512 tokens/embedding × 87,500 bars × 3 sources = ~3.4M tokens to embed = ~24 hrs. Run overnight 2-3 nights or batch process in chunks.
+8B fits remote host's 16GB unified memory comfortably (LLM only, not coexisting with training). Inference quality meaningfully better for financial / geopolitical text. Tradeoff: precompute time. At 40 t/s with ~512 tokens/embedding × 87,500 bars × 3 sources = ~3.4M tokens to embed = ~24 hrs. Run overnight 2-3 nights or batch process in chunks.
 
 **If precompute is too slow:** fall back to Llama-3.2-3B-4bit (~6 hrs total). Document the choice.
 
@@ -830,7 +840,7 @@ Embedding cache file size estimate: 87,500 bars × 3 sources × 4096 floats × 4
 
 ## Why Not Fine-Tune the LLM (recap)
 
-- Hardware: 16GB Mac mini, 4-bit quantized 8B = inference fits but training does not (gradients + optimizer state would 4x memory)
+- Hardware: 16GB remote host, 4-bit quantized 8B = inference fits but training does not (gradients + optimizer state would 4x memory)
 - Methodology: pretrained LLM already has rich finance/macro knowledge; fine-tuning on 87K examples either helps marginally or breaks it (catastrophic forgetting)
 - Karpathy mode: not needed. Frozen embeddings + train-your-own-transformer-on-top is the right pattern (same one used in image classification with frozen ResNet)
 - Literature: research subagents found no convincing case where LLM fine-tuning beats frozen-embedding + downstream model on financial direction prediction at our data scale
@@ -864,7 +874,7 @@ def test_semantic_anchor_alignment():
 
 ## Open Questions / TODOs
 
-- [ ] Verify Llama-3.1-8B-Instruct fits in Mac mini 16GB unified with FP16 (vs needing 4-bit)
+- [ ] Verify Llama-3.1-8B-Instruct fits in remote host 16GB unified with FP16 (vs needing 4-bit)
 - [ ] If MPS FP16 too slow, switch to Llama-3.2-3B (faster, smaller embeddings 3072-dim)
 - [ ] Decide if RSS source is worth historical-data difficulty (RSS is forward-only)
 - [ ] Confirm anchor texts are representative (review the ~20 headlines per anchor with user)

@@ -98,12 +98,12 @@ def wave_mask(
     for bi in range(b):
         for fi in range(f):
             sig = x_np[bi, :, fi]
-            coeffs = pywt.wavedec(sig, wavelet=wavelet, level=level)
+            coeffs = pywt.wavedec(sig, wavelet=wavelet, level=level, mode="periodization")
             new_coeffs = []
             for c in coeffs:
                 mask = (torch.rand(c.shape[0]) > mask_prob).numpy()
                 new_coeffs.append(c * mask)
-            recon = pywt.waverec(new_coeffs, wavelet=wavelet)
+            recon = pywt.waverec(new_coeffs, wavelet=wavelet, mode="periodization")
             out[bi, :, fi] = recon[:t]
     return torch.from_numpy(out).to(dtype=x.dtype, device=x.device)
 

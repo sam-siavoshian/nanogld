@@ -38,13 +38,21 @@ class ATRStop:
     _low_water_short: float = 0.0
     _initialized: bool = False
 
-    def update(self, current_price: float) -> Action:
-        """Return 'exit' if either stop fires, 'hold' otherwise."""
+    def update(self, current_price: float, current_atr: float | None = None) -> Action:
+        """Return 'exit' if either stop fires, 'hold' otherwise.
+
+        Args:
+            current_price: latest observed price.
+            current_atr: live ATR-14 at this bar; used for the trailing stop
+                width per V1-SPEC §10.1 (live, not entry). When None, falls
+                back to entry_atr (V1-draft behavior, kept for backwards-compat).
+        """
         if not self._initialized:
             self._high_water_long = self.entry_price
             self._low_water_short = self.entry_price
             self._initialized = True
 
+        live_atr = float(current_atr) if current_atr is not None else self.entry_atr
         hard_stop_long = self.entry_price - self.hard_mult * self.entry_atr
         hard_stop_short = self.entry_price + self.hard_mult * self.entry_atr
 
@@ -52,13 +60,13 @@ class ATRStop:
             if current_price > self._high_water_long:
                 self._high_water_long = current_price
             trail_active = self._high_water_long > self.entry_price
-            trail = self._high_water_long - self.trail_mult * self.entry_atr
+            trail = self._high_water_long - self.trail_mult * live_atr
             stop = max(hard_stop_long, trail) if trail_active else hard_stop_long
             return "exit" if current_price < stop else "hold"
 
         if current_price < self._low_water_short:
             self._low_water_short = current_price
         trail_active = self._low_water_short < self.entry_price
-        trail = self._low_water_short + self.trail_mult * self.entry_atr
+        trail = self._low_water_short + self.trail_mult * live_atr
         stop = min(hard_stop_short, trail) if trail_active else hard_stop_short
         return "exit" if current_price > stop else "hold"

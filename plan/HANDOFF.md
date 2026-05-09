@@ -1,8 +1,43 @@
-# HANDOFF — Data Phase Complete → Model Phase
+# HANDOFF — V1 Implementation → H100 Training Run
 
-**Date:** 2026-05-08
-**From:** Data + Embedding + Feature Engineering Agent
-**To:** Model Training Agent (doc 05 owner)
+**Date:** 2026-05-08 (post bug-hunt loop)
+**From:** Implementation + bug-hunt loop owner
+**To:** H100 training operator + post-train ship-decision reviewer
+
+---
+
+## Current state (2026-05-08, post 7-wave bug-hunt loop)
+
+V1 implementation is end-to-end built across `src/nanogld/{model,training,calibration,sizing,backtest,data,features,analysis}/`. 7 waves of background-agent bug hunting shipped 101 fixes. Cron killed by owner. Post-train feature attribution suite shipped (6 methods + report aggregator + CLI).
+
+**See `plan/STATUS.md` for the live tracker.** This HANDOFF covers the pre-H100 gate.
+
+### Pre-H100 checklist (read before any paid GPU spend)
+
+Order matters. Do not skip.
+
+1. **Rsync local edits to remote host** (`#40`). All 101 fixes are in the local working dir; mirror them to `~/Desktop/nanogld` and create atomic commits per logical chunk. No Co-Authored-By per CLAUDE.md.
+2. **Per-fold sidecar refactor** (`#32`). HMM + regime tercile + h5 vol threshold are currently fit on `unified.pt`'s train and applied globally. Walk-forward folds 0-3 have val/test inside that train period — reported Sharpe is fraudulent without per-fold sidecar build (~103 LOC).
+3. **RunPod scripts hardening** (`#51`). `${HF_USER:?}` hard-fail, retry/backoff on download/upload, atomic upload, fold-count assert.
+4. **SSL anchor averaged-weights** (`#52`). Pull anchor from disk (already saved as averaged form), not from in-memory `model.state_dict()` which is z-form.
+5. **Resume sentinels + reproducibility manifest** (`#41`). Per-stage `.done` files (RunPod preempt = lost hours otherwise) + `git_sha + dataset_sha256 + sidecar_sha256 + hparams + python + torch + cuda + hostname + started_at_utc` in every `torch.save`.
+6. **SHA256 manifest verify-on-load** (`#45`). `MANIFEST.json` next to every artifact, verify in `dataset.__init__` and post-download.
+7. (Optional, recommended for spec compliance) `#33 DANN`, `#34 AECF curriculum mask`, `#37 Cautious(FSAM(SF)) wrap`, `#36 cross-attn at sLSTM 11`, `#35 decomposition two-stream`. These each cost ~0.05-0.2 Sharpe if shipped without.
+8. (Optional, recommended for backtest) `#59 backtest report.py + cli.py + walk_forward.py + 7 baselines` (~1500 LOC). Without this, the ship-decision report cannot be produced; only raw metrics from the engine.
+
+### Post-train
+
+After Stage 3 LLRD finishes per fold, run the feature-analysis CLI:
+
+```
+uv run python -m nanogld.analysis run \
+    --checkpoint checkpoints/v1/fold_<N>/llrd/llrd_final.pt \
+    --unified data/processed/training_v1_unified.pt \
+    --sidecar data/processed/training_v1_sidecar_fold_<N>.pt \
+    --fold <N> --split val_c --device auto
+```
+
+Produces `reports/analysis/fold_<N>/analysis_<run_hash>_<git_sha>.md` with VSN gate ranking, IG per-class signed attribution, permutation ΔSharpe, modality ablation, cross-attn rollout, feature-group rollups. Per-bucket splits per Inv 18.
 
 ---
 
@@ -43,17 +78,17 @@ Read `plan/V1-SPEC.md` for the full canonical change list. All plan docs (00, 04
 
 ## What you're inheriting
 
-**ONE single file. Everything in it.** Live on Mac mini:
+**ONE single file. Everything in it.** Live on remote host:
 
 ```
-root1@100.83.86.5:/Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt
+$NANOGLD_HOST:$NANOGLD_REMOTE/data/processed/training_v1_unified.pt
 ```
 
 **234 MB.** PyTorch native. Load:
 
 ```python
 import torch
-data = torch.load("/Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt")
+data = torch.load("$NANOGLD_REMOTE/data/processed/training_v1_unified.pt")
 ```
 
 Returns a dict with these keys:
@@ -152,7 +187,7 @@ Per asset: lag1 OHLCV+vwap (6 cols), log_ret at 1/4/16/48 bars (4 cols), realize
 ### News embeddings details
 
 - **Encoder:** Qwen3-Embedding-4B (frozen), MRL truncated 2560→256
-- **40,032 articles embedded** (out of 40,144 corpus, 99.7% coverage; 112 dropped during Mac mini final-batch OOM, 0.3%)
+- **40,032 articles embedded** (out of 40,144 corpus, 99.7% coverage; 112 dropped during remote host final-batch OOM, 0.3%)
 - **All embeddings unit L2-normed (within fp16 tolerance)**
 - **Sources:** FNSPID (12,301), Fox News (8,192), HF multisource (~9.5K), ECB+Fed speeches (1,881), Polygon/AlphaVantage/Yahoo/Benzinga/Kitco/BullionVault (~7K)
 - **48.9% of bars have visible news** (37,133 / 75,993 bars within 4h lookback × strict-< t_visible)
@@ -165,7 +200,7 @@ Per asset: lag1 OHLCV+vwap (6 cols), log_ret at 1/4/16/48 bars (4 cols), realize
 - monetary — Fed/ECB rate decisions, QE/QT
 - recession — slowdown, layoffs, yield curve
 
-Stored in `data/anchors/v1.npz` on Mac mini (NOT in unified .pt — model can re-derive from anchor templates if needed).
+Stored in `data/anchors/v1.npz` on remote host (NOT in unified .pt — model can re-derive from anchor templates if needed).
 
 ---
 
@@ -177,8 +212,8 @@ Stored in `data/anchors/v1.npz` on Mac mini (NOT in unified .pt — model can re
 2. **40 FRED series** with vintage (release_ts) tracking for PIT-correct macro features
 3. **GDELT 30-min bar-level aggregation** (66M raw → 177K aggregates) for geopolitical tone
 4. **Multi-source news ingestion:** FNSPID, Polygon, Alpha Vantage, Multisource HF, Kitco, BullionVault, ECB+Fed speeches, Fox News + Fox Business
-5. **Common Crawl integration** for Fox News scraping (cluster.idx + WARC range-fetch on local laptop after CDN ban from Mac mini)
-6. **Qwen3-Embedding-4B precompute pipeline** with sharded resumable writes (40,032 articles × 256-dim) on Mac mini MPS at bs=2 (16 GB RAM tight; bs=8/4 OOM'd)
+5. **Common Crawl integration** for Fox News scraping (cluster.idx + WARC range-fetch on local laptop after CDN ban from remote host)
+6. **Qwen3-Embedding-4B precompute pipeline** with sharded resumable writes (40,032 articles × 256-dim) on remote host MPS at bs=2 (16 GB RAM tight; bs=8/4 OOM'd)
 7. **PIT-correct joiner** (`src/nanogld/data/join.py`) — strict-< t_visible enforced everywhere
 8. **v1 + v2 feature engineers** — 681 numeric features per bar
 9. **Anchor-cosine bar-level news features** — 14 cols
@@ -228,7 +263,7 @@ Stored in `data/anchors/v1.npz` on Mac mini (NOT in unified .pt — model can re
 
 | Excluded | Reason |
 |---|---|
-| Articles 2024-2026 Fox content beyond 8,192 embedded | 112 articles dropped (0.3% loss) when Mac mini OOM'd on final batch — acceptable |
+| Articles 2024-2026 Fox content beyond 8,192 embedded | 112 articles dropped (0.3% loss) when remote host OOM'd on final batch — acceptable |
 | News for ~51% of bars | Many bars have no fresh news within 4h lookback — that's reality, not a bug |
 | Pre-2018 VXX | VXX instrument was relaunched January 2018; pre-2018 doesn't exist |
 | Pre-2017 XRP, pre-2020 ADA, pre-2021 SOL/DOGE | Those crypto assets did not exist or weren't on Bitfinex |
@@ -366,7 +401,7 @@ Inf values:             ZERO
 Max |corr| feature × next_return: 0.0117
 Train/Val/Test:         57,697 / 7,540 / 10,756
 Total v1 source files:  ~85 parquet files (data/raw + data/processed)
-Total disk footprint:   ~1.3 GB on Mac mini
+Total disk footprint:   ~1.3 GB on remote host
 ```
 
 ---

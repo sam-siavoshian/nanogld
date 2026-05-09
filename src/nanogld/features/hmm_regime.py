@@ -81,10 +81,16 @@ def fit_hmm(
         random_state=random_state,
     )
     model.fit(feats_clean)
+    if hasattr(model, "monitor_") and not model.monitor_.converged:
+        raise RuntimeError(
+            f"HMM EM failed to converge (iters={model.monitor_.iter}, "
+            f"history={model.monitor_.history[-3:] if model.monitor_.history else 'none'})"
+        )
     LOG.info(
-        "HMM fit on %d valid rows; means=%s",
+        "HMM fit on %d valid rows; means=%s; converged=%s",
         int(valid.sum()),
         model.means_.tolist(),
+        getattr(getattr(model, "monitor_", None), "converged", "unknown"),
     )
     return model
 

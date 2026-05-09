@@ -31,7 +31,9 @@ from nanogld.training.train import setup_determinism
 LOG = logging.getLogger("nanogld.training.cli")
 
 
-def _build_dataloader(cfg: dict, split: str, output_dir: Path) -> DataLoader:
+def _build_dataloader(
+    cfg: dict, split: str, output_dir: Path, device: str = "cpu", seed: int = 42
+) -> DataLoader:
     paths = cfg["paths"]
     dl_cfg = cfg["dataloader"]
     ds = NanoGLDDataset(
@@ -42,11 +44,29 @@ def _build_dataloader(cfg: dict, split: str, output_dir: Path) -> DataLoader:
         n_news_slots=int(dl_cfg["n_news_slots"]),
         label_mode=dl_cfg["label_mode"],
     )
+    num_workers = int(dl_cfg["num_workers"])
+
+    def _worker_init(worker_id: int) -> None:
+        import random as _py_random  # noqa: PLC0415
+
+        import numpy as np  # noqa: PLC0415
+
+        worker_seed = seed + worker_id
+        np.random.seed(worker_seed)
+        _py_random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+
+    shuffle_gen = torch.Generator()
+    shuffle_gen.manual_seed(seed)
     return DataLoader(
         ds,
         batch_size=int(dl_cfg["batch_size"]),
-        num_workers=int(dl_cfg["num_workers"]),
+        num_workers=num_workers,
         shuffle=(split == "train"),
+        pin_memory=device.startswith("cuda"),
+        persistent_workers=(num_workers > 0),
+        worker_init_fn=_worker_init if num_workers > 0 else None,
+        generator=shuffle_gen if split == "train" else None,
     )
 
 
@@ -73,6 +93,8 @@ def _build_model(cfg: dict) -> torch.nn.Module:
 
 def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> int:
     """Run the full 3-stage pipeline for one fold."""
+    if device not in {"cpu", "cuda", "mps"}:
+        raise ValueError(f"device must be one of cpu/cuda/mps, got {device!r}")
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
@@ -82,9 +104,11 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
     fold_out = output_dir / f"fold_{fold}"
     fold_out.mkdir(parents=True, exist_ok=True)
 
-    LOG.info("building model + dataloaders for fold %d", fold)
+    LOG.info("building model + dataloaders for fold %d on device=%s", fold, device)
     model = _build_model(cfg).to(device)
-    train_loader = _build_dataloader(cfg, split="train", output_dir=fold_out)
+    train_loader = _build_dataloader(
+        cfg, split="train", output_dir=fold_out, device=device, seed=seed
+    )
 
     LOG.info("Stage 1: SSL pretrain")
     ssl_cfg = SimMTMConfig(
@@ -133,7 +157,29 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
     llrd_metrics = llrd_finetune(model, ssl_anchor_state, train_loader, llrd_cfg, device=device)
     LOG.info("Stage 3 done: %s", llrd_metrics)
 
+    paths = cfg["paths"]
+    LOG.info(
+        "next: feature attribution → "
+        "uv run python -m nanogld.analysis run "
+        "--checkpoint %s --unified %s --sidecar %s "
+        "--fold %d --split val_c --output-dir %s --device %s",
+        fold_out / "llrd" / "llrd_final.pt",
+        paths["unified"],
+        paths["sidecar"],
+        fold,
+        fold_out / "analysis",
+        device,
+    )
+
     return 0
+
+
+def _autodetect_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,14 +187,19 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     run_p = sub.add_parser("run", help="run full 3-stage pipeline for one fold")
     run_p.add_argument("--config", type=Path, required=True)
-    run_p.add_argument("--fold", type=int, default=0)
+    run_p.add_argument("--fold", type=int, required=True)
     run_p.add_argument(
         "--output-dir",
         dest="output_dir",
         type=Path,
         default=Path("checkpoints/v1"),
     )
-    run_p.add_argument("--device", type=str, default="cpu")
+    run_p.add_argument("--device", type=str, default="auto")
+    run_p.add_argument(
+        "--allow-cpu",
+        action="store_true",
+        help="allow running on CPU; without this flag CPU is rejected when CUDA/MPS unavailable",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -156,11 +207,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.cmd == "run":
+        device = args.device
+        if device == "auto":
+            device = _autodetect_device()
+        if device == "cpu" and not args.allow_cpu:
+            LOG.error(
+                "device=cpu rejected by default (would burn paid GPU hours silently). "
+                "Pass --allow-cpu to override, or --device cuda|mps."
+            )
+            return 2
         return run(
             config_path=args.config,
             fold=args.fold,
             output_dir=args.output_dir,
-            device=args.device,
+            device=device,
         )
     parser.print_help()
     return 1

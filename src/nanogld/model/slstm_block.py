@@ -2,8 +2,9 @@
 
 Used for layers 11-12 of the V1 hybrid encoder (Decision 1B).
 
-Block layout (per xLSTMTime Alharthi & Mahmood arXiv:2407.10240):
-    h = BatchNorm1d(x)
+Block layout (per xLSTMTime Alharthi & Mahmood arXiv:2407.10240,
+adapted for B=1 safety: BN swapped for GroupNorm(1, d_model)):
+    h = GroupNorm(x)
     h = sLSTM(h)
     h = Linear(h)
     h = InstanceNorm1d(h)
@@ -32,7 +33,7 @@ class sLSTMBlock(nn.Module):
 
     def __init__(self, d_model: int, dropout: float = 0.2) -> None:
         super().__init__()
-        self.bn = nn.BatchNorm1d(d_model)
+        self.bn = nn.GroupNorm(num_groups=1, num_channels=d_model)
         self.slstm = sLSTM(d_model=d_model)
         self.linear = nn.Linear(d_model, d_model, bias=False)
         self.in_norm = nn.InstanceNorm1d(d_model, affine=True)

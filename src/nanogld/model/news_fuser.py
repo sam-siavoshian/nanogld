@@ -130,10 +130,15 @@ class NewsFuser(nn.Module):
             .contiguous()
         )
 
-        attn_mask = (news_mask == 0).unsqueeze(1).unsqueeze(2)
-        attn_mask = attn_mask.expand(-1, self.n_heads, t, -1)
+        block_mask = news_mask == 0
+        all_blocked = block_mask.all(dim=-1, keepdim=True)
+        zero_slot = torch.zeros_like(block_mask)
+        zero_slot[..., 0] = True
+        block_mask = block_mask & ~(all_blocked & zero_slot)
+        attend_mask = (~block_mask).unsqueeze(1).unsqueeze(2)
+        attend_mask = attend_mask.expand(-1, self.n_heads, t, -1)
         attn_out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=~attn_mask, dropout_p=self.dropout if self.training else 0.0
+            q, k, v, attn_mask=attend_mask, dropout_p=self.dropout if self.training else 0.0
         )
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(b, t, self.d_model)

@@ -47,12 +47,12 @@ The full V1 redline rationale lives in `plan-edit/V1-SPEC.md`. This doc updates 
 
 ## 🎯 START HERE — DATA IS READY
 
-**Unified dataset shipped:** `/Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt` (Mac mini, 234 MB)
+**Unified dataset shipped:** `$NANOGLD_REMOTE/data/processed/training_v1_unified.pt` (remote host, 234 MB)
 
 Single PyTorch file. Load:
 ```python
 import torch
-data = torch.load("/Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt")
+data = torch.load("$NANOGLD_REMOTE/data/processed/training_v1_unified.pt")
 features    = data["features"]            # (75993, 681) float32
 labels      = data["labels"]              # (75993,) int8 — 0=DOWN/1=FLAT/2=UP
 splits      = data["splits"]              # list[75993] — "train"/"val"/"test"
@@ -666,7 +666,7 @@ Param count check:
 
 To hit 50M: try `D=512, num_layers=10, mlp_hidden=2048`. Calc: per-block ~3.1M × 10 = 31M, plus input/projections, total ~40-45M. Matches target.
 
-To hit 100M: try `D=768, num_layers=12`. ~85-100M. Will fit on Mac mini 16GB but tight during training.
+To hit 100M: try `D=768, num_layers=12`. ~85-100M. Will fit on remote host 16GB but tight during training.
 
 **Recommendation:** start at D=384 / 8 layers / ~24M total. Train it, see if val loss converges. Scale up only if val loss hasn't converged AND OOS Sharpe is improving with capacity (it usually doesn't on financial data — see prior warning).
 
@@ -830,7 +830,7 @@ def test_forward_pass():
     print(f"Param count: {count_params(model):,}")  # ~24M with default config
 ```
 
-## Memory Estimate (Mac mini 16GB)
+## Memory Estimate (remote host 16GB)
 
 For batch B=32, T=64, D=384:
 
@@ -841,7 +841,7 @@ For batch B=32, T=64, D=384:
 - Gradients: 1× params = 96MB FP32
 - News raw embeddings batch: B × T × 3 × 4096 × 4 = 32 × 64 × 12288 × 4 = 100MB
 
-Total: ~600MB-1GB peak during training. Fits trivially on 16GB Mac mini.
+Total: ~600MB-1GB peak during training. Fits trivially on 16GB remote host.
 
 If we scale to D=768 / 12 layers / ~100M params: ~3-5GB peak. Still fits but no margin for OS.
 
@@ -1258,7 +1258,7 @@ model.load_state_dict(checkpoint['ema_state_dict'])
 3. ✅ Val accuracy beats class-prior baseline (44% if always-flat) on at least 3/4 folds
 4. ✅ Walk-forward unit test passes (no overlap, embargo respected)
 5. ✅ Checkpoints saved with EMA state, metadata includes snapshot hash + fold + seed
-6. ✅ Total training time < 12 hrs on M4 Mac mini for 4 folds × 1 seed
+6. ✅ Total training time < 12 hrs on M4 remote host for 4 folds × 1 seed
 7. ✅ wandb workspace public, runs named `fold{N}_seed{N}` for X-thread material
 
 ### Spawn Nia Agents When You Need To
@@ -1837,7 +1837,7 @@ Expected total stack lift: +0.3-0.6 Sharpe at val (baseline ~0.5-1.0). Compoundi
 | DANN (V1) | era-label = year-bucket; lambda 0->0.1 ramp | Feng 2019 arXiv:1810.09936; +3.11% on stock prediction |
 | FreeLB (V1) | News embeddings only, K=2, ε=0.5 | Zhu et al. ICLR 2020 arXiv:1909.11764; bars excluded (PIT risk) |
 | Mixed precision | FP32 phase 1, bfloat16 phase 2 if needed | MPS support partial; V1 keeps FP32 deterministic |
-| Batch size | 32 train, 64 val/test | Fits 16GB Mac mini comfortably; H100 use 64-128 |
+| Batch size | 32 train, 64 val/test | Fits 16GB remote host comfortably; H100 use 64-128 |
 | Epochs per fold | 20 max with early stopping | Usually converges in 5-12 |
 | Early stopping | **Patience 5, min_delta=1e-4** | Small val sets noisy; 3 fires too early |
 | Random seed | 42 default, multi-seed in week 4+ | Single-seed for week 1, 5-seed for confidence |
@@ -2723,7 +2723,7 @@ Cost: < 10 seconds per fold. Scheduled task:
 
 Same procedure but on detection of a Tier-2 trigger between scheduled refits.
 
-### Retrain Triggers (Full Transformer Fit, ~12 h on Mac mini)
+### Retrain Triggers (Full Transformer Fit, ~12 h on remote host)
 
 - **Scheduled:** every 6 months (walk-forward fold rotation).
 - **Performance:** macro-F1 < 0.40 for 10 consecutive trading days.

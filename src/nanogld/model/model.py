@@ -1,15 +1,18 @@
 """nanoGLDV1 — top-level multimodal transformer for 30-min GLD direction.
 
 Forward pipeline:
-    Input bars (B, T, F=681) → Series Decomposition (24-bar MA) → trend, seasonal
-    Sum trend + seasonal back via channel-wise concat (we operate on full x)
+    Input bars (B, T, F=681)
     → RevIN per-channel (norm)
     → VSN feature gate
     → Channel-independent patching (P=4, S=4 → 16 patches/channel)
     → Hybrid encoder stack (10 transformer + 2 sLSTM, FiLM at {2,4,6,8,10},
-       cross-attn at {3,7,11})
+       cross-attn at {3,7})
     → Mean-pool over patches → reshape back to (B, F, D), pool over channels
     → MultiTaskHead: (logits_3class, position_weight)
+
+Note: SeriesDecomposition module is instantiated for forward-compat with
+the V1-SPEC two-stream wiring (deferred). Currently NOT called in forward;
+input passes through directly. Two-stream wiring tracked as separate task.
 
 Output dict keys:
     logits_3class:    (B, 3) — focal CE target
@@ -110,9 +113,10 @@ class nanoGLDV1(nn.Module):
 
     def _init_weights(self, num_layers: int) -> None:
         residual_std = _scaled_residual_init_std(num_layers)
+        residual_suffixes = ("out_proj", "w_down", "value_residual_proj")
         for name, module in self.named_modules():
             if isinstance(module, nn.Linear):
-                if name.endswith("out_proj") or name.endswith("w_down"):
+                if any(name.endswith(s) for s in residual_suffixes):
                     nn.init.trunc_normal_(module.weight, std=residual_std)
                 else:
                     nn.init.trunc_normal_(module.weight, std=0.02)
@@ -148,8 +152,7 @@ class nanoGLDV1(nn.Module):
         """
         b, t, f = channel_inputs.shape
 
-        trend, seasonal = self.decomposition(channel_inputs)
-        x = trend + seasonal
+        x = channel_inputs
 
         x = self.revin(x, mode="norm")
         x_gated, _gate = self.vsn(x)

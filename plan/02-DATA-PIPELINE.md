@@ -1,5 +1,13 @@
 # 01 — Data Pipeline
 
+## ✅ STATUS: COMPLETE 2026-05-08
+
+**Single unified dataset shipped:** `$NANOGLD_REMOTE/data/processed/training_v1_unified.pt` (remote host, 234 MB)
+
+**Read `plan/HANDOFF.md` for the full context.** This doc is the original spec, retained for archival/debugging reference. Implementation went beyond V1 spec — added v2 engineered features (46 cross-asset/regime/calendar/news×price interactions), full FRED expansion (40 series including retirement + real estate + savings), 27 ETFs/crypto (vs 9 originally specced), 40,032 news embeddings.
+
+---
+
 ## YOU ARE THE DATA ENGINEER AGENT
 
 You own data ingestion, joining, and snapshot artifacts. You will build the pipeline that produces immutable hashed parquets every other doc consumes.

@@ -6,7 +6,7 @@ Guo et al. ICML 2017. Post-hoc calibration via a single scalar T:
 V1 invariant: T must land in [0.7, 3.0]. Outside that range = degenerate.
 The optimizer is LBFGS (max 50 iter) on the val_b NLL.
 
-After focal loss training (V1.5: replaced vanilla CE), expect T to
+After focal loss training (V1: focal replaces vanilla CE), expect T to
 converge near 1.0-1.5; the [0.7, 3.0] guard rarely activates.
 
 Spec: plan/V1-SPEC.md §5.4.
@@ -47,7 +47,14 @@ class TemperatureScaler(nn.Module):
         Returns the fitted T as a Python float. If outside [T_MIN, T_MAX],
         clamps to the bound and re-evaluates NLL.
         """
-        opt = torch.optim.LBFGS([self.log_T], lr=0.1, max_iter=max_iter)
+        if int(val_labels.unique().numel()) < 2:
+            raise ValueError("temperature scaling requires val_labels with >=2 classes")
+        opt = torch.optim.LBFGS(
+            [self.log_T],
+            lr=0.1,
+            max_iter=max_iter,
+            line_search_fn="strong_wolfe",
+        )
 
         def closure() -> Tensor:
             opt.zero_grad()

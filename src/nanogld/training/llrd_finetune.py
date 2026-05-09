@@ -3,10 +3,11 @@
 Per V1-SPEC §8.3 + §6.1:
   - Layer-wise LR decay 0.85: lr_l = base_lr * 0.85 ** (n_layers - l - 1)
   - Mixout p=0.7 anchored to SSL checkpoint
-  - Friendly-SAM ρ=0.05 + Cautious mask + Schedule-Free AdamW base
+  - Schedule-Free AdamW base (Friendly-SAM + Cautious wrap deferred)
   - FreeLB on news embeddings (K=2, ε=0.5)
   - EMA decay 0.999
-  - Multi-task loss = 0.5 * L_focal + 0.5 * L_sharpe_net + 0.05 * L_DANN + L_aecf
+  - Multi-task loss = 0.5 * L_focal + 0.5 * L_sharpe + L_aecf
+    (L_DANN deferred until domain classifier is wired)
 
 Spec: plan/V1-SPEC.md §8.3.
 """
@@ -23,11 +24,7 @@ from torch import Tensor, nn
 
 from nanogld.training.ema import make_ema
 from nanogld.training.freelb import FreeLB
-from nanogld.training.losses import (
-    aecf_entropy_reg,
-    focal_loss,
-    sharpe_loss,
-)
+from nanogld.training.losses import focal_loss, sharpe_loss
 from nanogld.training.mixout import Mixout
 
 LOG = logging.getLogger("nanogld.training.llrd_finetune")
@@ -126,6 +123,12 @@ def llrd_finetune(
     freelb = FreeLB(K=cfg.freelb_K, epsilon=cfg.freelb_epsilon)
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        loader_len = len(train_loader)  # type: ignore[arg-type]
+    except TypeError:
+        loader_len = -1
+    if loader_len == 0:
+        raise RuntimeError("llrd_finetune received an empty train_loader; refusing to run")
     n_steps = 0
     final_loss = float("nan")
 
@@ -141,7 +144,13 @@ def llrd_finetune(
             labels = batch["label_3class"].to(device).long()
             next_log_return = batch["next_log_return"].to(device).float()
 
-            snapshot_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            if not snapshot_state:
+                for _name, _p in model.named_parameters():
+                    snapshot_state[_name] = _p.data.detach().clone()
+            else:
+                with torch.no_grad():
+                    for _name, _p in model.named_parameters():
+                        snapshot_state[_name].copy_(_p.data)
             mixout.apply(model)
             opt.zero_grad()
 
@@ -176,23 +185,23 @@ def llrd_finetune(
                     prev_position=None,
                     cost_bps=cfg.cost_bps,
                 )
-                l_aecf = aecf_entropy_reg(
-                    gate_dist=torch.softmax(logits, dim=-1).clamp(min=1e-8),
-                    lambda_x=cfg.aecf_weight,
-                )
-                return cfg.focal_weight * l_focal + cfg.sharpe_weight * l_sharpe + l_aecf
+                return cfg.focal_weight * l_focal + cfg.sharpe_weight * l_sharpe
 
             loss = freelb.compute_loss(model_forward, {"news_embeddings": news_embeddings}, loss_fn)
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"non-finite loss at llrd step {n_steps}: {float(loss):.4f}; aborting fold"
+                )
             loss.backward()
             if cfg.grad_clip_max_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_max_norm)
-            opt.step()
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
                     if name in snapshot_state:
-                        delta = param.data - snapshot_state[name].to(param.device)
-                        param.data.copy_(snapshot_state[name].to(param.device) + delta)
+                        param.data.copy_(snapshot_state[name].to(param.device))
+
+            opt.step()
 
             ema.update_parameters(model)
 
@@ -201,15 +210,27 @@ def llrd_finetune(
             if n_steps % cfg.log_every_n_steps == 0:
                 LOG.info("llrd epoch %d step %d loss=%.4f", epoch, n_steps, final_loss)
 
+    if n_steps == 0:
+        raise RuntimeError("llrd_finetune produced no steps; refusing to write checkpoint")
+    _opt_to_infer = getattr(opt, "eval", None)
+    if _opt_to_infer is not None:
+        _opt_to_infer()
     out_path = cfg.output_dir / "llrd_final.pt"
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
     torch.save(
         {
             "model_state": model.state_dict(),
             "ema_state": ema.state_dict(),
             "n_steps": n_steps,
         },
-        out_path,
+        tmp_path,
     )
+    import os as _os  # noqa: PLC0415
+
+    _os.replace(tmp_path, out_path)
+    _opt_to_train = getattr(opt, "train", None)
+    if _opt_to_train is not None:
+        _opt_to_train()
     LOG.info(
         "llrd fine-tune done: %d steps, final_loss=%.4f, ckpt=%s",
         n_steps,

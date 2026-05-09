@@ -19,9 +19,12 @@ DEFAULT_BARS_PER_YEAR = 3276
 def sharpe(pnl_per_bar: np.ndarray, bars_per_year: int = DEFAULT_BARS_PER_YEAR) -> float:
     """Annualized Sharpe ratio."""
     pnl = np.asarray(pnl_per_bar, dtype=np.float64)
-    if pnl.size == 0 or pnl.std(ddof=1) == 0:
+    if pnl.size < 2:
         return 0.0
-    return float(pnl.mean() / pnl.std(ddof=1) * np.sqrt(bars_per_year))
+    std = pnl.std(ddof=1)
+    if not np.isfinite(std) or std == 0:
+        return 0.0
+    return float(pnl.mean() / std * np.sqrt(bars_per_year))
 
 
 def sortino(pnl_per_bar: np.ndarray, bars_per_year: int = DEFAULT_BARS_PER_YEAR) -> float:

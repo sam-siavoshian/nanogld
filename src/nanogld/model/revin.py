@@ -67,10 +67,11 @@ class RevIN(nn.Module):
     def _normalize(self, x: Tensor) -> Tensor:
         dim_to_reduce = tuple(range(1, x.ndim - 1))
         self._mean = x.mean(dim=dim_to_reduce, keepdim=True).detach()
-        self._stdev = torch.sqrt(
-            x.var(dim=dim_to_reduce, keepdim=True, unbiased=False) + self.eps
-        ).detach()
-        y = (x - self._mean) / self._stdev
+        var = x.var(dim=dim_to_reduce, keepdim=True, unbiased=False)
+        zero_var = var < self.eps
+        self._stdev = torch.sqrt(var + self.eps).detach()
+        y_centered = x - self._mean
+        y = torch.where(zero_var, y_centered, y_centered / self._stdev)
         if self.affine:
             y = y * self.affine_weight + self.affine_bias
         return y
@@ -78,7 +79,10 @@ class RevIN(nn.Module):
     def _denormalize(self, x: Tensor) -> Tensor:
         y = x
         if self.affine:
-            y = (y - self.affine_bias) / (self.affine_weight + self.eps)
+            sign = torch.sign(self.affine_weight)
+            sign = torch.where(sign == 0, torch.ones_like(sign), sign)
+            denom = sign * self.affine_weight.abs().clamp(min=self.eps)
+            y = (y - self.affine_bias) / denom
         if self._stdev is None or self._mean is None:
             raise RuntimeError("RevIN.denorm called before norm — no stored stats")
         return y * self._stdev + self._mean

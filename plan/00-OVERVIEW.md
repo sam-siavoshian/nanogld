@@ -4,7 +4,7 @@
 
 **Project:** nanoGLD — Karpathy-mode LLM-augmented gold trader on local hardware
 **Owner:** samsiavoshian
-**Status:** ⭐ **DATA PHASE COMPLETE 2026-05-08. V1 ARCHITECTURE FROZEN 2026-05-08.** Single unified dataset on Mac mini ready for model training. Read `plan/V1-SPEC.md` first, then `plan/HANDOFF.md` before starting model phase.
+**Status:** ⭐ **DATA PHASE COMPLETE 2026-05-08. V1 ARCHITECTURE FROZEN 2026-05-08.** Single unified dataset on remote host ready for model training. Read `plan/V1-SPEC.md` first, then `plan/HANDOFF.md` before starting model phase.
 **Version:** **V1 — frozen.** Replaces V1 (frozen 2026-05-04). Plan does not get a version bump until the owner explicitly says so. Agents must not introduce new version stamps. V1 spec sheet at `plan/V1-SPEC.md` is the authoritative change list; anything not on that list stays as V1.
 **Last verified:** 2026-05-08 (V1 = 9-agent Nia research synthesis on top of V1's 3 verification rounds + 19 Nia agents + ~30 critical findings + 17 leakage hard rules)
 **Data phase complete:** 2026-05-08 (3 paranoid audit iterations × 8 agents = 19 bugs caught + fixed; cron loop continuing)
@@ -13,8 +13,8 @@
 
 ## ⭐ DATA PHASE COMPLETE — READ THIS FIRST
 
-**Single unified dataset:** `/Users/root1/Desktop/nanogld/data/processed/training_v1_unified.pt`
-- Mac mini at `root1@100.83.86.5` (Tailscale)
+**Single unified dataset:** `$NANOGLD_REMOTE/data/processed/training_v1_unified.pt`
+- remote host at `$NANOGLD_HOST` (Tailscale)
 - 234 MB PyTorch native file
 - 75,993 30-min bars × 681 features (float32) + 40,032 news embeddings (256-dim float16)
 - Train/Val/Test splits: 57,697 / 7,540 / 10,756 (chronological, 2016 → 2026)
@@ -138,7 +138,7 @@ A from-scratch hybrid encoder (10 transformer blocks + 2 sLSTM blocks at the hea
 2. **Use the best tool for the job.** No artificial restrictions. **HuggingFace Trainer, accelerate, peft, Unsloth, axolotl, datasets, lightning — all on the table.** If a library makes the project better, USE it. The quality of the artifact and the user's learning compound when professional tooling is in the stack.
 3. **Owner learns deeply.** Owner is samsiavoshian. They want to understand transformers at Karpathy depth. So: **build the core model FROM SCRATCH in raw PyTorch** (this is the learning artifact). Use HF/Unsloth/peft for boilerplate (training loop infrastructure, data loading, mixed precision, LoRA, distributed). Read every library you import; understand what it does before depending on it.
 4. **Real $100 skin-in-the-game.** Paper trade is dev. Live Alpaca with real money once paper validates.
-5. **Local hardware only.** M4 Mac mini 16GB (trainer) + M4 Pro Macbook 16GB (live + dev). NO cloud GPU. NO Modal/Runpod/Lambda.
+5. **Local hardware only.** M4 remote host 16GB (trainer) + M4 Pro Macbook 16GB (live + dev). NO cloud GPU. NO Modal/Runpod/Lambda.
 6. **Honest beats clever.** If a 2M-param TSMixer beats our 50M transformer on val Sharpe, ship TSMixer. If a Forecast-to-Fill replication (no ML at all) beats both, ship that. Story matters more than complexity.
 
 ### Library Policy (V1)

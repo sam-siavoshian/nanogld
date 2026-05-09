@@ -119,12 +119,10 @@ class TransformerBlock(nn.Module):
         h = x + self._drop_path(attn_out)
 
         if self.has_cross_attn:
-            assert (
-                bar_pool is not None
-                and news is not None
-                and news_mask is not None
-                and is_news_present is not None
-            )
+            if bar_pool is None or news is None or news_mask is None or is_news_present is None:
+                raise ValueError(
+                    "cross-attn block requires bar_pool, news, news_mask, is_news_present"
+                )
             h = self.cross_attn(
                 bar_tokens=h,
                 bar_pool=bar_pool,
@@ -134,7 +132,8 @@ class TransformerBlock(nn.Module):
             )
 
         if self.has_film:
-            assert regime is not None
+            if regime is None:
+                raise ValueError("FiLM block requires regime tensor")
             h = self.film(h, regime)
 
         h = h + self._drop_path(self.ffn(self.norm2(h)))

@@ -57,3 +57,21 @@ def passes_v1_gate(result: CostStressResult, threshold_at_1_5x: float = 0.5) -> 
     if metrics_15 is None:
         return False
     return metrics_15["sharpe"] > threshold_at_1_5x
+
+
+def assert_monotone(result: CostStressResult, tol: float = 1e-6) -> None:
+    """V1 invariant: Sharpe(0.5x) >= Sharpe(1.0x) >= Sharpe(1.5x).
+
+    Higher costs should monotonically reduce Sharpe. A non-monotone
+    cost-stress result indicates a backtest engine bug or PnL sign error.
+    """
+    sharpes = [
+        result.by_multiplier[m]["sharpe"] for m in (0.5, 1.0, 1.5) if m in result.by_multiplier
+    ]
+    if len(sharpes) < 2:
+        return
+    for prev, nxt in zip(sharpes, sharpes[1:], strict=False):
+        if nxt > prev + tol:
+            raise AssertionError(
+                f"cost-stress non-monotone: {sharpes} (Sharpe should fall as cost rises)"
+            )

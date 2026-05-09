@@ -39,11 +39,10 @@ class TrainConfig:
     fsam_rho: float = 0.05
     ema_decay: float = 0.999
     grad_clip_max_norm: float = 1.0
-    label_smoothing: float = 0.05
     focal_gamma: float = 3.0
 
     ssl_epochs: int = 15
-    probe_epochs: int = 3
+    probe_epochs: int = 5
     llrd_epochs: int = 10
     llrd_decay: float = 0.85
     mixout_p: float = 0.7
@@ -57,7 +56,7 @@ class TrainConfig:
     sharpe_loss_weight: float = 0.5
     focal_loss_weight: float = 0.5
     dann_loss_weight: float = 0.05
-    aecf_reg_weight: float = 0.01
+    aecf_reg_weight: float = 0.05
 
     cost_bps: float = 2.0
 
@@ -154,9 +153,14 @@ def llrd_param_groups(
 
 def setup_determinism(seed: int = 42) -> None:
     """Seed every RNG and force deterministic algorithms."""
+    import os  # noqa: PLC0415
     import random  # noqa: PLC0415
 
+    import numpy as np  # noqa: PLC0415
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)

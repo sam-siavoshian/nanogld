@@ -56,10 +56,12 @@ def focal_loss(
         gamma: focusing parameter. 0.0 -> CE; 3.0 -> V1 default.
         reduction: "mean", "sum", or "none".
     """
+    if logits.shape[0] == 0:
+        return torch.zeros((), device=logits.device, dtype=logits.dtype)
     log_probs = F.log_softmax(logits, dim=-1)
     log_p_t = log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
-    p_t = log_p_t.exp()
-    loss = -((1.0 - p_t) ** gamma) * log_p_t
+    p_t_clamped = log_p_t.exp().clamp(min=1e-7, max=1.0 - 1e-7)
+    loss = -((1.0 - p_t_clamped) ** gamma) * log_p_t
     if reduction == "mean":
         return loss.mean()
     if reduction == "sum":
@@ -72,16 +74,16 @@ def sharpe_loss(
     next_log_return: Tensor,
     prev_position: Tensor | None = None,
     cost_bps: float = 2.0,
-    eps: float = 1e-8,
+    eps: float = 1e-4,
 ) -> Tensor:
     """Differentiable -Sharpe for Head B (cost-aware optional).
 
     Math:
         pnl = position * next_log_return - cost * |position - prev_position|
-        L = -mean(pnl) / (std(pnl) + eps)
+        L = -mean(pnl) / max(eps, sqrt(var(pnl) + eps^2))
 
     Cost is per-unit-turnover in basis points, scaled by 1e-4 to match
-    log-return units.
+    log-return units. Empty pnl returns 0.
 
     Args:
         position: (B,) in [-1, +1] (typically tanh of Head B logit).
@@ -97,7 +99,10 @@ def sharpe_loss(
     else:
         turnover = (position - prev_position).abs()
         pnl = position * next_log_return - cost_frac * turnover
-    return -pnl.mean() / (pnl.std(unbiased=False) + eps)
+    if pnl.numel() < 2:
+        return torch.zeros((), dtype=position.dtype, device=position.device)
+    std_floor = torch.sqrt(pnl.var(unbiased=False) + eps * eps).clamp(min=eps)
+    return -pnl.mean() / std_floor
 
 
 class GradientReversalLayer(torch.autograd.Function):
@@ -154,6 +159,12 @@ def simmtm_loss(
         targets: (B, K, D) — reconstruction targets per view.
         lambda_sim: weight on the similarity-blend term.
     """
+    if views.shape != targets.shape:
+        raise ValueError(
+            f"simmtm_loss: views.shape {tuple(views.shape)} != targets.shape {tuple(targets.shape)}"
+        )
+    if views.shape[0] == 0:
+        return torch.zeros((), device=views.device, dtype=views.dtype)
     b, k, _ = views.shape
     views_flat = views.reshape(b, k, -1)
     sim = F.cosine_similarity(views_flat.unsqueeze(2), views_flat.unsqueeze(1), dim=-1)
@@ -177,6 +188,8 @@ def clip_infonce(
             bar window (positive pairs).
         tau: temperature.
     """
+    if z_bar.shape[0] < 2:
+        return torch.zeros((), device=z_bar.device, dtype=z_bar.dtype)
     z_bar = F.normalize(z_bar, dim=-1)
     z_news = F.normalize(z_news, dim=-1)
     logits = z_bar @ z_news.t() / tau

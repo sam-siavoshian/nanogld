@@ -23,11 +23,17 @@ RECOVERY_BARS = 65
 
 @dataclass
 class DrawdownCircuitBreaker:
-    """Tracks cumulative equity drawdown and gates size."""
+    """Tracks cumulative equity drawdown and gates size.
+
+    Halt timeout fires after RECOVERY_BARS total bars in halt (cumulative,
+    persists across halt→quarter→halt cycles). Counter resets only on
+    full recovery.
+    """
 
     peak_equity: float = 1.0
     _state: str = "full"
     _bars_in_state: int = 0
+    _halt_total_bars: int = 0
 
     def step(self, current_equity: float) -> float:
         """Update with current cumulative equity; return size multiplier."""
@@ -36,18 +42,16 @@ class DrawdownCircuitBreaker:
 
         drawdown = (current_equity - self.peak_equity) / max(self.peak_equity, 1e-9)
 
-        if drawdown <= HALT_THRESHOLD:
+        if drawdown <= HALT_THRESHOLD - 1e-9:
             new_state = "halt"
-        elif drawdown <= QUARTER_THRESHOLD:
+        elif drawdown <= QUARTER_THRESHOLD - 1e-9:
             new_state = "quarter"
-        elif drawdown <= HALVE_THRESHOLD:
+        elif drawdown <= HALVE_THRESHOLD - 1e-9:
             new_state = "halve"
         else:
             new_state = "full"
 
-        if self._state in ("quarter", "halt") and drawdown > RECOVERY_THRESHOLD:
-            new_state = "halve" if new_state == "halve" else "full"
-        if self._state in ("halt",) and self._bars_in_state >= RECOVERY_BARS:
+        if self._state == "halt" and self._halt_total_bars >= RECOVERY_BARS:
             new_state = "full"
 
         if new_state == self._state:
@@ -55,6 +59,11 @@ class DrawdownCircuitBreaker:
         else:
             self._state = new_state
             self._bars_in_state = 0
+
+        if self._state == "halt":
+            self._halt_total_bars += 1
+        elif self._state == "full":
+            self._halt_total_bars = 0
 
         return {
             "full": 1.0,

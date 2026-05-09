@@ -23,10 +23,11 @@ uv run huggingface-cli download "${REPO_ID}" \
     --local-dir data/processed --repo-type dataset
 
 echo "[train] running fold ${FOLD} ..."
-uv run python -m nanogld.training.train run \
+uv run python -m nanogld.training run \
     --config "${CONFIG}" \
     --fold "${FOLD}" \
-    --output-dir "checkpoints/v1/fold_${FOLD}"
+    --output-dir "checkpoints/v1/fold_${FOLD}" \
+    --device auto
 
 echo "[train] uploading checkpoints to ${CHECKPOINT_REPO} ..."
 uv run huggingface-cli upload "${CHECKPOINT_REPO}" \

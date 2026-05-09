@@ -1,9 +1,9 @@
 # nanoGLD V1 main training config (RunPod H100).
 #
-# Used by `python -m nanogld.training.train --config configs/v1_main.yaml --fold N`.
+# Used by `python -m nanogld.training run --config configs/v1_main.yaml --fold N`.
 
 model:
-  numeric_dim: 651
+  numeric_dim: 681
   d_model: 384
   num_heads: 6
   num_transformer_layers: 10

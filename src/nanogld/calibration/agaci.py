@@ -38,7 +38,8 @@ class AgACI:
         self.alpha_target = alpha_target
         self.eta = eta
         self.n_experts = len(gamma_grid)
-        self.expert_alphas = np.full(self.n_experts, alpha_target, dtype=np.float64)
+        spread = np.linspace(-0.02, 0.02, self.n_experts, dtype=np.float64)
+        self.expert_alphas = np.clip(alpha_target + spread, 0.001, 0.5)
         self.weights = np.full(self.n_experts, 1.0 / self.n_experts, dtype=np.float64)
 
     def current_alpha(self) -> float:
@@ -58,7 +59,12 @@ class AgACI:
             self.expert_alphas[i] = self.expert_alphas[i] + gamma * (self.alpha_target - observed)
             self.expert_alphas[i] = max(0.001, min(0.5, float(self.expert_alphas[i])))
 
-        losses = (self.expert_alphas - self.alpha_target) ** 2
+        residual = observed - self.expert_alphas
+        losses = np.where(
+            residual >= 0,
+            self.alpha_target * residual,
+            (self.alpha_target - 1.0) * residual,
+        )
         log_weights = np.log(self.weights + 1e-12) - self.eta * losses
         log_weights -= log_weights.max()
         new_w = np.exp(log_weights)

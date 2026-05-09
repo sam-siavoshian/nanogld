@@ -97,7 +97,7 @@ Head B (position weight, NEW):
 - `L_sharpe = -mean(w * r_next) / (std(w * r_next) + eps)` where w = tanh output, r_next = next-bar log return.
 - Cost-aware variant: `L_sharpe_net = -mean(w * r_next - cost * |w_t - w_{t-1}|) / std(...)`.
 
-Combined loss: `L = 0.5 * L_focal + 0.5 * L_sharpe_net + 0.05 * L_DANN + 0.1 * L_clip_pretrain` (during SSL).
+Combined Stage 3 loss (canonical, mirrors §8.3): `L = 0.5 * L_focal + 0.5 * L_sharpe_net + 0.05 * L_DANN + L_aecf`. The `L_clip_pretrain` term applies only at Stage 1 SSL (see §7.5), not at Stage 3.
 
 Reason: Hwang & Zohren 2025 (arXiv:2510.03129) "MSE-optimal forecasts produce non-optimal allocations." Saly-Kaufmann 2026 trains directly on -Sharpe to hit 2.40. End-to-end decision-aware head correlates with OOS profit.
 
@@ -348,7 +348,7 @@ Tau=0.07. ~5% extra pretrain compute. Gives encoder text-semantic priors for fre
 
 ### 7.5 Multi-task SSL combined loss
 
-`L_pretrain = L_simmtm + 0.5 * L_clip + 0.05 * L_DANN`.
+`L_pretrain = L_simmtm + 0.5 * L_clip + 0.05 * L_DANN + L_aecf` (canonical, matches §8.3).
 
 ---
 
@@ -509,8 +509,41 @@ NEW V1 invariants (18-25):
 6. Build src/nanogld/backtest/ with cost-stress + DSR + per-bucket.
 7. muP sweep on 2-4M tiny model ($5).
 8. Run SSL pretrain (~25-30% budget).
-9. Run linear probe + LLRD fine-tune on H100 ($60-100 main run).
+9. Run linear probe + LLRD fine-tune on H100 ($60-150 main run).
 10. Walk-forward eval, gate check, ship-or-iterate.
+
+---
+
+## 11. Post-train feature attribution (added 2026-05-08)
+
+V1 ships with a six-method interpretability suite under `src/nanogld/analysis/`. Runs once per fold after Stage 3 LLRD, on the held-out `val_c` slice (does not double-dip the calibration set).
+
+Methods (each writes parquet + json artifacts under `reports/analysis/fold_N/`):
+
+1. VSN gate importance. The Variable Selection Network already produces a softmax distribution over the 681 features per bar. Mean-over-eval gives a free importance ranking. Split per news-presence bucket per Inv 18.
+2. Integrated Gradients (captum). Path-integral attribution against the `channel_inputs` tensor with the other modalities held fixed. Per-class signed + mean-abs aggregates.
+3. Permutation importance. Model-agnostic ground truth. Shuffles each feature column across the batch axis, measures Δfocal-loss + ΔSharpe. Capped to top-N features (by VSN gate) so the suite finishes in ~10 minutes.
+4. Modality ablation. Zeroes each input stream (bars / news / regime / bars+news), reports focal + Sharpe drop, split per bucket.
+5. Cross-attention rollout. Re-computes the NewsFuser softmax weights to expose which news slots get attention, split per bucket.
+6. Feature-group rollups. Categorizes the 681 features into 9 buckets (price / volatility / macro / calendar / regime / news / flow / rates / other) and sums per-feature importance into per-category summaries.
+
+Why not SHAP. DeepSHAP and DeepLIFT need layer-by-layer support; our model has SwiGLU + sLSTM + RoPE + GroupNorm + custom RMSNorm, so captum's `DeepLift` falls back to gradients on unsupported layers, which converges to IG anyway. KernelSHAP is O(n_features × n_perturbations × n_samples) ≈ infeasible at 681 × thousands × hundreds. Permutation importance gives the same model-agnostic ranking signal at much lower cost.
+
+Outputs: a single markdown report `analysis_<run_hash>_<git_sha>.md` plus per-method parquet/json artifacts and a manifest. Atomic write throughout.
+
+CLI:
+
+```
+uv run python -m nanogld.analysis run \
+    --checkpoint checkpoints/v1/fold_0/llrd/llrd_final.pt \
+    --unified data/processed/training_v1_unified.pt \
+    --sidecar data/processed/training_v1_sidecar.pt \
+    --fold 0 --split val_c --device auto
+```
+
+Reproducibility manifest includes git SHA, hostname, run hash (8-char sha256 over hashable cfg fields), python + platform version. Defaults: 256 IG samples × 32 steps, 100 features × 3 perm reps, val_c split.
+
+Spec module path: `src/nanogld/analysis/`. Test path: `tests/analysis/`.
 
 ---
 

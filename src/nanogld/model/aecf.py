@@ -68,7 +68,12 @@ class AECFMask(nn.Module):
         training_step: int = 0,
         device: torch.device | str = "cpu",
     ) -> Tensor:
-        """Return a Bernoulli mask of shape (batch_size,) — 1 = present."""
+        """Return a Bernoulli mask of shape (batch_size,) — 1 = present.
+
+        At eval, returns all-ones (no modality dropout at inference).
+        """
+        if not self.training:
+            return torch.ones(batch_size, dtype=torch.float32, device=device)
         p_drop = self.sample_p(training_step=training_step)
         keep = 1.0 - p_drop
         return (torch.rand(batch_size, device=device) < keep).to(torch.float32)

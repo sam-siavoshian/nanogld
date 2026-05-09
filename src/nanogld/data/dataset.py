@@ -11,7 +11,7 @@ Required files (paths relative to data/):
     processed/v1_hmm.joblib             — fitted HMM (built once on train split)
 
 Forward batch dict keys:
-    channel_inputs:    (T, F=651) float32
+    channel_inputs:    (T, F=681) float32
     news_embeddings:   (S, 256)   float16, S = max news slots (default 8)
     news_mask:         (S,)       float32 — 1 = source present
     is_news_present:   ()         long — 0 or 1
@@ -105,6 +105,15 @@ class NanoGLDDataset(Dataset):
         self._sidecar = None
         if sidecar_path is not None and Path(sidecar_path).exists():
             self._sidecar = torch.load(Path(sidecar_path), weights_only=False, map_location="cpu")
+            n_bars = int(self._features.shape[0])
+            for key in ("next_log_return", "barrier_up", "barrier_down", "gld_spread_bps_t"):
+                if key in self._sidecar:
+                    n_side = int(len(self._sidecar[key]))
+                    if n_side != n_bars:
+                        raise RuntimeError(
+                            f"sidecar key {key!r} length {n_side} != unified n_bars {n_bars}; "
+                            f"sidecar likely built against a different unified.pt"
+                        )
 
         self._valid_indices = self._compute_valid_indices(split)
         LOG.info(
@@ -144,7 +153,8 @@ class NanoGLDDataset(Dataset):
             mask[pick] = True
 
         idx = np.where(mask)[0]
-        return idx[idx >= self.lookback_T]
+        idx = idx[idx >= self.lookback_T]
+        return idx[idx < n_bars - 1]
 
     def __len__(self) -> int:
         return int(len(self._valid_indices))

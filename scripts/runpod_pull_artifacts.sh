@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pull RunPod training artifacts back to the local Mac mini.
+# Pull RunPod training artifacts back to the local working host.
 #
 # After RunPod completes Block 9 main run, this script downloads:
 #   - 4 fold checkpoints

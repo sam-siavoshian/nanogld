@@ -35,9 +35,9 @@ def donchian_positions(
     for i in range(window, n):
         upper = high[i - window : i].max()
         lower = low[i - window : i].min()
-        if close[i - 1] > upper:
+        if close[i] > upper:
             cur = 1.0
-        elif close[i - 1] < lower:
+        elif close[i] < lower:
             cur = -1.0
         pos[i] = cur
     return pos
