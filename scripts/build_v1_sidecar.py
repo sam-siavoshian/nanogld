@@ -40,7 +40,9 @@ import numpy as np
 import pandas as pd
 import torch
 
+from nanogld.data.integrity import write_manifest
 from nanogld.data.utils import data_root, get_logger, raw_dir
+from nanogld.data.walk_forward_splits import compute_fold_boundaries
 from nanogld.features.atr import add_atr_and_barriers
 from nanogld.features.h5 import add_h5_features, fit_h5_vol_threshold
 from nanogld.features.hmm_regime import add_hmm_column, fit_hmm, save_hmm
@@ -61,7 +63,13 @@ GLD_BARS_NAME = "alpaca_bars_GLD_30min.parquet"
 
 @dataclass(frozen=True)
 class BuildConfig:
-    """Inputs and output paths for the sidecar build."""
+    """Inputs and output paths for the sidecar build.
+
+    When ``fold_idx`` is None the sidecar is built using the WHOLE
+    ``splits == "train"`` mask (legacy global behavior). When it is
+    set the script fits HMM + h5_threshold + regime_thresholds on the
+    fold's train slice only, closing the V1-SPEC §32 leak.
+    """
 
     unified_path: Path
     bars_path: Path
@@ -69,6 +77,7 @@ class BuildConfig:
     hmm_path: Path
     rv_lookback: int = 60
     atr_period: int = 14
+    fold_idx: int | None = None
 
 
 def _load_unified(path: Path) -> dict:
@@ -151,8 +160,34 @@ def build_sidecar(cfg: BuildConfig) -> Path:
     aligned = add_spread_feature(aligned)
 
     splits_arr = np.asarray(unified["splits"])
-    train_mask = splits_arr == "train"
-    train_df = aligned[train_mask].reset_index(drop=True)
+    if cfg.fold_idx is None:
+        train_mask = splits_arr == "train"
+        train_df = aligned[train_mask].reset_index(drop=True)
+        train_window_label = "global"
+    else:
+        # Per-fold leak fix (V1-SPEC §32): fit thresholds + HMM on this
+        # fold's train slice only, then APPLY globally to produce a
+        # fold-specific sidecar.
+        fold_boundaries = compute_fold_boundaries(
+            np.asarray(unified["bar_close_utc_ns"], dtype=np.int64)
+        )
+        if cfg.fold_idx >= len(fold_boundaries):
+            raise ValueError(
+                f"requested fold {cfg.fold_idx} but only {len(fold_boundaries)} folds fit "
+                f"the dataset span"
+            )
+        fb = fold_boundaries[cfg.fold_idx]
+        train_mask = np.zeros(len(aligned), dtype=bool)
+        train_mask[fb.train_start : fb.train_end] = True
+        train_df = aligned[train_mask].reset_index(drop=True)
+        train_window_label = (
+            f"fold {cfg.fold_idx} train=[{fb.train_start},{fb.train_end})"
+        )
+        LOG.info(
+            "per-fold sidecar: %s (%d train bars, fits HMM/h5/regime on this slice only)",
+            train_window_label,
+            int(train_mask.sum()),
+        )
 
     h5_threshold = fit_h5_vol_threshold(train_df, vol_lookback=cfg.rv_lookback)
     LOG.info("fit h5 vol threshold (train-only): %.6e", h5_threshold)
@@ -161,7 +196,9 @@ def build_sidecar(cfg: BuildConfig) -> Path:
     )
 
     regime_thresholds = fit_regime_thresholds(train_df, rv_lookback=cfg.rv_lookback)
-    aligned = add_regime_columns(aligned, thresholds=regime_thresholds, rv_lookback=cfg.rv_lookback)
+    aligned = add_regime_columns(
+        aligned, thresholds=regime_thresholds, rv_lookback=cfg.rv_lookback
+    )
 
     hmm_model = fit_hmm(train_df, rv_lookback=cfg.rv_lookback)
     save_hmm(hmm_model, cfg.hmm_path)
@@ -186,12 +223,16 @@ def build_sidecar(cfg: BuildConfig) -> Path:
         "regime_vec": regime_vec,
         "era_label": era_label,
         "meta": {
-            "schema_version": "v1_sidecar.1",
+            "schema_version": "v1_sidecar.2",
             "unified_path": str(cfg.unified_path),
             "bars_path": str(cfg.bars_path),
             "rv_lookback": cfg.rv_lookback,
             "atr_period": cfg.atr_period,
-            "h5_vol_threshold": float(h5_threshold) if not np.isnan(h5_threshold) else None,
+            "h5_vol_threshold": float(h5_threshold)
+            if not np.isnan(h5_threshold)
+            else None,
+            "fold_idx": cfg.fold_idx,
+            "train_window": train_window_label,
         },
     }
 
@@ -221,28 +262,94 @@ def main() -> int:
         "--output",
         type=Path,
         default=data_root() / "processed" / SIDECAR_NAME,
-        help="output sidecar .pt path",
+        help="output sidecar .pt path (used when --per-fold not set)",
     )
     parser.add_argument(
         "--hmm",
         type=Path,
         default=data_root() / "processed" / HMM_NAME,
-        help="output HMM joblib path",
+        help="output HMM joblib path (used when --per-fold not set)",
     )
     parser.add_argument("--rv_lookback", type=int, default=60)
     parser.add_argument("--atr_period", type=int, default=14)
+    parser.add_argument(
+        "--per-fold",
+        action="store_true",
+        help=(
+            "build one sidecar per walk-forward fold (V1-SPEC §32 leak fix). "
+            "HMM + h5_threshold + regime thresholds fit on each fold's train "
+            "slice only. Outputs training_v1_sidecar_fold_N.pt + v1_hmm_fold_N.joblib."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=data_root() / "processed",
+        help="output directory for per-fold sidecars (used with --per-fold)",
+    )
     args = parser.parse_args()
 
-    cfg = BuildConfig(
-        unified_path=args.unified,
-        bars_path=args.bars,
-        output_path=args.output,
-        hmm_path=args.hmm,
-        rv_lookback=args.rv_lookback,
-        atr_period=args.atr_period,
+    if not args.per_fold:
+        cfg = BuildConfig(
+            unified_path=args.unified,
+            bars_path=args.bars,
+            output_path=args.output,
+            hmm_path=args.hmm,
+            rv_lookback=args.rv_lookback,
+            atr_period=args.atr_period,
+        )
+        build_sidecar(cfg)
+        # Write MANIFEST.json so dataset.__init__ can verify on load (§45).
+        manifest_path = write_manifest(cfg.output_path.parent)
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "output": str(cfg.output_path),
+                    "manifest": str(manifest_path),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    # Per-fold mode: build one sidecar per fold.
+    unified = _load_unified(args.unified)
+    fold_boundaries = compute_fold_boundaries(
+        np.asarray(unified["bar_close_utc_ns"], dtype=np.int64)
     )
-    build_sidecar(cfg)
-    print(json.dumps({"status": "ok", "output": str(cfg.output_path)}, indent=2))
+    if not fold_boundaries:
+        LOG.error("compute_fold_boundaries returned 0 folds; dataset span too short")
+        return 2
+
+    outputs: list[str] = []
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    for fb in fold_boundaries:
+        out_path = args.output_dir / f"training_v1_sidecar_fold_{fb.fold_idx}.pt"
+        hmm_path = args.output_dir / f"v1_hmm_fold_{fb.fold_idx}.joblib"
+        cfg = BuildConfig(
+            unified_path=args.unified,
+            bars_path=args.bars,
+            output_path=out_path,
+            hmm_path=hmm_path,
+            rv_lookback=args.rv_lookback,
+            atr_period=args.atr_period,
+            fold_idx=fb.fold_idx,
+        )
+        build_sidecar(cfg)
+        outputs.append(str(out_path))
+    manifest_path = write_manifest(args.output_dir)
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "n_folds": len(outputs),
+                "outputs": outputs,
+                "manifest": str(manifest_path),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
