@@ -54,6 +54,7 @@ def build_optimizer(
     warmup_steps: int = 300,
     fsam_rho: float = 0.05,
     fsam_sigma: float = 1.0,
+    use_fsam: bool = True,
 ) -> CautiousMask:
     """Build ``Cautious(FriendlySAM(ScheduleFreeAdamW))``.
 
@@ -84,6 +85,15 @@ def build_optimizer(
         warmup_steps=warmup_steps,
     )
     base.train()
+
+    if not use_fsam:
+        # Cautious(ScheduleFreeAdamW) without FSAM. Used by Stage 1 SSL
+        # because the SimMTM closure computes the loss OUTSIDE itself
+        # (K=3 view forward + recon head + CLIP head) — the second SAM
+        # pass would backward through an already-freed graph. Probe +
+        # LLRD use full Cautious(FSAM(SF)) since their closures recompute
+        # forward each call.
+        return CautiousMask(base)
 
     fsam_params: list[Tensor] = []
     for entry in groups_list:

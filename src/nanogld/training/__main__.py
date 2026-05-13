@@ -247,6 +247,12 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
             betas=(0.9, 0.95),
             weight_decay=float(cfg["ssl"].get("weight_decay", 0.1)),
             warmup_steps=int(cfg["ssl"].get("warmup_steps", 300)),
+            # SSL's SimMTM closure computes loss OUTSIDE the closure (K=3
+            # view forward + recon head + CLIP head are stateful + lazy);
+            # FSAM's two-pass would backward through a freed graph. Drop
+            # FSAM here; Stage 3 LLRD has a proper closure-rebuild path
+            # and keeps the full Cautious(FSAM(SF)) stack.
+            use_fsam=False,
         )
         try:
             with _stage_log_file(fold_out, "ssl"), heartbeat(
