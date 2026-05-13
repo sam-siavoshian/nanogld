@@ -8,6 +8,7 @@ from torch import Tensor, nn
 
 from nanogld.analysis.modality_ablation import modality_ablation
 
+
 pytestmark = pytest.mark.smoke
 
 

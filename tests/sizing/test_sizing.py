@@ -7,6 +7,7 @@ import pytest
 
 from nanogld.sizing import (
     ATRStop,
+    CostConfig,
     DrawdownCircuitBreaker,
     KellyConfig,
     Sizer,

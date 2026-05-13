@@ -130,7 +130,7 @@ def test_macro_brier_zero_for_perfect_probs() -> None:
 
 @pytest.mark.smoke
 def test_kelly_multiplier_in_unit_interval() -> None:
-    var = torch.tensor([1e-6, 1e-2, 1e2])
+    var = torch.tensor([1e-6, 1e-2, 1e+2])
     m = kelly_multiplier(var, sigma_target=0.05, floor=0.0, ceil=1.0)
     assert (m >= 0.0).all() and (m <= 1.0).all()
 

@@ -10,6 +10,7 @@ from nanogld.analysis.feature_groups import (
     rollup_by_group,
 )
 
+
 pytestmark = pytest.mark.smoke
 
 
@@ -52,17 +53,7 @@ def test_classify_known_categories() -> None:
 
 
 def test_categories_complete() -> None:
-    expected = {
-        "price",
-        "volatility",
-        "macro",
-        "calendar",
-        "regime",
-        "news",
-        "flow",
-        "rates",
-        "other",
-    }
+    expected = {"price", "volatility", "macro", "calendar", "regime", "news", "flow", "rates", "other"}
     assert set(CATEGORIES) == expected
 
 

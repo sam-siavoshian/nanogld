@@ -8,8 +8,8 @@ import torch
 from nanogld.model.encoder import (
     DEFAULT_CROSS_ATTN_LAYERS,
     DEFAULT_FILM_LAYERS,
-    TOTAL_LAYERS,
     HybridEncoder,
+    TOTAL_LAYERS,
 )
 
 

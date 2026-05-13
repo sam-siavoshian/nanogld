@@ -81,14 +81,12 @@ def test_year_bucket_all_decades() -> None:
     """Every year-bucket must fire for at least one expected year."""
     rows = []
     for year in (2016, 2018, 2020, 2022, 2023, 2024, 2025, 2027):
-        rows.append(
-            {
-                "bar_close_utc": pd.Timestamp(f"{year}-06-15 14:30:00+00:00"),
-                "vix_level": 18.0,
-                "gld_close": 100.0,
-                "is_fomc_week": 0,
-            }
-        )
+        rows.append({
+            "bar_close_utc": pd.Timestamp(f"{year}-06-15 14:30:00+00:00"),
+            "vix_level": 18.0,
+            "gld_close": 100.0,
+            "is_fomc_week": 0,
+        })
     df = pd.DataFrame(rows)
     th = regime.RegimeThresholds(vix_tercile=(15.0, 20.0), rv_tercile=(0.001, 0.002))
     out = regime.add_regime_columns(df, thresholds=th, rv_lookback=2)
@@ -108,7 +106,6 @@ def test_fit_thresholds_empty_df_does_not_crash() -> None:
     empty = pd.DataFrame({"vix_level": [], "gld_close": []})
     th = regime.fit_regime_thresholds(empty, rv_lookback=20)
     import math
-
     assert math.isnan(th.vix_tercile[0]) and math.isnan(th.vix_tercile[1])
     assert math.isnan(th.rv_tercile[0]) and math.isnan(th.rv_tercile[1])
 

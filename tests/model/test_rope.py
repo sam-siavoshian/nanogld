@@ -38,7 +38,6 @@ def test_partial_leaves_remainder_untouched() -> None:
 def test_view_as_complex_not_called() -> None:
     """V1 invariant: never CALL torch.view_as_complex on MPS-bound code."""
     import inspect
-
     from nanogld.model import rope as rope_mod
 
     src = inspect.getsource(rope_mod)

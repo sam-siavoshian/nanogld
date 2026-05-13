@@ -123,11 +123,49 @@ def test_donchian_basic() -> None:
 
 
 @pytest.mark.smoke
-def test_gao_2014_high_vol_only() -> None:
+def test_gao_2014_high_vol_only_legacy_path() -> None:
+    """Legacy fire-every-bar path (pre-#54 behavior)."""
     h5 = np.array([0.001, -0.001, 0.001, -0.001])
     high_vol = np.array([True, True, False, False])
-    pos = gao_2014_positions(h5, is_high_vol=high_vol)
+    pos = gao_2014_positions(h5, is_high_vol=high_vol, hold_last_bar_only=False)
     assert pos[0] == 1.0
     assert pos[1] == -1.0
     assert pos[2] == 0.0
     assert pos[3] == 0.0
+
+
+@pytest.mark.smoke
+def test_gao_2014_hold_last_bar_only() -> None:
+    """V1-SPEC §54: signal predicts the LAST bar of the day only."""
+    h5 = np.array([0.001, -0.001, 0.001, -0.001])
+    high_vol = np.array([True, True, True, True])
+    # Only the 2nd and 4th bars are "last bar of day".
+    last_bar = np.array([False, True, False, True])
+    pos = gao_2014_positions(
+        h5, is_high_vol=high_vol, is_last_bar_of_day=last_bar, hold_last_bar_only=True
+    )
+    assert pos[0] == 0.0
+    assert pos[1] == -1.0
+    assert pos[2] == 0.0
+    assert pos[3] == -1.0
+
+
+@pytest.mark.smoke
+def test_gao_2014_hold_last_bar_only_requires_mask() -> None:
+    import pytest as _pt
+
+    with _pt.raises(ValueError, match="is_last_bar_of_day"):
+        gao_2014_positions(
+            np.array([0.001, -0.001]),
+            hold_last_bar_only=True,
+        )
+
+
+@pytest.mark.smoke
+def test_ma_cross_warmup_zero() -> None:
+    """V1-SPEC §54: first slow_span bars must be zero (EMA not warm yet)."""
+    close = np.linspace(100, 200, 300)
+    pos = ma_cross_positions(close, fast_span=10, slow_span=20)
+    assert (pos[:20] == 0.0).all()
+    # After warmup, signal is allowed to fire.
+    assert (pos[20:] != 0.0).any()

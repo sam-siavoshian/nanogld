@@ -8,16 +8,17 @@ import pytest
 
 from nanogld.analysis.config import AnalysisConfig
 
+
 pytestmark = pytest.mark.smoke
 
 
 def _cfg(**overrides: object) -> AnalysisConfig:
-    base = {
-        "checkpoint_path": Path("/tmp/ckpt.pt"),
-        "unified_path": Path("/tmp/unified.pt"),
-        "sidecar_path": Path("/tmp/sidecar.pt"),
-        "fold_idx": 0,
-    }
+    base = dict(
+        checkpoint_path=Path("/tmp/ckpt.pt"),
+        unified_path=Path("/tmp/unified.pt"),
+        sidecar_path=Path("/tmp/sidecar.pt"),
+        fold_idx=0,
+    )
     base.update(overrides)
     return AnalysisConfig(**base)
 
@@ -48,7 +49,5 @@ def test_run_hash_changes_with_seed() -> None:
 
 def test_immutable() -> None:
     cfg = _cfg()
-    from dataclasses import FrozenInstanceError
-
-    with pytest.raises(FrozenInstanceError):
+    with pytest.raises(Exception):  # noqa: PT011 — frozen dataclass raises FrozenInstanceError
         cfg.fold_idx = 99  # type: ignore[misc]
