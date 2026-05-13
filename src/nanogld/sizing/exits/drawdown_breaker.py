@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+
 HALVE_THRESHOLD = -0.05
 QUARTER_THRESHOLD = -0.10
 HALT_THRESHOLD = -0.15
@@ -42,11 +43,14 @@ class DrawdownCircuitBreaker:
 
         drawdown = (current_equity - self.peak_equity) / max(self.peak_equity, 1e-9)
 
-        if drawdown <= HALT_THRESHOLD - 1e-9:
+        # Inclusive boundary: drawdown of exactly -5% must trigger halve.
+        # Using `+ 1e-9` makes the comparison FP-robust on the inclusive side
+        # (e.g. drawdown computed from 1.0 -> 0.95 lands at -0.05 modulo FP).
+        if drawdown <= HALT_THRESHOLD + 1e-9:
             new_state = "halt"
-        elif drawdown <= QUARTER_THRESHOLD - 1e-9:
+        elif drawdown <= QUARTER_THRESHOLD + 1e-9:
             new_state = "quarter"
-        elif drawdown <= HALVE_THRESHOLD - 1e-9:
+        elif drawdown <= HALVE_THRESHOLD + 1e-9:
             new_state = "halve"
         else:
             new_state = "full"

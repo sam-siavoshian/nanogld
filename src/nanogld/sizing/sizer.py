@@ -28,6 +28,7 @@ from nanogld.sizing.vol_target import (
     vol_target_multiplier,
 )
 
+
 SizerStage = Literal["stage1", "stage2"]
 
 
@@ -93,8 +94,9 @@ class Sizer:
         delta_w_estimate = np.abs(edge - prev_pos)
         cost_per_bar = cost(delta_w_estimate, cfg=cfg.cost)
 
-        total_var = np.asarray(realized_var_60, dtype=np.float64) + np.asarray(
-            posterior_variance, dtype=np.float64
+        total_var = (
+            np.asarray(realized_var_60, dtype=np.float64)
+            + np.asarray(posterior_variance, dtype=np.float64)
         )
 
         kelly = kelly_size(

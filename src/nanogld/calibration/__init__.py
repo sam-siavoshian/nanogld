@@ -13,12 +13,14 @@ from nanogld.calibration.ece import (
     macro_brier,
     per_bucket_ece,
 )
+from nanogld.calibration.inference import CalibratedPrediction, predict_calibrated
 from nanogld.calibration.laplace_lll import LaplaceLLLA, kelly_multiplier
 from nanogld.calibration.raps import fit_raps_quantile, raps_score, raps_set
 from nanogld.calibration.temperature_scaling import TemperatureScaler
 
 __all__ = [
     "AgACI",
+    "CalibratedPrediction",
     "CalibrationArtifacts",
     "CalibrationConfig",
     "LaplaceLLLA",
@@ -31,6 +33,7 @@ __all__ = [
     "load_calibration",
     "macro_brier",
     "per_bucket_ece",
+    "predict_calibrated",
     "raps_score",
     "raps_set",
 ]

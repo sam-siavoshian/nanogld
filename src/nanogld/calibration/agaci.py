@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
+
 DEFAULT_GAMMA_GRID: tuple[float, ...] = (0.001, 0.005, 0.01, 0.05, 0.1)
 
 
@@ -56,7 +57,9 @@ class AgACI:
         """
         observed = 1.0 if miscovered else 0.0
         for i, gamma in enumerate(self.gamma_grid):
-            self.expert_alphas[i] = self.expert_alphas[i] + gamma * (self.alpha_target - observed)
+            self.expert_alphas[i] = self.expert_alphas[i] + gamma * (
+                self.alpha_target - observed
+            )
             self.expert_alphas[i] = max(0.001, min(0.5, float(self.expert_alphas[i])))
 
         residual = observed - self.expert_alphas

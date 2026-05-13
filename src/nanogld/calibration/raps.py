@@ -125,11 +125,7 @@ def raps_set(
 
     in_set = torch.zeros_like(probs, dtype=torch.bool)
     for c in range(n_classes):
-        score_c = (
-            1.0
-            - probs[:, c]
-            + lambda_reg * torch.clamp(rank_per_class[:, c] - float(k_reg), min=0.0)
-        )
+        score_c = 1.0 - probs[:, c] + lambda_reg * torch.clamp(rank_per_class[:, c] - float(k_reg), min=0.0)
         q = q_hats.get(c, q_hats.get(-1, float("inf")))
         in_set[:, c] = score_c <= q
     return in_set
