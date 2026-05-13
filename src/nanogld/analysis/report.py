@@ -27,7 +27,7 @@ import socket
 import subprocess
 import sys
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -70,9 +70,9 @@ def _atomic_write_json(path: Path, payload: Any) -> None:  # noqa: ANN401
     tmp = path.with_suffix(path.suffix + ".tmp")
 
     def _default(obj: Any) -> Any:  # noqa: ANN401
-        if isinstance(obj, np.integer):
+        if isinstance(obj, (np.integer,)):
             return int(obj)
-        if isinstance(obj, np.floating):
+        if isinstance(obj, (np.floating,)):
             return float(obj)
         if isinstance(obj, np.ndarray):
             return obj.tolist()
@@ -99,9 +99,7 @@ def _write_parquet(path: Path, columns: dict[str, np.ndarray]) -> None:
     except Exception:  # noqa: BLE001 — fall back to CSV
         import csv  # noqa: PLC0415
 
-        rows = list(
-            zip(*[np.asarray(v).reshape(-1).tolist() for v in columns.values()], strict=False)
-        )
+        rows = list(zip(*[np.asarray(v).reshape(-1).tolist() for v in columns.values()]))
         tmp = path.with_suffix(path.suffix + ".csv.tmp")
         out = path.with_suffix(".csv")
         with tmp.open("w", encoding="utf-8", newline="") as f:
@@ -171,7 +169,9 @@ def _format_attention(att: dict[str, np.ndarray] | None) -> str:
         "|---|---|---|---|",
     ]
     for i in range(len(mp)):
-        lines.append(f"| {i} | {float(mp[i]):.4f} | {float(pres[i]):.4f} | {float(abs_[i]):.4f} |")
+        lines.append(
+            f"| {i} | {float(mp[i]):.4f} | {float(pres[i]):.4f} | {float(abs_[i]):.4f} |"
+        )
     return "\n".join(lines)
 
 
@@ -269,11 +269,11 @@ def write_report(
 
     # Markdown report
     md_lines: list[str] = []
-    md_lines.append("# nanoGLD V1 — feature attribution report")
+    md_lines.append(f"# nanoGLD V1 — feature attribution report")
     md_lines.append("")
     md_lines.append(f"- run_hash: `{run_hash}`")
     md_lines.append(f"- git_sha: `{git_sha}`")
-    md_lines.append(f"- generated_utc: `{datetime.now(UTC).isoformat()}`")
+    md_lines.append(f"- generated_utc: `{datetime.now(timezone.utc).isoformat()}`")
     md_lines.append(f"- hostname: `{socket.gethostname()}`")
     md_lines.append(f"- python: `{platform.python_version()}`")
     md_lines.append(f"- fold_idx: `{cfg.fold_idx}`  split: `{cfg.split}`  device: `{cfg.device}`")
@@ -306,7 +306,9 @@ def write_report(
         idxs = permutation["feature_idx"]
         names_perm = [feature_names[int(i)] for i in idxs]
         md_lines.append(
-            _format_top_n(names_perm, permutation["delta_sharpe_mean"], n=30, descending=True)
+            _format_top_n(
+                names_perm, permutation["delta_sharpe_mean"], n=30, descending=True
+            )
         )
     else:
         md_lines.append("_(skipped — permutation budget exceeded or disabled)_")
@@ -323,11 +325,15 @@ def write_report(
         top5_quiet = np.argsort(delta_pres_abs)[:5]
         md_lines.append("Features that gain attention WHEN news is present (top 5):")
         for i in top5_news:
-            md_lines.append(f"- `{feature_names[int(i)]}` Δ={float(delta_pres_abs[int(i)]):+.5f}")
+            md_lines.append(
+                f"- `{feature_names[int(i)]}` Δ={float(delta_pres_abs[int(i)]):+.5f}"
+            )
         md_lines.append("")
         md_lines.append("Features that gain attention WHEN news is absent (top 5):")
         for i in top5_quiet:
-            md_lines.append(f"- `{feature_names[int(i)]}` Δ={float(delta_pres_abs[int(i)]):+.5f}")
+            md_lines.append(
+                f"- `{feature_names[int(i)]}` Δ={float(delta_pres_abs[int(i)]):+.5f}"
+            )
     md_lines.append("")
     md_lines.append("## 8. Reproducibility")
     md_lines.append("")
@@ -339,7 +345,7 @@ def write_report(
     manifest = {
         "run_hash": run_hash,
         "git_sha": git_sha,
-        "generated_utc": datetime.now(UTC).isoformat(),
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
         "hostname": socket.gethostname(),
         "python": platform.python_version(),
         "platform": platform.platform(),

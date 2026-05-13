@@ -116,7 +116,11 @@ def run(cfg: AnalysisConfig) -> int:
         ig = None
 
     LOG.info("[4/5] Permutation importance (top-%d by VSN) ...", cfg.max_features_perm)
-    top_idx = torch.from_numpy(-vsn["mean_gate"]).argsort()[: cfg.max_features_perm].tolist()
+    top_idx = (
+        torch.from_numpy(-vsn["mean_gate"])
+        .argsort()[: cfg.max_features_perm]
+        .tolist()
+    )
     permutation = permutation_importance(
         model,
         loader,
@@ -155,9 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--sidecar", type=Path, required=True)
     run_p.add_argument("--fold", type=int, required=True)
     run_p.add_argument("--split", type=str, default="val_c")
-    run_p.add_argument(
-        "--output-dir", dest="output_dir", type=Path, default=Path("reports/analysis")
-    )
+    run_p.add_argument("--output-dir", dest="output_dir", type=Path, default=Path("reports/analysis"))
     run_p.add_argument("--device", type=str, default="auto")
     run_p.add_argument("--n-samples-ig", dest="n_samples_ig", type=int, default=256)
     run_p.add_argument("--n-steps-ig", dest="n_steps_ig", type=int, default=32)

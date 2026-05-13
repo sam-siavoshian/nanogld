@@ -25,6 +25,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.stats import norm
 
+
 EULER_MASCHERONI = 0.5772156649015329
 
 
@@ -59,7 +60,9 @@ def deflated_sharpe(
     )
 
     sr = float(sharpe_observed)
-    denom = np.sqrt(max(1e-12, 1.0 - skew * sr + ((kurt - 1.0) / 4.0) * sr * sr))
+    denom = np.sqrt(
+        max(1e-12, 1.0 - skew * sr + ((kurt - 1.0) / 4.0) * sr * sr)
+    )
 
     z = (sr - expected_max) * np.sqrt(max(0.0, n_obs - 1.0)) / denom
     p_value = float(norm.cdf(z))

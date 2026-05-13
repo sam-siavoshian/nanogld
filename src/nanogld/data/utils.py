@@ -48,6 +48,9 @@ def repo_root() -> Path:
 def raw_dir() -> Path:
     """Return the data/raw directory under the repo root, creating it if missing."""
     override = os.environ.get("NANOGLD_RAW_DIR")
-    path = Path(override) if override else repo_root() / "data" / "raw"
+    if override:
+        path = Path(override)
+    else:
+        path = repo_root() / "data" / "raw"
     path.mkdir(parents=True, exist_ok=True)
     return path

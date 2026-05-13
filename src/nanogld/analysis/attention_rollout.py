@@ -51,7 +51,12 @@ def _compute_news_attention(
     b, t, _ = bar_tokens.shape
     head_dim = fuser.head_dim
     n_heads = fuser.n_heads
-    q = fuser.q_proj(bar_tokens).view(b, t, n_heads, head_dim).transpose(1, 2).contiguous()
+    q = (
+        fuser.q_proj(bar_tokens)
+        .view(b, t, n_heads, head_dim)
+        .transpose(1, 2)
+        .contiguous()
+    )
     k = (
         fuser.k_proj(text_proj)
         .view(b, news.shape[1], n_heads, head_dim)

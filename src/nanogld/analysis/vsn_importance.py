@@ -113,7 +113,9 @@ def collect_vsn_gates(
     mean_present = (
         (sums_present / n_present).cpu().numpy() if n_present > 0 else np.zeros_like(mean)
     )
-    mean_absent = (sums_absent / n_absent).cpu().numpy() if n_absent > 0 else np.zeros_like(mean)
+    mean_absent = (
+        (sums_absent / n_absent).cpu().numpy() if n_absent > 0 else np.zeros_like(mean)
+    )
 
     LOG.info(
         "VSN gate aggregated over %d bars (%d present / %d absent); top-3 by mean: %s",

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
+
 DEFAULT_BARS_PER_YEAR = 3276
 
 

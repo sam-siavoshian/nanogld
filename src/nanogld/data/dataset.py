@@ -38,6 +38,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from nanogld.data.integrity import MANIFEST_NAME, verify_artifacts
 from nanogld.data.utils import get_logger
 from nanogld.features.triple_barrier import to_ce_class, triple_barrier_label
 
@@ -82,6 +83,7 @@ class NanoGLDDataset(Dataset):
         lookback_T: int = DEFAULT_LOOKBACK_T,
         n_news_slots: int = DEFAULT_NEWS_SLOTS,
         label_mode: Literal["triple_barrier", "fixed_5bps"] = "triple_barrier",
+        verify_integrity: bool = True,
     ) -> None:
         super().__init__()
         unified_path = Path(unified_path)
@@ -91,20 +93,37 @@ class NanoGLDDataset(Dataset):
         self.n_news_slots = n_news_slots
         self.label_mode = label_mode
 
+        # V1-SPEC §45: SHA-256 verify-on-load. If a MANIFEST.json sits
+        # next to the unified.pt (or sidecar) we re-hash and compare
+        # before trusting the file. A failing hash fails fast here, not
+        # 8 GB into training.
+        if verify_integrity:
+            self._verify_or_log(unified_path)
+            if sidecar_path is not None and Path(sidecar_path).exists():
+                self._verify_or_log(Path(sidecar_path))
+
         unified = torch.load(unified_path, weights_only=False, map_location="cpu")
         self._unified = unified
 
         self._features = torch.as_tensor(unified["features"], dtype=torch.float32)
         self._labels_v1draft = torch.as_tensor(unified["labels"], dtype=torch.long)
         self._splits_arr = np.asarray(unified["splits"])
-        self._bar_close_utc_ns = torch.as_tensor(unified["bar_close_utc_ns"], dtype=torch.int64)
-        self._bar_news_offsets = torch.as_tensor(unified["bar_news_offsets"], dtype=torch.int64)
-        self._bar_news_values = torch.as_tensor(unified["bar_news_values"], dtype=torch.int64)
+        self._bar_close_utc_ns = torch.as_tensor(
+            unified["bar_close_utc_ns"], dtype=torch.int64
+        )
+        self._bar_news_offsets = torch.as_tensor(
+            unified["bar_news_offsets"], dtype=torch.int64
+        )
+        self._bar_news_values = torch.as_tensor(
+            unified["bar_news_values"], dtype=torch.int64
+        )
         self._embeddings = torch.as_tensor(unified["embeddings"], dtype=torch.float16)
 
         self._sidecar = None
         if sidecar_path is not None and Path(sidecar_path).exists():
-            self._sidecar = torch.load(Path(sidecar_path), weights_only=False, map_location="cpu")
+            self._sidecar = torch.load(
+                Path(sidecar_path), weights_only=False, map_location="cpu"
+            )
             n_bars = int(self._features.shape[0])
             for key in ("next_log_return", "barrier_up", "barrier_down", "gld_spread_bps_t"):
                 if key in self._sidecar:
@@ -122,6 +141,26 @@ class NanoGLDDataset(Dataset):
             label_mode,
             len(self._valid_indices),
         )
+
+    @staticmethod
+    def _verify_or_log(artifact_path: Path) -> None:
+        """If MANIFEST.json is alongside ``artifact_path``, verify this file.
+
+        Hard-fails on mismatch (corrupt or truncated artifact). Logs and
+        continues when no manifest is present so legacy builds without
+        the manifest writer still work.
+        """
+        artifact_path = Path(artifact_path)
+        manifest = artifact_path.parent / MANIFEST_NAME
+        if not manifest.exists():
+            LOG.info("no MANIFEST.json next to %s — skipping sha256 verify", artifact_path)
+            return
+        try:
+            verify_artifacts(artifact_path.parent, require=[artifact_path.name])
+        except FileNotFoundError as exc:
+            LOG.warning("MANIFEST verify: %s", exc)
+            return
+        LOG.info("sha256 verify OK: %s", artifact_path.name)
 
     def _compute_valid_indices(self, split: SPLIT_MODES) -> np.ndarray:
         """Return indices of bars that are (a) in the requested split and
@@ -192,11 +231,13 @@ class NanoGLDDataset(Dataset):
         """Return (label_3class, next_log_return) for a single bar."""
         if self.label_mode == "fixed_5bps":
             label = self._labels_v1draft[bar_idx].long()
-            next_log_return = torch.tensor(
-                float(self._sidecar["next_log_return"][bar_idx])
-                if self._sidecar is not None and "next_log_return" in self._sidecar
-                else 0.0,
-                dtype=torch.float32,
+            next_log_return = (
+                torch.tensor(
+                    float(self._sidecar["next_log_return"][bar_idx])
+                    if self._sidecar is not None and "next_log_return" in self._sidecar
+                    else 0.0,
+                    dtype=torch.float32,
+                )
             )
             return label, next_log_return
 

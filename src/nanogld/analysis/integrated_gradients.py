@@ -66,7 +66,8 @@ def integrated_gradients(
         from captum.attr import IntegratedGradients  # noqa: PLC0415
     except ImportError as exc:
         raise RuntimeError(
-            "captum is required for integrated_gradients; install via `uv add captum>=0.7,<1`"
+            "captum is required for integrated_gradients; "
+            "install via `uv add captum>=0.7,<1`"
         ) from exc
 
     to_inference_mode(model)
@@ -94,16 +95,22 @@ def integrated_gradients(
         is_news_present = batch["is_news_present"].to(device).long()
         regime_vec = batch["regime_vec"].to(device).float()
 
-        wrapper = _IGModelWrapper(model, news_embeddings, news_mask, is_news_present, regime_vec)
+        wrapper = _IGModelWrapper(
+            model, news_embeddings, news_mask, is_news_present, regime_vec
+        )
         ig = IntegratedGradients(wrapper)
 
-        baseline = torch.zeros_like(channel_inputs) if baseline_mode == "mean" else None
+        baseline = (
+            torch.zeros_like(channel_inputs) if baseline_mode == "mean" else None
+        )
 
         if f_dim is None:
             f_dim = int(channel_inputs.shape[-1])
             sum_abs = torch.zeros(f_dim, device=device, dtype=torch.float64)
             sum_signed = torch.zeros(f_dim, device=device, dtype=torch.float64)
-            sum_per_class = torch.zeros(n_classes, f_dim, device=device, dtype=torch.float64)
+            sum_per_class = torch.zeros(
+                n_classes, f_dim, device=device, dtype=torch.float64
+            )
 
         for cls in range(n_classes):
             attr = ig.attribute(

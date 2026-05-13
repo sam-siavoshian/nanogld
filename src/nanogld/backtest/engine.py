@@ -15,8 +15,8 @@ Spec: plan/06-BACKTEST.md V1 backtest.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 

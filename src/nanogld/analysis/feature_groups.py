@@ -104,10 +104,12 @@ def rollup_by_group(
         List of GroupRollup sorted by sum_abs_importance descending.
     """
     if len(names) != len(importance):
-        raise ValueError(f"names {len(names)} != importance {len(importance)}")
+        raise ValueError(
+            f"names {len(names)} != importance {len(importance)}"
+        )
     cat_of = classify_features(names)
     buckets: dict[str, list[tuple[str, float]]] = {c: [] for c in CATEGORIES}
-    for nm, val in zip(names, importance, strict=False):
+    for nm, val in zip(names, importance):
         buckets[cat_of[nm]].append((nm, float(val)))
 
     rollups: list[GroupRollup] = []

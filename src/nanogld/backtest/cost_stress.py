@@ -8,7 +8,7 @@ Spec: plan/V1-SPEC.md §9.2.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
@@ -66,11 +66,13 @@ def assert_monotone(result: CostStressResult, tol: float = 1e-6) -> None:
     cost-stress result indicates a backtest engine bug or PnL sign error.
     """
     sharpes = [
-        result.by_multiplier[m]["sharpe"] for m in (0.5, 1.0, 1.5) if m in result.by_multiplier
+        result.by_multiplier[m]["sharpe"]
+        for m in (0.5, 1.0, 1.5)
+        if m in result.by_multiplier
     ]
     if len(sharpes) < 2:
         return
-    for prev, nxt in zip(sharpes, sharpes[1:], strict=False):
+    for prev, nxt in zip(sharpes, sharpes[1:]):
         if nxt > prev + tol:
             raise AssertionError(
                 f"cost-stress non-monotone: {sharpes} (Sharpe should fall as cost rises)"

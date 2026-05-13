@@ -43,7 +43,9 @@ def _eval_focal_and_sharpe(
     to_inference_mode(model)
     with torch.no_grad():
         for batch in batches:
-            channel_inputs = batch["channel_inputs"].to(device).float().nan_to_num(0.0).clone()
+            channel_inputs = (
+                batch["channel_inputs"].to(device).float().nan_to_num(0.0).clone()
+            )
             if feature_idx is not None:
                 b = channel_inputs.shape[0]
                 order = rng.permutation(b)
@@ -102,7 +104,7 @@ def permutation_importance(
         model, cached, device, feature_idx=None, rng=rng
     )
 
-    feature_indices = sorted({int(i) for i in feature_indices})
+    feature_indices = sorted(set(int(i) for i in feature_indices))
     n_feat = len(feature_indices)
     df_mean = np.zeros(n_feat, dtype=np.float64)
     df_std = np.zeros(n_feat, dtype=np.float64)
@@ -114,7 +116,9 @@ def permutation_importance(
         sharpe_deltas = []
         for r in range(n_repeats):
             rep_rng = np.random.default_rng(seed + r * 1009 + fidx)
-            f, s = _eval_focal_and_sharpe(model, cached, device, feature_idx=fidx, rng=rep_rng)
+            f, s = _eval_focal_and_sharpe(
+                model, cached, device, feature_idx=fidx, rng=rep_rng
+            )
             focal_deltas.append(f - base_focal)
             sharpe_deltas.append(base_sharpe - s)
         df_mean[i] = float(np.mean(focal_deltas))
