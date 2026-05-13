@@ -42,30 +42,44 @@ rsync -avz \
 
 echo "[pull] per-fold sha256 verify ..."
 for (( f=0; f<N_FOLDS; f++ )); do
-    fold_dir="${LOCAL_ROOT}/checkpoints/v1/fold_${f}/fold_${f}/llrd"
-    if [[ ! -d "${fold_dir}" ]]; then
-        # Older layout (no double fold_N): checkpoints/v1/fold_N/llrd
-        fold_dir="${LOCAL_ROOT}/checkpoints/v1/fold_${f}/llrd"
-    fi
-    if [[ ! -d "${fold_dir}" ]]; then
-        echo "[pull] WARN: fold ${f} dir missing — skipping verify"
-        continue
-    fi
-    if [[ -f "${fold_dir}/MANIFEST.json" ]]; then
+    fold_root="${LOCAL_ROOT}/checkpoints/v1/fold_${f}"
+    # Possible layout: checkpoints/v1/fold_N/{llrd,calibration_N}/
+    llrd_dir="${fold_root}/llrd"
+    cal_dir="${fold_root}/calibration_${f}"
+    # Older nested layout fallback.
+    [[ -d "${llrd_dir}" ]] || llrd_dir="${fold_root}/fold_${f}/llrd"
+    [[ -d "${cal_dir}" ]] || cal_dir="${fold_root}/fold_${f}/calibration_${f}"
+
+    if [[ -f "${llrd_dir}/MANIFEST.json" ]]; then
         (cd "${LOCAL_ROOT}" && uv run python -c "
 from pathlib import Path
 from nanogld.data.integrity import verify_artifacts
-verify_artifacts(Path('${fold_dir}'), require=['llrd_final.pt'])
-print('fold ${f}: verify OK')
+verify_artifacts(Path('${llrd_dir}'), require=['llrd_final.pt'])
+print('fold ${f} llrd: verify OK')
 ")
     else
-        echo "[pull] WARN: ${fold_dir}/MANIFEST.json missing — bare sha256:"
-        for ckpt in "${fold_dir}"/llrd_final.pt; do
+        echo "[pull] WARN: ${llrd_dir}/MANIFEST.json missing — bare sha256:"
+        for ckpt in "${llrd_dir}"/llrd_final.pt; do
             [[ -f "${ckpt}" ]] || continue
             SHA=$(shasum -a 256 "${ckpt}" 2>/dev/null | cut -d' ' -f1 || \
                   sha256sum "${ckpt}" | cut -d' ' -f1)
             echo "  ${ckpt}: ${SHA:0:16}..."
         done
+    fi
+
+    if [[ -d "${cal_dir}" ]]; then
+        if [[ -f "${cal_dir}/MANIFEST.json" ]]; then
+            (cd "${LOCAL_ROOT}" && uv run python -c "
+from pathlib import Path
+from nanogld.data.integrity import verify_artifacts
+verify_artifacts(Path('${cal_dir}'))
+print('fold ${f} calibration: verify OK')
+")
+        else
+            echo "[pull] WARN: ${cal_dir}/MANIFEST.json missing"
+        fi
+    else
+        echo "[pull] WARN: ${cal_dir} not present (Stage 4 calibration did not run?)"
     fi
 done
 

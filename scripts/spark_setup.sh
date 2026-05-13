@@ -56,6 +56,28 @@ PY
 echo "[setup] disk free:"
 df -h "$NANOGLD_DIR" | tail -1
 
+# Hard-fail when free disk is below the threshold needed for 4-fold run
+# (rough budget: 4 × {ssl_anchor.pt ~1GB + probe.pt ~1GB + llrd_final.pt ~3GB
+# + calibration ~200MB + logs ~500MB} = ~24 GB plus headroom for crash dumps).
+MIN_GB="${NANOGLD_MIN_FREE_GB:-50}"
+FREE_GB=$(df -BG "$NANOGLD_DIR" | awk 'NR==2 {gsub("G",""); print $4}')
+if [[ -z "$FREE_GB" || ! "$FREE_GB" =~ ^[0-9]+$ ]]; then
+    echo "[setup] WARN: could not parse df output; skipping free-disk gate"
+elif (( FREE_GB < MIN_GB )); then
+    echo "[setup] free disk ${FREE_GB} GB < required ${MIN_GB} GB" >&2
+    echo "[setup] clean up or set NANOGLD_MIN_FREE_GB to override" >&2
+    exit 6
+else
+    echo "[setup] free-disk gate OK (${FREE_GB} GB >= ${MIN_GB} GB)"
+fi
+
+echo "[setup] nvidia-smi:"
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=name,driver_version,memory.total,temperature.gpu --format=csv,noheader
+else
+    echo "[setup] WARN: nvidia-smi not in PATH; relying on torch.cuda probe only"
+fi
+
 echo "[setup] data dir:"
 mkdir -p "$NANOGLD_DIR/data/processed"
 ls -la "$NANOGLD_DIR/data/processed" || true

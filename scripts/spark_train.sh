@@ -55,6 +55,12 @@ fi
 cd "${NANOGLD_DIR}"
 export PATH="$HOME/.local/bin:$PATH"
 
+# PYTHONHASHSEED must be set BEFORE python starts to affect hash() salt
+# (V1-SPEC §47 reproducibility). nanogld.training.setup_determinism() logs
+# a warning if absent; we set it here per-fold so dict iteration order
+# stays reproducible across runs.
+export PYTHONHASHSEED="${NANOGLD_SEED:-42}"
+
 UNIFIED="data/processed/training_v1_unified.pt"
 SIDECAR="data/processed/training_v1_sidecar_fold_${FOLD}.pt"
 if [[ ! -f "${UNIFIED}" ]]; then
@@ -99,5 +105,16 @@ from nanogld.data.integrity import write_manifest
 write_manifest(Path("${OUT_DIR}/fold_${FOLD}/llrd"))
 print("manifest OK")
 PY
+
+# Stage 4: calibration. Produces calibration_<fold>/ next to ssl/probe/llrd.
+# Required for the backtest CLI's conformal floor (V1-SPEC §10.1 cutoff
+# aps_lower_bound >= 0.40). Without this, the floor is a no-op.
+echo "[train] Stage 4: calibration fold ${FOLD} ..."
+uv run python -m nanogld.calibration run \
+    --config "${CONFIG}" \
+    --fold "${FOLD}" \
+    --checkpoint "${OUT_DIR}/fold_${FOLD}/llrd/llrd_final.pt" \
+    --output-dir "${OUT_DIR}/fold_${FOLD}" \
+    --device cuda 2>&1 | tee -a "${LOG_FILE}"
 
 echo "[train] OK fold ${FOLD}"
