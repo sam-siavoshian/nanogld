@@ -20,7 +20,7 @@ Spec: plan/V1-SPEC.md §6.6.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import Callable
 
 import torch
 from torch import Tensor

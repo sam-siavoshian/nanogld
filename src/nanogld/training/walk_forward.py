@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+
 DEFAULT_TRAIN_YEARS = 3.0
 DEFAULT_VAL_MONTHS = 6.0
 DEFAULT_TEST_MONTHS = 6.0

@@ -21,19 +21,20 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
+from nanogld._manifest import build_manifest
 from nanogld.data.dataset import NanoGLDDataset
 from nanogld.model import nanoGLDV1
 from nanogld.training.linear_probe import LinearProbeConfig, train_linear_probe
 from nanogld.training.llrd_finetune import LLRDConfig, llrd_finetune
+from nanogld.training.observability import finish_wandb, heartbeat, init_wandb
+from nanogld.training.optim import build_optimizer
 from nanogld.training.simmtm_pretrain import SimMTMConfig, pretrain_simmtm
 from nanogld.training.train import setup_determinism
 
 LOG = logging.getLogger("nanogld.training.cli")
 
 
-def _build_dataloader(
-    cfg: dict, split: str, output_dir: Path, device: str = "cpu", seed: int = 42
-) -> DataLoader:
+def _build_dataloader(cfg: dict, split: str, output_dir: Path, device: str = "cpu", seed: int = 42) -> DataLoader:
     paths = cfg["paths"]
     dl_cfg = cfg["dataloader"]
     ds = NanoGLDDataset(
@@ -110,7 +111,29 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         cfg, split="train", output_dir=fold_out, device=device, seed=seed
     )
 
-    LOG.info("Stage 1: SSL pretrain")
+    paths = cfg["paths"]
+    run_manifest = build_manifest(
+        dataset_path=Path(paths["unified"]) if Path(paths["unified"]).exists() else None,
+        sidecar_path=Path(paths["sidecar"]) if Path(paths["sidecar"]).exists() else None,
+        hparams={"config_path": str(config_path), "fold": fold, "seed": seed},
+        extras={"run_kind": "v1_train"},
+    )
+    LOG.info("run manifest: git_sha=%s host=%s", run_manifest["git_sha"], run_manifest["hostname"])
+
+    # Observability (V1-SPEC §47). Both are optional: W&B is a no-op
+    # without WANDB_API_KEY + wandb package installed; the heartbeat
+    # thread starts unconditionally so an external watchdog can detect
+    # stalled processes via fold_out/.heartbeat mtime.
+    obs_cfg = cfg.get("observability", {}) or {}
+    wandb_run = init_wandb(
+        project=obs_cfg.get("wandb_project"),
+        run_name=f"v1_fold_{fold}",
+        config={"fold": fold, "seed": seed, "git_sha": run_manifest["git_sha"]},
+        tags=obs_cfg.get("wandb_tags", []),
+    )
+    heartbeat_interval = float(obs_cfg.get("heartbeat_seconds", 60.0))
+
+    # Stage 1: SSL pretrain (skip if `stage.done` sentinel exists — see #41).
     ssl_cfg = SimMTMConfig(
         epochs=int(cfg["ssl"]["epochs"]),
         mask_ratio=float(cfg["ssl"]["mask_ratio"]),
@@ -121,12 +144,37 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         log_every_n_steps=int(cfg["ssl"]["log_every_n_steps"]),
         output_dir=fold_out / "ssl",
     )
-    ssl_optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.95))
-    ssl_metrics = pretrain_simmtm(model, ssl_optimizer, train_loader, ssl_cfg, device=device)
-    ssl_anchor_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    ssl_done = (ssl_cfg.output_dir / "stage.done").exists()
+    if ssl_done:
+        LOG.info("Stage 1 SSL skipped — found %s", ssl_cfg.output_dir / "stage.done")
+        ssl_metrics: dict[str, float] = {"resumed": 1.0}
+    else:
+        LOG.info("Stage 1: SSL pretrain")
+        ssl_optimizer = build_optimizer(
+            model.parameters(),
+            lr=float(cfg["ssl"].get("lr", 1e-4)),
+            betas=(0.9, 0.95),
+            weight_decay=float(cfg["ssl"].get("weight_decay", 0.1)),
+            warmup_steps=int(cfg["ssl"].get("warmup_steps", 300)),
+        )
+        with heartbeat(fold_out / ".heartbeat", interval_seconds=heartbeat_interval):
+            ssl_metrics = pretrain_simmtm(
+                model, ssl_optimizer, train_loader, ssl_cfg, device=device, manifest=run_manifest
+            )
+
+    # SSL anchor MUST be the averaged-form weights, not the in-memory z-form
+    # the optimizer maintains during training. pretrain_simmtm saves the
+    # averaged form to disk; load it always (also restores model state when
+    # resuming from sentinel). See plan/STATUS.md §52.
+    ssl_anchor_ckpt = torch.load(
+        ssl_cfg.output_dir / "ssl_anchor.pt", map_location="cpu", weights_only=False
+    )
+    ssl_anchor_state = ssl_anchor_ckpt["model_state"]
+    model.load_state_dict(ssl_anchor_state)
+    model.to(device)
     LOG.info("Stage 1 done: %s", ssl_metrics)
 
-    LOG.info("Stage 2: linear probe")
+    # Stage 2: linear probe (skip if sentinel exists).
     probe_cfg = LinearProbeConfig(
         epochs=int(cfg["probe"]["epochs"]),
         lr=float(cfg["probe"]["lr"]),
@@ -134,10 +182,23 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         focal_gamma=float(cfg["probe"]["focal_gamma"]),
         output_dir=fold_out / "probe",
     )
-    probe_metrics = train_linear_probe(model, train_loader, probe_cfg, device=device)
+    if (probe_cfg.output_dir / "stage.done").exists():
+        LOG.info("Stage 2 probe skipped — found %s", probe_cfg.output_dir / "stage.done")
+        probe_ckpt = torch.load(
+            probe_cfg.output_dir / "probe.pt", map_location="cpu", weights_only=False
+        )
+        model.load_state_dict(probe_ckpt["model_state"])
+        model.to(device)
+        probe_metrics: dict[str, float] = {"resumed": 1.0}
+    else:
+        LOG.info("Stage 2: linear probe")
+        with heartbeat(fold_out / ".heartbeat", interval_seconds=heartbeat_interval):
+            probe_metrics = train_linear_probe(
+                model, train_loader, probe_cfg, device=device, manifest=run_manifest
+            )
     LOG.info("Stage 2 done: %s", probe_metrics)
 
-    LOG.info("Stage 3: LLRD fine-tune")
+    # Stage 3: LLRD fine-tune (skip if sentinel exists).
     llrd_cfg = LLRDConfig(
         epochs=int(cfg["llrd"]["epochs"]),
         base_lr=float(cfg["llrd"]["base_lr"]),
@@ -154,10 +215,22 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         freelb_epsilon=float(cfg["llrd"]["freelb_epsilon"]),
         output_dir=fold_out / "llrd",
     )
-    llrd_metrics = llrd_finetune(model, ssl_anchor_state, train_loader, llrd_cfg, device=device)
+    if (llrd_cfg.output_dir / "stage.done").exists():
+        LOG.info("Stage 3 LLRD skipped — found %s", llrd_cfg.output_dir / "stage.done")
+        llrd_metrics: dict[str, float] = {"resumed": 1.0}
+    else:
+        LOG.info("Stage 3: LLRD fine-tune")
+        with heartbeat(fold_out / ".heartbeat", interval_seconds=heartbeat_interval):
+            llrd_metrics = llrd_finetune(
+                model,
+                ssl_anchor_state,
+                train_loader,
+                llrd_cfg,
+                device=device,
+                manifest=run_manifest,
+            )
     LOG.info("Stage 3 done: %s", llrd_metrics)
 
-    paths = cfg["paths"]
     LOG.info(
         "next: feature attribution → "
         "uv run python -m nanogld.analysis run "
@@ -171,6 +244,7 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         device,
     )
 
+    finish_wandb(wandb_run)
     return 0
 
 
@@ -202,9 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s")
 
     if args.cmd == "run":
         device = args.device

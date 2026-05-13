@@ -18,14 +18,18 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import Tensor, nn
 
+from nanogld._atomic import atomic_save_torch
+from nanogld.model.aecf import AECFMask
 from nanogld.training.ema import make_ema
 from nanogld.training.freelb import FreeLB
-from nanogld.training.losses import focal_loss, sharpe_loss
+from nanogld.training.losses import dann_loss, focal_loss, sharpe_loss
 from nanogld.training.mixout import Mixout
+from nanogld.training.optim import build_optimizer
 
 LOG = logging.getLogger("nanogld.training.llrd_finetune")
 
@@ -49,9 +53,17 @@ class LLRDConfig:
     freelb_epsilon: float = 0.5
     log_every_n_steps: int = 100
     output_dir: Path = field(default_factory=lambda: Path("checkpoints/v1/llrd"))
+    aecf_p_min: float = 0.1
+    aecf_p_max: float = 0.9
+    aecf_curriculum_steps: int = 2_000
+    dann_weight: float = 0.05
+    dann_max_alpha: float = 0.1
+    dann_warmup_steps: int = 2_000
 
 
-def _build_llrd_param_groups(model: nn.Module, base_lr: float, decay: float) -> list[dict]:
+def _build_llrd_param_groups(
+    model: nn.Module, base_lr: float, decay: float
+) -> list[dict]:
     """Per-block LR decay for the encoder; head + non-encoder use base_lr."""
     encoder = getattr(model, "encoder", None)
     if encoder is None:
@@ -73,7 +85,11 @@ def _build_llrd_param_groups(model: nn.Module, base_lr: float, decay: float) -> 
             seen_ids.add(id(p))
         groups.append({"params": params, "lr": layer_lr})
 
-    other = [p for p in model.parameters() if p.requires_grad and id(p) not in seen_ids]
+    other = [
+        p
+        for p in model.parameters()
+        if p.requires_grad and id(p) not in seen_ids
+    ]
     if other:
         groups.append({"params": other, "lr": base_lr})
     return groups
@@ -85,6 +101,7 @@ def llrd_finetune(
     train_loader: Iterable[dict[str, Tensor]],
     cfg: LLRDConfig,
     device: str = "cpu",
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, float]:
     """Run Stage 3 multi-task LLRD fine-tune.
 
@@ -102,25 +119,23 @@ def llrd_finetune(
         p.requires_grad_(True)
 
     groups = _build_llrd_param_groups(model, base_lr=cfg.base_lr, decay=cfg.decay)
-    try:
-        from schedulefree import AdamWScheduleFree  # noqa: PLC0415
-
-        opt = AdamWScheduleFree(
-            groups,
-            lr=cfg.base_lr,
-            betas=(0.9, 0.95),
-            weight_decay=0.1,
-            warmup_steps=300,
-        )
-        if hasattr(opt, "train"):
-            opt.train()
-    except ImportError:
-        opt = torch.optim.AdamW(groups, betas=(0.9, 0.95), weight_decay=0.1)
+    opt = build_optimizer(
+        groups,
+        lr=cfg.base_lr,
+        betas=(0.9, 0.95),
+        weight_decay=0.1,
+        warmup_steps=300,
+    )
 
     mixout = Mixout(ssl_anchor_state, p=cfg.mixout_p)
-    snapshot_state: dict[str, torch.Tensor] = {}
     ema = make_ema(model, decay=cfg.ema_decay)
     freelb = FreeLB(K=cfg.freelb_K, epsilon=cfg.freelb_epsilon)
+    aecf_mask_module = AECFMask(
+        p_min=cfg.aecf_p_min,
+        p_max=cfg.aecf_p_max,
+        curriculum_steps=cfg.aecf_curriculum_steps,
+    )
+    aecf_mask_module.train()
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -134,6 +149,11 @@ def llrd_finetune(
 
     model.train()
 
+    # Pre-allocated tensors for Mixout state-transfer. Avoids per-step
+    # allocator churn (one of the wave-1 fixes; see plan/STATUS.md §61).
+    snap_unmixed: dict[str, torch.Tensor] = {}
+    snap_mixed: dict[str, torch.Tensor] = {}
+
     for epoch in range(cfg.epochs):
         for batch in train_loader:
             channel_inputs = batch["channel_inputs"].to(device).float().nan_to_num_(0.0)
@@ -143,16 +163,32 @@ def llrd_finetune(
             regime_vec = batch["regime_vec"].to(device).float()
             labels = batch["label_3class"].to(device).long()
             next_log_return = batch["next_log_return"].to(device).float()
+            era_label = batch["era_label"].to(device).long()
 
-            if not snapshot_state:
-                for _name, _p in model.named_parameters():
-                    snapshot_state[_name] = _p.data.detach().clone()
-            else:
-                with torch.no_grad():
-                    for _name, _p in model.named_parameters():
-                        snapshot_state[_name].copy_(_p.data)
+            b_size = channel_inputs.shape[0]
+            aecf_keep = aecf_mask_module.sample_mask(
+                batch_size=b_size, training_step=n_steps, device=channel_inputs.device
+            )
+            news_mask = news_mask * aecf_keep.unsqueeze(-1)
+            is_news_present = (is_news_present.float() * aecf_keep).to(is_news_present.dtype)
+
+            # Snapshot pristine pre-mixout params (so we can transfer the
+            # SF AdamW delta from "mixed" coords back onto unmixed coords).
+            with torch.no_grad():
+                for name, p in model.named_parameters():
+                    if name not in snap_unmixed:
+                        snap_unmixed[name] = p.data.detach().clone()
+                    else:
+                        snap_unmixed[name].copy_(p.data)
+
             mixout.apply(model)
-            opt.zero_grad()
+
+            with torch.no_grad():
+                for name, p in model.named_parameters():
+                    if name not in snap_mixed:
+                        snap_mixed[name] = p.data.detach().clone()
+                    else:
+                        snap_mixed[name].copy_(p.data)
 
             def model_forward(  # noqa: ANN001, B023
                 news_embeddings,
@@ -168,16 +204,26 @@ def llrd_finetune(
                     news_mask=_nm,
                     is_news_present=_inp,
                     regime_vec=_rv,
+                    return_pooled=True,
                 )
+
+            # alpha ramps 0 -> dann_max_alpha; weight stays at dann_weight.
+            dann_alpha = (
+                min(1.0, float(n_steps) / max(1.0, float(cfg.dann_warmup_steps)))
+                * cfg.dann_max_alpha
+            )
 
             def loss_fn(  # noqa: ANN001, B023
                 out,
                 _batch,
                 _labels=labels,
                 _nlr=next_log_return,
+                _eras=era_label,
+                _alpha=dann_alpha,
             ):
                 logits = out["logits_3class"]
                 pos = out["position_weight"]
+                pooled = out["pooled"]
                 l_focal = focal_loss(logits, _labels, gamma=cfg.focal_gamma)
                 l_sharpe = sharpe_loss(
                     pos,
@@ -185,23 +231,48 @@ def llrd_finetune(
                     prev_position=None,
                     cost_bps=cfg.cost_bps,
                 )
-                return cfg.focal_weight * l_focal + cfg.sharpe_weight * l_sharpe
-
-            loss = freelb.compute_loss(model_forward, {"news_embeddings": news_embeddings}, loss_fn)
-            if not torch.isfinite(loss):
-                raise RuntimeError(
-                    f"non-finite loss at llrd step {n_steps}: {float(loss):.4f}; aborting fold"
+                dann_logits = model.head.dann_forward(pooled, _alpha)
+                l_dann = dann_loss(dann_logits, _eras)
+                return (
+                    cfg.focal_weight * l_focal
+                    + cfg.sharpe_weight * l_sharpe
+                    + cfg.dann_weight * l_dann
                 )
-            loss.backward()
-            if cfg.grad_clip_max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_max_norm)
 
+            # Closure-style step for Cautious(FSAM(SF)). FSAM may call the
+            # closure twice (ascent + descent); FreeLB runs K=2 embedding-
+            # ascent steps inside each pass.
+            def closure(
+                _ne: Tensor = news_embeddings,
+                _grad_clip: float = cfg.grad_clip_max_norm,
+            ) -> Tensor:
+                opt.zero_grad()
+                loss_local = freelb.compute_loss(
+                    model_forward, {"news_embeddings": _ne}, loss_fn
+                )
+                if not torch.isfinite(loss_local):
+                    raise RuntimeError(
+                        f"non-finite loss at llrd step {n_steps}: "
+                        f"{float(loss_local):.4f}; aborting fold"
+                    )
+                loss_local.backward()
+                if _grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), _grad_clip)
+                return loss_local
+
+            loss = opt.step(closure)
+            if loss is None:
+                raise RuntimeError("optimizer.step returned None — closure misconfigured")
+
+            # Transfer the SF AdamW delta (computed against mixed coords)
+            # onto the unmixed params: params_new = unmixed + (mixed_after_step - mixed_before_step).
             with torch.no_grad():
-                for name, param in model.named_parameters():
-                    if name in snapshot_state:
-                        param.data.copy_(snapshot_state[name].to(param.device))
-
-            opt.step()
+                for name, p in model.named_parameters():
+                    if name not in snap_mixed:
+                        continue
+                    mixed_after = p.data
+                    delta = mixed_after - snap_mixed[name].to(p.device, dtype=p.dtype)
+                    p.data.copy_(snap_unmixed[name].to(p.device, dtype=p.dtype) + delta)
 
             ema.update_parameters(model)
 
@@ -212,25 +283,30 @@ def llrd_finetune(
 
     if n_steps == 0:
         raise RuntimeError("llrd_finetune produced no steps; refusing to write checkpoint")
-    _opt_to_infer = getattr(opt, "eval", None)
-    if _opt_to_infer is not None:
-        _opt_to_infer()
-    out_path = cfg.output_dir / "llrd_final.pt"
-    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "ema_state": ema.state_dict(),
-            "n_steps": n_steps,
-        },
-        tmp_path,
-    )
-    import os as _os  # noqa: PLC0415
 
-    _os.replace(tmp_path, out_path)
-    _opt_to_train = getattr(opt, "train", None)
-    if _opt_to_train is not None:
-        _opt_to_train()
+    # Swap to averaged weights before snapshotting state_dict for the
+    # final checkpoint (same reason as the SSL anchor fix at §52).
+    _inference_mode = getattr(opt, "inference_mode", None)
+    if callable(_inference_mode):
+        _inference_mode()
+
+    ckpt: dict[str, Any] = {
+        "model_state": model.state_dict(),
+        "ema_state": ema.state_dict(),
+        "n_steps": n_steps,
+        "final_loss": final_loss,
+        "stage": "llrd",
+    }
+    if manifest is not None:
+        ckpt["manifest"] = manifest
+    out_path = cfg.output_dir / "llrd_final.pt"
+    atomic_save_torch(ckpt, out_path)
+    (cfg.output_dir / "stage.done").write_text("ok\n")
+
+    _train_mode = getattr(opt, "train_mode", None)
+    if callable(_train_mode):
+        _train_mode()
+
     LOG.info(
         "llrd fine-tune done: %d steps, final_loss=%.4f, ckpt=%s",
         n_steps,

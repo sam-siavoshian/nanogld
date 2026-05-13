@@ -50,14 +50,22 @@ class FriendlySAM:
         self.base.load_state_dict(state_dict)
 
     def train_mode(self) -> None:
-        if hasattr(self.base, "train_mode"):
-            self.base.train_mode()
-        elif hasattr(self.base, "train"):
-            self.base.train()
+        """Forward to the wrapped optimizer's train hook (Schedule-Free
+        flips averaging off via ``.train()`` so backward sees bare weights)."""
+        for name in ("train_mode", "train"):
+            method = getattr(self.base, name, None)
+            if callable(method):
+                method()
+                return
 
     def inference_mode(self) -> None:
-        if hasattr(self.base, "inference_mode"):
-            self.base.inference_mode()
+        """Forward to the wrapped optimizer's inference hook (Schedule-Free
+        swaps averaged weights into params for inference)."""
+        for name in ("inference_mode", "eval"):
+            method = getattr(self.base, name, None)
+            if callable(method):
+                method()
+                return
 
     def _grad_norm(self) -> Tensor:
         norms = []
@@ -69,8 +77,13 @@ class FriendlySAM:
             return torch.tensor(0.0)
         return torch.stack(norms).norm()
 
+    @torch.no_grad()
     def first_step(self) -> None:
-        """Ascent: perturb params toward the F-SAM-filtered direction."""
+        """Ascent: perturb params toward the F-SAM-filtered direction.
+
+        All mutations are inside ``no_grad`` because we are modifying leaf
+        parameters in-place. Grads themselves are unaffected.
+        """
         grad_norm = self._grad_norm() + self.eps
         scale = self.rho / grad_norm
         self._snapshots = []
@@ -81,12 +94,13 @@ class FriendlySAM:
             ew = scale * p.grad.detach() * self.sigma
             p.add_(ew)
 
+    @torch.no_grad()
     def second_step(self) -> None:
         """Descent: restore original params, apply base.step() with new grads."""
         for p, snap in zip(self.params, self._snapshots, strict=True):
             p.data.copy_(snap)
-        self.base.step()
         self._snapshots = []
+        self.base.step()
 
     def step(self, closure):  # noqa: ANN001
         if closure is None:

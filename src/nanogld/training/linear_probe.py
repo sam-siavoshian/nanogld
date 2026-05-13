@@ -15,11 +15,15 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import Tensor, nn
 
+from nanogld._atomic import atomic_save_torch
+from nanogld.model.aecf import AECFMask
 from nanogld.training.losses import focal_loss
+from nanogld.training.optim import build_optimizer
 
 LOG = logging.getLogger("nanogld.training.linear_probe")
 
@@ -34,6 +38,9 @@ class LinearProbeConfig:
     focal_gamma: float = 3.0
     log_every_n_steps: int = 100
     output_dir: Path = Path("checkpoints/v1/probe")
+    aecf_p_min: float = 0.1
+    aecf_p_max: float = 0.9
+    aecf_curriculum_steps: int = 1_000
 
 
 def _freeze_encoder(model: nn.Module) -> None:
@@ -57,6 +64,7 @@ def train_linear_probe(
     train_loader: Iterable[dict[str, Tensor]],
     cfg: LinearProbeConfig,
     device: str = "cpu",
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, float]:
     """Run Stage 2 linear probe.
 
@@ -65,6 +73,7 @@ def train_linear_probe(
         train_loader: iterable of batches.
         cfg: LinearProbeConfig.
         device: torch device.
+        manifest: optional reproducibility manifest dict (embedded in ckpt).
 
     Returns:
         {"final_loss", "n_steps", "accuracy_last_batch"}.
@@ -73,9 +82,22 @@ def train_linear_probe(
     model.train()
 
     head_params = list(model.head.parameters())
-    opt = torch.optim.Adam(head_params, lr=cfg.lr)
+    opt = build_optimizer(
+        head_params,
+        lr=cfg.lr,
+        betas=(0.9, 0.95),
+        weight_decay=0.0,
+        warmup_steps=0,
+    )
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    aecf_mask_module = AECFMask(
+        p_min=cfg.aecf_p_min,
+        p_max=cfg.aecf_p_max,
+        curriculum_steps=cfg.aecf_curriculum_steps,
+    )
+    aecf_mask_module.train()
+
     n_steps = 0
     final_loss = float("nan")
     last_acc = 0.0
@@ -89,25 +111,57 @@ def train_linear_probe(
             regime_vec = batch["regime_vec"].to(device).float()
             labels = batch["label_3class"].to(device).long()
 
-            opt.zero_grad()
-            out = model(
-                channel_inputs=channel_inputs,
-                news_embeddings=news_embeddings,
-                news_mask=news_mask,
-                is_news_present=is_news_present,
-                regime_vec=regime_vec,
+            b_size = channel_inputs.shape[0]
+            aecf_keep = aecf_mask_module.sample_mask(
+                batch_size=b_size, training_step=n_steps, device=channel_inputs.device
             )
-            logits = out["logits_3class"]
-            loss = focal_loss(logits, labels, gamma=cfg.focal_gamma)
-            loss.backward()
-            if cfg.grad_clip_max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(head_params, cfg.grad_clip_max_norm)
-            opt.step()
+            news_mask = news_mask * aecf_keep.unsqueeze(-1)
+            is_news_present = (is_news_present.float() * aecf_keep).to(is_news_present.dtype)
+
+            # Capture the latest forward output for stats (logits/preds) by
+            # writing into a 1-slot list from inside the closure. The closure
+            # may run twice (FSAM ascent + descent); the LAST call's logits
+            # land in latest[0].
+            latest: list[Tensor] = []
+
+            def closure(
+                _ci: Tensor = channel_inputs,
+                _ne: Tensor = news_embeddings,
+                _nm: Tensor = news_mask,
+                _inp: Tensor = is_news_present,
+                _rv: Tensor = regime_vec,
+                _labels: Tensor = labels,
+                _hp: list[Tensor] = head_params,
+                _latest: list[Tensor] = latest,
+            ) -> Tensor:
+                opt.zero_grad()
+                out = model(
+                    channel_inputs=_ci,
+                    news_embeddings=_ne,
+                    news_mask=_nm,
+                    is_news_present=_inp,
+                    regime_vec=_rv,
+                )
+                logits = out["logits_3class"]
+                _latest.clear()
+                _latest.append(logits.detach())
+                loss = focal_loss(logits, _labels, gamma=cfg.focal_gamma)
+                loss.backward()
+                if cfg.grad_clip_max_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(_hp, cfg.grad_clip_max_norm)
+                return loss
+
+            loss = opt.step(closure)
+            if loss is None or not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"non-finite probe loss at step {n_steps}: {loss}; aborting fold"
+                )
 
             n_steps += 1
             final_loss = float(loss.detach().cpu().item())
-            preds = logits.argmax(dim=-1)
-            last_acc = float((preds == labels).float().mean().item())
+            if latest:
+                preds = latest[0].argmax(dim=-1)
+                last_acc = float((preds == labels).float().mean().item())
             if n_steps % cfg.log_every_n_steps == 0:
                 LOG.info(
                     "probe epoch %d step %d loss=%.4f acc=%.3f",
@@ -117,8 +171,26 @@ def train_linear_probe(
                     last_acc,
                 )
 
+    if n_steps == 0:
+        raise RuntimeError("train_linear_probe produced no steps; refusing to write checkpoint")
+
+    _inference_mode = getattr(opt, "inference_mode", None)
+    if callable(_inference_mode):
+        _inference_mode()
+
+    ckpt: dict[str, Any] = {
+        "model_state": model.state_dict(),
+        "n_steps": n_steps,
+        "stage": "probe",
+        "final_loss": final_loss,
+        "accuracy_last_batch": last_acc,
+    }
+    if manifest is not None:
+        ckpt["manifest"] = manifest
     out_path = cfg.output_dir / "probe.pt"
-    torch.save({"model_state": model.state_dict(), "n_steps": n_steps}, out_path)
+    atomic_save_torch(ckpt, out_path)
+    (cfg.output_dir / "stage.done").write_text("ok\n")
+
     LOG.info(
         "linear probe done: %d steps, final_loss=%.4f, ckpt=%s",
         n_steps,
