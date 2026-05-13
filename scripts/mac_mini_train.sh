@@ -85,6 +85,15 @@ fi
 #     the unified dataset have shipped with 651 vs 681 features; read
 #     the actual shape so RevIN's affine_weight matches the input).
 OVERRIDE_CFG="${OUT_DIR}/v1_main_macmini.yaml"
+# Mac mini 16 GB unified memory + channel-independent encoder (B*F=651
+# sequences per batch) + FSAM 2-pass param snapshots + EMA + Mixout
+# anchor exceeds the MPS recommendedMaxWorkingSetSize at d_model=384
+# even with batch_size=4. Defaults below shrink the architecture to
+# fit the box. Override via NANOGLD_D_MODEL / NANOGLD_T_BARS env vars.
+D_MODEL="${NANOGLD_D_MODEL:-192}"
+T_BARS="${NANOGLD_T_BARS:-32}"
+NUM_HEADS="${NANOGLD_NUM_HEADS:-4}"  # must divide d_model
+
 uv run python - <<PY
 import torch, yaml
 from pathlib import Path
@@ -92,10 +101,16 @@ cfg = yaml.safe_load(Path("${CONFIG}").read_text())
 unified = torch.load("${UNIFIED}", map_location="cpu", weights_only=False)
 numeric_dim = int(unified["features"].shape[1])
 cfg.setdefault("model", {})["numeric_dim"] = numeric_dim
+cfg["model"]["d_model"] = ${D_MODEL}
+cfg["model"]["num_heads"] = ${NUM_HEADS}
+cfg["model"]["t_bars"] = ${T_BARS}
+cfg["model"]["patch_len"] = min(int(cfg["model"].get("patch_len", 4)), ${T_BARS})
+cfg["model"]["patch_stride"] = min(int(cfg["model"].get("patch_stride", 4)), ${T_BARS})
 cfg.setdefault("dataloader", {})["batch_size"] = ${BATCH_SIZE}
+cfg["dataloader"]["lookback_T"] = ${T_BARS}
 cfg["dataloader"]["num_workers"] = 0
 Path("${OVERRIDE_CFG}").write_text(yaml.safe_dump(cfg))
-print(f"override config: numeric_dim={numeric_dim} batch_size=${BATCH_SIZE} -> ${OVERRIDE_CFG}")
+print(f"override: numeric_dim={numeric_dim} d_model=${D_MODEL} t_bars=${T_BARS} batch=${BATCH_SIZE} -> ${OVERRIDE_CFG}")
 PY
 
 # Smoke-mode: bail after N steps per stage via NANOGLD_MAX_STEPS env var.
