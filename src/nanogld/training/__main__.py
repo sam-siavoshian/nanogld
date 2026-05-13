@@ -28,7 +28,12 @@ from nanogld.data.integrity import verify_artifacts
 from nanogld.model import nanoGLDV1
 from nanogld.training.linear_probe import LinearProbeConfig, train_linear_probe
 from nanogld.training.llrd_finetune import LLRDConfig, llrd_finetune
-from nanogld.training.observability import finish_wandb, heartbeat, init_wandb
+from nanogld.training.observability import (
+    finish_wandb,
+    gpu_temp_watchdog,
+    heartbeat,
+    init_wandb,
+)
 from nanogld.training.optim import build_optimizer
 from nanogld.training.simmtm_pretrain import SimMTMConfig, pretrain_simmtm
 from nanogld.training.train import setup_determinism
@@ -246,7 +251,7 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         try:
             with _stage_log_file(fold_out, "ssl"), heartbeat(
                 fold_out / ".heartbeat", interval_seconds=heartbeat_interval
-            ):
+            ), gpu_temp_watchdog():
                 ssl_metrics = pretrain_simmtm(
                     model,
                     ssl_optimizer,
@@ -298,7 +303,7 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         try:
             with _stage_log_file(fold_out, "probe"), heartbeat(
                 fold_out / ".heartbeat", interval_seconds=heartbeat_interval
-            ):
+            ), gpu_temp_watchdog():
                 probe_metrics = train_linear_probe(
                     model,
                     train_loader,
@@ -342,7 +347,7 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         try:
             with _stage_log_file(fold_out, "llrd"), heartbeat(
                 fold_out / ".heartbeat", interval_seconds=heartbeat_interval
-            ):
+            ), gpu_temp_watchdog():
                 llrd_metrics = llrd_finetune(
                     model,
                     ssl_anchor_state,
