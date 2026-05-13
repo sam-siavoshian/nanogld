@@ -111,24 +111,9 @@ class NewsFuser(nn.Module):
         mask_expanded = news_mask.unsqueeze(-1).to(dtype=text_proj.dtype)
         text_proj = mask_expanded * text_proj + (1.0 - mask_expanded) * no_news_broadcast
 
-        q = (
-            self.q_proj(bar_tokens)
-            .view(b, t, self.n_heads, self.head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
-        k = (
-            self.k_proj(text_proj)
-            .view(b, news.shape[1], self.n_heads, self.head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
-        v = (
-            self.v_proj(text_proj)
-            .view(b, news.shape[1], self.n_heads, self.head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
+        q = self.q_proj(bar_tokens).view(b, t, self.n_heads, self.head_dim).transpose(1, 2).contiguous()
+        k = self.k_proj(text_proj).view(b, news.shape[1], self.n_heads, self.head_dim).transpose(1, 2).contiguous()
+        v = self.v_proj(text_proj).view(b, news.shape[1], self.n_heads, self.head_dim).transpose(1, 2).contiguous()
 
         block_mask = news_mask == 0
         all_blocked = block_mask.all(dim=-1, keepdim=True)

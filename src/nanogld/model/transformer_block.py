@@ -17,6 +17,7 @@ Spec: plan/05-MODEL-TRAINING-CALIBRATION.md V1 backbone.
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 from nanogld.model.attention import MultiHeadAttention
@@ -119,7 +120,12 @@ class TransformerBlock(nn.Module):
         h = x + self._drop_path(attn_out)
 
         if self.has_cross_attn:
-            if bar_pool is None or news is None or news_mask is None or is_news_present is None:
+            if (
+                bar_pool is None
+                or news is None
+                or news_mask is None
+                or is_news_present is None
+            ):
                 raise ValueError(
                     "cross-attn block requires bar_pool, news, news_mask, is_news_present"
                 )

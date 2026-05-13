@@ -1,29 +1,33 @@
 """nanoGLDV1 — top-level multimodal transformer for 30-min GLD direction.
 
-Forward pipeline:
+Forward pipeline (V1, two-stream decomposition per V1-SPEC §4.3):
     Input bars (B, T, F=681)
-    → RevIN per-channel (norm)
-    → VSN feature gate
-    → Channel-independent patching (P=4, S=4 → 16 patches/channel)
-    → Hybrid encoder stack (10 transformer + 2 sLSTM, FiLM at {2,4,6,8,10},
+    → SeriesDecomposition → (trend, seasonal)
+    → Trend stream:    RevIN_trend  → VSN_trend  → PatchEmbed_trend  → (B, F·P, D)
+    → Seasonal stream: RevIN_season → VSN_season → PatchEmbed_season → (B, F·P, D)
+    → Sum patches: trend + seasonal
+    → Hybrid encoder (10 transformer + 2 sLSTM, FiLM at {2,4,6,8,10},
        cross-attn at {3,7})
     → Mean-pool over patches → reshape back to (B, F, D), pool over channels
     → MultiTaskHead: (logits_3class, position_weight)
 
-Note: SeriesDecomposition module is instantiated for forward-compat with
-the V1-SPEC two-stream wiring (deferred). Currently NOT called in forward;
-input passes through directly. Two-stream wiring tracked as separate task.
+The trend stream owns the canonical attribute names (``self.revin``,
+``self.vsn``, ``self.patch_embed``) so the analysis tooling
+(``src/nanogld/analysis/vsn_importance.py``, ``attention_rollout.py``)
+continues to inspect the slow-signal feature gates without rewiring.
+Seasonal mirrors live alongside as ``_seasonal`` suffix counterparts.
 
 Output dict keys:
     logits_3class:    (B, 3) — focal CE target
     position_weight:  (B,)   — diff -Sharpe target
 
-Spec: plan/V1-SPEC.md (full).
+Spec: plan/V1-SPEC.md §4.3 (decomposition two-stream).
 Spec: plan/05-MODEL-TRAINING-CALIBRATION.md V1.
 """
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 from nanogld.model.decomposition import SeriesDecomposition
@@ -85,9 +89,22 @@ class nanoGLDV1(nn.Module):
         self.regime_dim = regime_dim
 
         self.decomposition = SeriesDecomposition(kernel_size=decomposition_kernel)
+
+        # Trend stream (canonical names — kept for analysis tooling).
         self.revin = RevIN(num_features=numeric_dim, affine=True)
-        self.vsn = VSN(num_features=numeric_dim, hidden_dim=64, dropout=dropout)
+        self.vsn = VSN(num_features=numeric_dim, hidden_dim=128, dropout=dropout)
         self.patch_embed = PatchEmbed(
+            patch_len=patch_len,
+            patch_stride=patch_stride,
+            t_bars=t_bars,
+            d_model=d_model,
+        )
+
+        # Seasonal stream — independent weights so each can specialize on
+        # the slow (trend) vs fast (seasonal) signal. V1-SPEC §4.3.
+        self.revin_seasonal = RevIN(num_features=numeric_dim, affine=True)
+        self.vsn_seasonal = VSN(num_features=numeric_dim, hidden_dim=128, dropout=dropout)
+        self.patch_embed_seasonal = PatchEmbed(
             patch_len=patch_len,
             patch_stride=patch_stride,
             t_bars=t_bars,
@@ -152,12 +169,20 @@ class nanoGLDV1(nn.Module):
         """
         b, t, f = channel_inputs.shape
 
-        x = channel_inputs
+        # Two-stream decomposition (V1-SPEC §4.3): split into trend +
+        # seasonal, then independently norm / gate / patch each stream
+        # before summing the patch reps.
+        trend, seasonal = self.decomposition(channel_inputs)
 
-        x = self.revin(x, mode="norm")
-        x_gated, _gate = self.vsn(x)
+        trend_normed = self.revin(trend, mode="norm")
+        trend_gated, _gate_trend = self.vsn(trend_normed)
+        trend_patched = self.patch_embed(trend_gated)
 
-        patched = self.patch_embed(x_gated)
+        seasonal_normed = self.revin_seasonal(seasonal, mode="norm")
+        seasonal_gated, _gate_seasonal = self.vsn_seasonal(seasonal_normed)
+        seasonal_patched = self.patch_embed_seasonal(seasonal_gated)
+
+        patched = trend_patched + seasonal_patched
 
         regime_vec = self.regime_encoder(regime_vec)
         regime_per_channel = regime_vec.repeat_interleave(f, dim=0)

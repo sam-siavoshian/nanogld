@@ -45,7 +45,9 @@ class PatchEmbed(nn.Module):
     ) -> None:
         super().__init__()
         if t_bars % patch_stride != 0:
-            raise ValueError(f"t_bars={t_bars} must be divisible by patch_stride={patch_stride}")
+            raise ValueError(
+                f"t_bars={t_bars} must be divisible by patch_stride={patch_stride}"
+            )
         self.patch_len = patch_len
         self.patch_stride = patch_stride
         self.num_patches = t_bars // patch_stride
@@ -80,7 +82,9 @@ class PatchEmbed(nn.Module):
         b, t, c = x.shape
         expected_t = self.num_patches * self.patch_stride
         if t != expected_t:
-            raise ValueError(f"input T={t} does not match configured T_bars={expected_t}")
+            raise ValueError(
+                f"input T={t} does not match configured T_bars={expected_t}"
+            )
         x_perm = x.permute(0, 2, 1)
         x_patched = x_perm.unfold(dimension=-1, size=self.patch_len, step=self.patch_stride)
         x_flat = x_patched.reshape(b * c, self.num_patches, self.patch_len)

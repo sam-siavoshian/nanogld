@@ -11,7 +11,7 @@ Layer plan (1-indexed):
     8:       transformer + FiLM.
     9:       pure transformer.
     10:      transformer + FiLM.
-    11:      sLSTM block (cross-attn at layer 11 deferred — see V1-SPEC §2.1).
+    11:      sLSTM block + cross-attn (NewsFuser embedded in sLSTMBlock).
     12:      sLSTM block.
 
 FiLM injection layers: {2, 4, 6, 8, 10} (every-2).
@@ -24,10 +24,12 @@ Spec: plan/V1-SPEC.md §1.5 + §2.1.
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 from nanogld.model.slstm_block import sLSTMBlock
 from nanogld.model.transformer_block import TransformerBlock
+
 
 DEFAULT_FILM_LAYERS: tuple[int, ...] = (2, 4, 6, 8, 10)
 DEFAULT_CROSS_ATTN_LAYERS: tuple[int, ...] = (3, 7, 11)
@@ -102,8 +104,19 @@ class HybridEncoder(nn.Module):
         self.transformer_blocks = nn.ModuleList(transformer_blocks)
 
         slstm_blocks = []
-        for _ in range(num_slstm_layers):
-            slstm_blocks.append(sLSTMBlock(d_model=d_model, dropout=dropout))
+        for slstm_idx in range(num_slstm_layers):
+            # 1-indexed encoder layer this sLSTM block represents.
+            one_indexed = num_transformer_layers + slstm_idx + 1
+            slstm_blocks.append(
+                sLSTMBlock(
+                    d_model=d_model,
+                    dropout=dropout,
+                    has_cross_attn=one_indexed in self.cross_attn_layers,
+                    num_heads=num_heads,
+                    d_text=d_text,
+                    n_news_slots=n_news_slots,
+                )
+            )
         self.slstm_blocks = nn.ModuleList(slstm_blocks)
 
     def forward(
@@ -147,7 +160,18 @@ class HybridEncoder(nn.Module):
             if (layer_idx + 1) in self.cross_attn_layers or (layer_idx + 1) in self.film_layers:
                 bar_pool = h.mean(dim=1)
 
-        for block in self.slstm_blocks:
-            h = block(h)
+        for slstm_idx, block in enumerate(self.slstm_blocks):
+            one_indexed = self.num_transformer_layers + slstm_idx + 1
+            if block.has_cross_attn:
+                h = block(
+                    h,
+                    bar_pool=bar_pool,
+                    news=news,
+                    news_mask=news_mask,
+                    is_news_present=is_news_present,
+                )
+                bar_pool = h.mean(dim=1)
+            else:
+                h = block(h)
 
         return h

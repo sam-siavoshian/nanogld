@@ -81,11 +81,12 @@ def fit_hmm(
         random_state=random_state,
     )
     model.fit(feats_clean)
-    if hasattr(model, "monitor_") and not model.monitor_.converged:
-        raise RuntimeError(
-            f"HMM EM failed to converge (iters={model.monitor_.iter}, "
-            f"history={model.monitor_.history[-3:] if model.monitor_.history else 'none'})"
-        )
+    if hasattr(model, "monitor_"):
+        if not model.monitor_.converged:
+            raise RuntimeError(
+                f"HMM EM failed to converge (iters={model.monitor_.iter}, "
+                f"history={model.monitor_.history[-3:] if model.monitor_.history else 'none'})"
+            )
     LOG.info(
         "HMM fit on %d valid rows; means=%s; converged=%s",
         int(valid.sum()),
@@ -149,5 +150,7 @@ def add_hmm_column(
 ) -> pd.DataFrame:
     """Append the 12th regime-vector dimension `regime_hmm_p_high_vol`."""
     out = df.copy()
-    out[out_col] = predict_proba_high_vol(model, out, close_col=close_col, rv_lookback=rv_lookback)
+    out[out_col] = predict_proba_high_vol(
+        model, out, close_col=close_col, rv_lookback=rv_lookback
+    )
     return out

@@ -28,6 +28,7 @@ Spec: plan/V1-SPEC.md §2.2.
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 
@@ -75,8 +76,6 @@ class CFAProjector(nn.Module):
         text_filmed = (1.0 + gamma).unsqueeze(1) * text_proj + beta.unsqueeze(1)
 
         bar_norm_sq = (bar_pool * bar_pool).sum(dim=-1, keepdim=True) + self.eps
-        proj_coeff = (text_filmed * bar_pool.unsqueeze(1)).sum(
-            dim=-1, keepdim=True
-        ) / bar_norm_sq.unsqueeze(1)
+        proj_coeff = (text_filmed * bar_pool.unsqueeze(1)).sum(dim=-1, keepdim=True) / bar_norm_sq.unsqueeze(1)
         text_orth = text_filmed - proj_coeff * bar_pool.unsqueeze(1)
         return text_orth

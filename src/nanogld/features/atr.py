@@ -13,6 +13,7 @@ Spec: plan/V1-SPEC.md §4.5.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from nanogld.data.utils import get_logger
@@ -92,8 +93,8 @@ def add_atr_and_barriers(
             out = out.sort_values("bar_close_utc").reset_index(drop=True)
 
     atr_col = f"gld_atr_{period}"
-    out[atr_col] = atr_wilder(out[high_col], out[low_col], out[close_col], period=period).astype(
-        "float32"
+    out[atr_col] = (
+        atr_wilder(out[high_col], out[low_col], out[close_col], period=period).astype("float32")
     )
     safe_close = out[close_col].where(out[close_col] > 0)
     n_bad_close = int((~(out[close_col] > 0)).sum())

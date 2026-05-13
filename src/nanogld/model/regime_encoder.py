@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
+
 REGIME_VECTOR_DIM = 12
 
 
@@ -44,7 +45,9 @@ class RegimeEncoder(nn.Module):
         if regime.ndim != 2:
             raise ValueError(f"regime must be 2D (B, {self.regime_dim}), got {regime.shape}")
         if regime.shape[-1] != self.regime_dim:
-            raise ValueError(f"regime last dim {regime.shape[-1]} != expected {self.regime_dim}")
+            raise ValueError(
+                f"regime last dim {regime.shape[-1]} != expected {self.regime_dim}"
+            )
         return regime.to(torch.float32)
 
 

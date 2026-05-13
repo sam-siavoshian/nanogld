@@ -32,17 +32,13 @@ class GRN(nn.Module):
         y = LayerNorm(x_residual + gate * b)
     """
 
-    def __init__(
-        self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.2
-    ) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.2) -> None:
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim, bias=False)
         self.fc2 = nn.Linear(hidden_dim, output_dim, bias=False)
         self.gate = nn.Linear(hidden_dim, output_dim, bias=False)
         self.skip = (
-            nn.Linear(input_dim, output_dim, bias=False)
-            if input_dim != output_dim
-            else nn.Identity()
+            nn.Linear(input_dim, output_dim, bias=False) if input_dim != output_dim else nn.Identity()
         )
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(output_dim)
@@ -66,11 +62,12 @@ class VSN(nn.Module):
 
     Args:
         num_features: number of input features (681 for V1).
-        hidden_dim: GRN hidden width (64 default).
+        hidden_dim: GRN hidden width (128 default — V1-SPEC §44 width bump
+            from 64 to 128; +130K params, lands at 24.0M floor target).
         dropout: GRN internal dropout.
     """
 
-    def __init__(self, num_features: int, hidden_dim: int = 64, dropout: float = 0.2) -> None:
+    def __init__(self, num_features: int, hidden_dim: int = 128, dropout: float = 0.2) -> None:
         super().__init__()
         self.num_features = num_features
         self.gate_grn = GRN(

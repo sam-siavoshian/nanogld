@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from nanogld.data.utils import get_logger
+from nanogld.data.utils import ET, get_logger
 
 LOG = get_logger("nanogld.features.regime")
 

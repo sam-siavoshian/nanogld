@@ -48,7 +48,9 @@ class SeriesDecomposition(nn.Module):
         x_perm = x.transpose(1, 2)  # (B, F, T)
         pad_left = self.kernel_size - 1
         x_padded = F.pad(x_perm, (pad_left, 0), mode="replicate")
-        weight = x.new_ones((f, 1, self.kernel_size)) / self.kernel_size
+        weight = (
+            x.new_ones((f, 1, self.kernel_size)) / self.kernel_size
+        )
         trend_perm = F.conv1d(x_padded, weight, groups=f)
         trend = trend_perm.transpose(1, 2)
         seasonal = x - trend

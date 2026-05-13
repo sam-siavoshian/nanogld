@@ -24,6 +24,7 @@ Spec: plan/05-MODEL-TRAINING-CALIBRATION.md V1 backbone Decision 1B.
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 
@@ -40,9 +41,7 @@ class sLSTMCell(nn.Module):
         self.w_ih = nn.Linear(d_model, 4 * d_model, bias=True)
         self.w_hh = nn.Linear(d_model, 4 * d_model, bias=False)
 
-    def forward(
-        self, x: Tensor, state: tuple[Tensor, Tensor]
-    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+    def forward(self, x: Tensor, state: tuple[Tensor, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         """Single timestep.
 
         Args:
