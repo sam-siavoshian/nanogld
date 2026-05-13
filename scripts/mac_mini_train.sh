@@ -128,11 +128,14 @@ Path("${OVERRIDE_CFG}").write_text(yaml.safe_dump(cfg))
 print(f"override: numeric_dim={numeric_dim} d_model=${D_MODEL} t_bars=${T_BARS} batch=${BATCH_SIZE} -> ${OVERRIDE_CFG}")
 PY
 
-# Smoke-mode: bail after N steps per stage via NANOGLD_MAX_STEPS env var.
-# Each stage's batch loop checks and breaks.
+# Smoke-mode: bail after N steps per stage via positional arg. Overrides
+# the per-stage default caps so smoke runs are truly short.
 if [[ -n "${MAX_STEPS}" ]]; then
     export NANOGLD_MAX_STEPS="${MAX_STEPS}"
-    echo "[train] SMOKE mode: NANOGLD_MAX_STEPS=${MAX_STEPS} (each stage breaks after ${MAX_STEPS} steps)"
+    export NANOGLD_SSL_MAX_STEPS="${MAX_STEPS}"
+    export NANOGLD_PROBE_MAX_STEPS="${MAX_STEPS}"
+    export NANOGLD_LLRD_MAX_STEPS="${MAX_STEPS}"
+    echo "[train] SMOKE mode: ${MAX_STEPS} steps per stage"
 fi
 
 # Caffeinate to prevent sleep on long runs (Mac mini lid-closed default).
