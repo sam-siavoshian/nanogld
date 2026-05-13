@@ -93,6 +93,12 @@ OVERRIDE_CFG="${OUT_DIR}/v1_main_macmini.yaml"
 D_MODEL="${NANOGLD_D_MODEL:-192}"
 T_BARS="${NANOGLD_T_BARS:-32}"
 NUM_HEADS="${NANOGLD_NUM_HEADS:-4}"  # must divide d_model
+# Epoch budget for Mac mini. Full V1-SPEC is 15+5+10 epochs ≈ 5 days/fold
+# on MPS at d_model=192 t_bars=32. Default 3+2+3 ≈ 6-10 h/fold so all 4
+# folds fit in a day. Bump to spec values via env if wall-clock allows.
+SSL_EPOCHS="${NANOGLD_SSL_EPOCHS:-3}"
+PROBE_EPOCHS="${NANOGLD_PROBE_EPOCHS:-2}"
+LLRD_EPOCHS="${NANOGLD_LLRD_EPOCHS:-3}"
 
 uv run python - <<PY
 import torch, yaml
@@ -109,6 +115,9 @@ cfg["model"]["patch_stride"] = min(int(cfg["model"].get("patch_stride", 4)), ${T
 cfg.setdefault("dataloader", {})["batch_size"] = ${BATCH_SIZE}
 cfg["dataloader"]["lookback_T"] = ${T_BARS}
 cfg["dataloader"]["num_workers"] = 0
+cfg.setdefault("ssl", {})["epochs"] = ${SSL_EPOCHS}
+cfg.setdefault("probe", {})["epochs"] = ${PROBE_EPOCHS}
+cfg.setdefault("llrd", {})["epochs"] = ${LLRD_EPOCHS}
 Path("${OVERRIDE_CFG}").write_text(yaml.safe_dump(cfg))
 print(f"override: numeric_dim={numeric_dim} d_model=${D_MODEL} t_bars=${T_BARS} batch=${BATCH_SIZE} -> ${OVERRIDE_CFG}")
 PY
