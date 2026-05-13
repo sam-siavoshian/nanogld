@@ -1,0 +1,55 @@
+# Gitleaks v8 config for nanoGLD (V1-SPEC §46).
+#
+# Inherits the default rule set (AWS keys, GitHub PAT, generic API keys,
+# private SSH keys, etc.) and adds project-specific patterns:
+#   - HuggingFace user tokens (hf_***)
+#   - Alpaca paper/live keys
+#   - Polygon API keys
+#   - W&B API keys
+#
+# Allowlist:
+#   - test fixtures + tests/ may contain mock tokens
+#   - .venv/, node_modules/, .pytest_cache/
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "huggingface-token"
+description = "HuggingFace user access token"
+regex = '''hf_[A-Za-z0-9]{30,}'''
+tags = ["key", "huggingface"]
+
+[[rules]]
+id = "wandb-api-key"
+description = "Weights & Biases API key"
+regex = '''(?i)wandb[_-]?api[_-]?key\s*[:=]\s*['"]?[a-f0-9]{40}'''
+tags = ["key", "wandb"]
+
+[[rules]]
+id = "alpaca-key"
+description = "Alpaca API key (paper or live)"
+regex = '''(PK[A-Z0-9]{18}|AK[A-Z0-9]{18})'''
+tags = ["key", "alpaca"]
+
+[[rules]]
+id = "polygon-api-key"
+description = "Polygon.io API key (Bearer)"
+regex = '''(?i)polygon[_-]?(api[_-]?)?key\s*[:=]\s*['"]?[A-Za-z0-9_-]{20,}'''
+tags = ["key", "polygon"]
+
+[allowlist]
+description = "Allowlist for tests, vendored, lockfile, and env"
+paths = [
+    '''(^|/)\.venv/''',
+    '''(^|/)node_modules/''',
+    '''(^|/)\.pytest_cache/''',
+    '''(^|/)tests/.*''',
+    '''(^|/)uv\.lock$''',
+    '''(^|/)docs/.*\.md$''',
+]
+regexes = [
+    '''dummy[-_]token''',
+    '''fake[-_]secret''',
+    '''hf_REPLACE_ME''',
+]

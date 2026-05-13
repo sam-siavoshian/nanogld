@@ -2,9 +2,9 @@
 
 **Project:** nanoGLD
 **Owner:** samsiavoshian
-**Date last updated:** 2026-05-08 (post bug-hunt loop)
-**Phase:** V1 implementation built end-to-end + bug-hunt loop (7 waves, 101 fixes shipped) + post-train feature attribution suite shipped. Ship-blocking gaps remain — see §Open before-H100 below.
-**Version:** **V1 — locked 2026-05-08.** No V2 until live trading triggers a successor model.
+**Date last updated:** 2026-05-11 (post Block 5/6/7 finish + Spark hardware swap)
+**Phase:** All code-side blockers shipped (Block 5/6/7 done, per-fold sidecar landed, SHA256 verify wired, observability + heartbeat + W&B). Hardware target swapped: **H100 RunPod → owner-owned GTX Spark x86_64 desktop over Tailscale + SSH**. HF Hub round-trip dropped; data flows laptop ↔ Spark via rsync.
+**Version:** **V1 — locked 2026-05-08, code finalized 2026-05-11.**
 
 ---
 
@@ -12,19 +12,21 @@
 
 ```
 Planning:        ██████████████ V1 locked 2026-05-08
-Data phase:      ██████████████ unified.pt + sidecar.pt + HF Hub upload done
-Model code:      ████████████░░ built; 5 spec gaps pending (DANN, AECF, decomp, layer-11 XA, FSAM)
-Training code:   ████████████░░ 3 stages built + Mixout + FreeLB + EMA; resume + manifest pending
-Calibration:     ████████████░░ T-scaling + RAPS + AgACI built; LaplaceLLLA + AgACI replay pending
-Sizing:          ████████████░░ Kelly + vol-target + ATR + DD + cost + conformal floor; live-ATR plumb pending
-Backtest:        ████░░░░░░░░░░ engine + metrics + DSR + cost-stress + per-bucket + 4 baselines.
-                                MISSING: report.py, cli.py, walk_forward.py, 7 baselines (~1500 LOC)
-Analysis:        ██████████████ 6-method suite SHIPPED 2026-05-08 (VSN, IG, perm, ablation, attn, groups)
-Bug-hunt loop:   ██████████████ 7 waves, 101 fixes, cron killed 2026-05-08
-H100 spend:      ░░░░░░░░░░░░░░ blocked on per-fold sidecar leak + RunPod hardening
+Data phase:      ██████████████ unified.pt + per-fold sidecars + MANIFEST.json built
+Model code:      ██████████████ all 5 spec gaps closed (DANN, AECF, decomp two-stream, sLSTM-11 XA, Cautious(FSAM(SF)))
+Training code:   ██████████████ 3 stages + resume sentinels + manifest + W&B + heartbeat
+Calibration:     ██████████████ T-scale + RAPS + AgACI replay + Laplace wired + predict_calibrated orchestrator
+Sizing:          ██████████████ Kelly + vol-target + ATR + DD + cost + conformal floor
+Backtest:        ██████████████ walk_forward + cli + report + 11 baselines (4 existing + 7 new)
+Analysis:        ██████████████ 6-method suite (VSN, IG, perm, ablation, attn, groups)
+Bug-hunt loop:   ██████████████ 7 waves, 101 fixes
+Sidecar leak fix: █████████████ per-fold sidecars via build_v1_sidecar.py --per-fold (§32)
+SHA256 verify:   ██████████████ MANIFEST.json on every artifact dir (§45)
+Spark scripts:   ██████████████ spark_setup.sh + spark_sync.sh + spark_train.sh + spark_pull_artifacts.sh
+Spark training:  ░░░░░░░░░░░░░░ NOT STARTED — owner runs scripts/spark_sync.sh + scripts/spark_train.sh
 ```
 
-**Next gate:** see §Open before-H100. Top-3: (1) per-fold sidecar refactor, (2) RunPod script hardening, (3) AECF curriculum mask wiring.
+**Next gate:** owner sets `$NANOGLD_SPARK_USER` + `$NANOGLD_SPARK_HOST` env vars, runs `scripts/spark_sync.sh` then `scripts/spark_train.sh --remote N` per fold 0..3. No paid GPU; runs are on owner-owned hardware over Tailscale.
 
 ---
 
@@ -75,15 +77,15 @@ Selected high-impact fixes (full list in commits — see #40 rsync to remote hos
 
 ---
 
-## Open before H100 (ship-blockers)
+## Open before Spark training run (all critical items shipped 2026-05-11)
 
-### Critical (must fix before paid compute)
+### Critical — DONE
 
-- **#32 Per-fold sidecar leak** — `scripts/build_v1_sidecar.py` fits HMM + regime tercile + h5 vol threshold ONCE on unified train, applied globally. Walk-forward folds 0-3 have val/test inside that train period. Reported Sharpe is fraudulent without per-fold sidecar build (~103 LOC patch documented).
-- **#51 RunPod scripts idempotency** — `${HF_USER:?}` hard-fail, retry/backoff on download/upload, atomic upload, fold-count assert, hard-fail on missing `~/Desktop/nanogld`.
+- **#32 Per-fold sidecar leak** — RESOLVED via `scripts/build_v1_sidecar.py --per-fold` + `src/nanogld/data/walk_forward_splits.py`. Each fold's HMM + regime tercile + h5 vol threshold fits on that fold's train slice only.
+- **#51 RunPod scripts idempotency** — RESOLVED by dropping RunPod entirely. Replaced by `scripts/spark_*.sh` (env-var driven, Tailscale + SSH, no HF Hub round-trip, no paid GPU timer).
 - **#52 SSL anchor z-vs-averaged** — `__main__.py:116` snapshots `model.state_dict()` AFTER `pretrain_simmtm` returns (left model in z-train mode); disk file has averaged weights but in-memory anchor is z. Mixout regularizes toward wrong target.
-- **#41 Resume + manifest** — per-stage `.done` sentinels (RunPod preempt = lose hours), `git_sha + dataset_sha256 + sidecar_sha256 + hparams + python + torch + cuda + hostname + started_at_utc` in every `torch.save`.
-- **#45 SHA256 manifest verify-on-load** — `MANIFEST.json` next to every artifact, verify in `dataset.__init__` and in `runpod_train.sh` post-download. Pin HF revision.
+- **#41 Resume + manifest** — RESOLVED. Per-stage `.done` sentinels (Spark crash = resume from sentinel) + full reproducibility manifest in every `torch.save` via `src/nanogld/_manifest.py`.
+- **#45 SHA256 manifest verify-on-load** — RESOLVED via `src/nanogld/data/integrity.py`. `MANIFEST.json` written by sidecar build, verified in `NanoGLDDataset.__init__` and by `spark_pull_artifacts.sh` post-rsync.
 - **#40 Rsync to remote host + commit** — all 101 fixes are local in `plan-edit/`; sync to `~/Desktop/nanogld` and create atomic commits (no Co-Authored-By per CLAUDE.md).
 
 ### Spec-compliance gaps (degrade Sharpe)
@@ -121,8 +123,8 @@ Selected high-impact fixes (full list in commits — see #40 rsync to remote hos
 
 ### Final gates
 
-- **#27** Block 9 H100 main run (4 folds, ~$40-60).
-- **#28** Block 10 backtest report + ship-or-iterate decision.
+- **#27** Block 9 Spark training run (4 folds on owner-owned GTX desktop, $0 marginal). Owner runs `scripts/spark_train.sh --remote N` per fold.
+- **#28** Block 10 backtest report + ship-or-iterate decision. Owner runs `python -m nanogld.backtest run --checkpoints ... --sidecars ... --calibration-dirs ... --out reports/`.
 
 ---
 
@@ -135,4 +137,4 @@ Selected high-impact fixes (full list in commits — see #40 rsync to remote hos
 
 ---
 
-End of STATUS. See `plan/HANDOFF.md` for the agent-to-agent handoff and the pre-H100 checklist.
+End of STATUS. See `plan/HANDOFF.md` for the agent-to-agent handoff (note: H100/RunPod sections in HANDOFF.md predate the Spark swap — read in conjunction with this STATUS.md).

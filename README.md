@@ -4,100 +4,85 @@
 [![PyTorch](https://img.shields.io/badge/pytorch-2.11-EE4C2C.svg)](https://pytorch.org)
 [![Python](https://img.shields.io/badge/python-3.11-3776AB.svg)](https://www.python.org)
 
-A small transformer that predicts the next 30-minute direction of GLD (gold ETF) using price bars and frozen LLM news embeddings. From-scratch hybrid encoder, 24M params, trained on 10 years of intraday data.
+## What is it
 
-Honest target: **1.0–1.5 out-of-sample Sharpe net of 2bp costs**, beating the simpler Gao 2014 + XGBoost ensemble by at least 0.2.
-
-## Status
-
-V1 implementation built and bug-hunted (101 fixes across 7 audit waves). Post-train feature attribution suite shipped. **Not yet shipped to H100**: a few blockers in `plan/STATUS.md` first (per-fold sidecar leak, RunPod script hardening, AECF mask wiring).
+A 24M-parameter transformer that predicts the direction of GLD (gold ETF) over the next 30 minutes, using 10 years of intraday price bars and frozen LLM-encoded news headlines. From-scratch hybrid encoder. Trained on 4-fold walk-forward, calibrated with conformal prediction, sized with friction-adjusted Kelly.
 
 ## Architecture
 
 ```
 bars (T=64 × F=681)               news (Qwen3-4B FP16, 8 slots/bar)
        │                                     │
-   RevIN + VSN                            CFA + AECF
+   decomp → RevIN + VSN                   CFA + AECF
        │                                     │
-   patches P=4 ───► encoder (10 transformer + 2 sLSTM) ◄─── cross-attn at {3,7}
+   patches P=4 ───► encoder (10 transformer + 2 sLSTM) ◄─── cross-attn at {3,7,11}
                                 │
                                 ▼
-                       focal CE head (3-class)  +  Sharpe head (position weight)
+                   focal CE head (3-class)  +  Sharpe head (position weight)
                                 │
                                 ▼
                   T-scaling → RAPS → AgACI → Kelly + ATR exits + DD breaker
 ```
 
-Why this stack: focal loss matches conformal calibration cleanly, Sharpe head turns prediction into sizing, sparse cross-attention only fuses news where it matters. See `plan/V1-SPEC.md`.
+- **Backbone**: 10 transformer blocks + 2 sLSTM blocks, d_model=384, channel-independent patching (P=4, 16 patches/channel), FiLM regime conditioning at layers {2,4,6,8,10}, sparse news cross-attention at {3,7,11}.
+- **Inputs**: bars normalized via per-channel RevIN, gated through Variable Selection Network, decomposed into trend + seasonal streams (summed after patch-embed).
+- **News fusion**: Qwen3-Embedding-4B (frozen, MRL-truncated to 256d) → CFA projector → Flamingo-style gated cross-attention.
+- **Heads**: focal CE (γ=3) on 3-class direction + tanh Sharpe head producing position weight in [-1, +1] + DANN era-classifier through gradient reversal.
+- **Calibration**: T-scaling on val_b → RAPS conformal prediction sets → AgACI online adaptation → Laplace last-layer epistemic variance.
+- **Sizing**: friction-adjusted Kelly using head outputs, ATR-14 stops, 15% annualized vol target, drawdown circuit breaker, conformal floor (zero position when APS lower bound < 0.40).
 
-## Layout
+## Dataset
 
-```
-src/nanogld/
-  model/        # encoder, attention, sLSTM, FiLM, RoPE, RMSNorm, SwiGLU, VSN, CFA
-  training/     # SSL + linear probe + LLRD, Mixout, FreeLB, EMA
-  calibration/  # T-scaling, RAPS, AgACI, Laplace, ECE
-  sizing/       # Kelly, vol-target, ATR exits, drawdown breaker, conformal floor
-  backtest/     # engine, metrics, DSR, cost-stress, per-bucket, baselines/
-  analysis/     # 6-method feature attribution (VSN, IG, perm, ablation, attn, groups)
-  data/         # NanoGLDDataset
-  features/     # h5, spread, ATR, regime, HMM, triple-barrier
-plan/           # V1-SPEC, 00–08, HANDOFF, STATUS
-tests/          # one test dir per src module
-```
+**75,993 bars × 681 features + 40,032 news articles, 2016-01 → 2026-05.** 30-min bars over RTH for equities + 24/7 for crypto. One unified PyTorch tensor file (234 MB) + per-fold sidecar tensors built from the same source.
 
-## Quick start
+**Price bars (27 assets, Alpaca + Bitfinex)**:
+- Metals: GLD, SLV, GDX
+- US indices: SPY, QQQ, IWM, DIA, VTI
+- International: EEM, EFA
+- Sectors: XLE, XLF, XLK, XLU
+- Treasuries: TLT, IEF
+- Real estate: VNQ, IYR
+- Energy: USO (WTI), BNO (Brent), UNG (nat gas)
+- Volatility: VXX (2018+)
+- Crypto: BTC, ETH, XRP, ADA, SOL, DOGE
 
-```bash
-# install
-uv sync --frozen
+**Macro (40 FRED series, ALFRED vintage-correct)**: CPI/PCE, breakevens, unemployment + JOLTS, full Treasury curve (3m–30y), TIPS, M2, WALCL, RRP, GDP, IndPro, retail sales, housing starts, UMich sentiment, savings rate, real disposable income, Case-Shiller, mortgage rate.
 
-# train one fold (autodetect cuda/mps; rejects cpu silently)
-uv run python -m nanogld.training run \
-    --config configs/v1_main.yaml --fold 0 --device auto
+**Microstructure + positioning**: DXY, VIX, Brent/WTI/gold spot, COT gold futures positioning (weekly), WGC central-bank flows (quarterly), GPR geopolitical risk index, NYSE calendar event flags.
 
-# post-train feature attribution
-uv run python -m nanogld.analysis run \
-    --checkpoint checkpoints/v1/fold_0/llrd/llrd_final.pt \
-    --unified data/processed/training_v1_unified.pt \
-    --sidecar data/processed/training_v1_sidecar_fold_0.pt \
-    --fold 0 --split val_c --device auto
+**News (40,032 articles, Qwen3-Embedding-4B 256-dim)**:
+- FNSPID, Polygon, Alpha Vantage, HF multisource, Kitco, BullionVault, ECB + Fed speeches, Fox News + Fox Business (Common Crawl).
+- 48.9% of bars have visible news within a 4h lookback, strict-< t_visible PIT-correct.
 
-# tests
-uv run pytest -q
-```
+**Engineered features (per bar)**: log returns at 1/4/16/48/96/192/390 bars, realized vol (8/48), cross-asset ratios + correlations, GDELT 30-min tone aggregates, anchor-cosine news features (conflict / dollar / monetary / recession × mean/max/top5), v2 cross-asset interactions (flight-to-safety, digital-gold rotation, real-rate × dollar), volatility regime (VRP, vol-of-vol, RV breakout), calendar windows (NFP/CPI/FOMC/London-fix), momentum extensions, news × price interactions, half-hour-5 Gao 2014 prior. **0 leakage, 0 inf, 0 100%-NaN columns.**
 
-## Data
+**Per-fold sidecar** (built per walk-forward fold to avoid HMM/regime/h5-threshold leakage): triple-barrier labels (±1.0·ATR-14, spread-adjusted neutral), spread proxy, 12-dim regime vector (VIX tercile + RV tercile + FOMC week + year bucket + HMM P(high-vol)), ATR-14 barriers, era label.
 
-75,993 bars × 681 features + 40,032 news embeddings + per-fold sidecar (HMM regime + ATR barriers + spread + h5). 30-min NYSE RTH bars, 2016 → 2026.
+## What we predict and how
 
-Build pipeline: `scripts/build_v1_sidecar.py`. Upload: `scripts/upload_data_to_hf.py`.
+**Target**: 3-class direction over the next 30-minute bar — DOWN / FLAT / UP — via triple-barrier labeling against the bar's ATR-14, with neutral threshold widened to ±max(spread, fixed). The same forward pass emits a continuous position weight in [-1, +1].
 
-## Eval gates
+**Inference path**:
 
-8 promotion gates before ship:
+1. Model forward → logits (3-class) + raw position weight.
+2. Calibrate: T-scaling → RAPS → APS lower bound on top-class probability.
+3. Conformal floor: zero the position when APS lower bound < 0.40.
+4. Size: friction-adjusted Kelly on the gated position weight, scaled to 15% annual vol target via realized vol over 60 bars.
+5. Exits: 2× ATR-14 hard stop, 1.5× ATR-14 trailing stop, 30-day timeout, cumulative drawdown circuit breaker (halve / quarter / halt at -5% / -10% / -15%).
 
-1. OOS Sharpe ≥ 1.0 net of 2bp (4-fold walk-forward).
-2. Sharpe > 0.5 at 1.5× cost stress.
-3. Beats Gao 2014 + XGBoost ensemble by ≥ 0.2 Sharpe.
-4. Deflated Sharpe Ratio > 1.0.
-5. Per-bucket Sharpe (news-present / news-absent / both) all positive.
-6. Calibration ECE < 0.05 across all 3 buckets.
-7. Max drawdown < 15% on any fold.
-8. Stationary block bootstrap 95% CI excludes zero.
+**Training**: 3 stages on a 4-fold walk-forward (train 3y / val 6mo / test 6mo, step 3mo, 1-week embargo). Stage 1 SimMTM SSL pretrain (mask ratio 0.40, K=3 views, CLIP bars↔news contrastive). Stage 2 linear probe with focal CE. Stage 3 LLRD fine-tune with Mixout p=0.7 anchored to the SSL checkpoint, FreeLB adversarial perturbation on news embeddings, EMA decay 0.999. All three stages use `Cautious(FriendlySAM(ScheduleFreeAdamW))` with AECF curriculum modality dropout and DANN gradient reversal on year-bucket era labels.
 
-Per `plan/V1-SPEC.md §9` and `plan/06-BACKTEST.md`.
+**Honest target**: 1.0–1.5 out-of-sample Sharpe net of 2bp round-trip costs over 4-fold walk-forward, beating the Gao 2014 + XGBoost simple ensemble by ≥ 0.2 Sharpe. If it loses to the simpler ensemble, ship the simpler ensemble.
 
-## Read more
+## More
 
 - `plan/V1-SPEC.md` — canonical change list.
-- `plan/STATUS.md` — what's built, what's pending.
-- `plan/HANDOFF.md` — pre-H100 checklist.
+- `plan/STATUS.md` — what's built, what's pending, how to train + ship.
 - `plan/00-OVERVIEW.md` — architecture rationale.
 - `plan/05-MODEL-TRAINING-CALIBRATION.md` — model + training detail.
-- `plan/06-BACKTEST.md` — eval harness.
-- `plan/07-SIZING-AND-EXITS.md` — F2F-style sizing layer.
+- `plan/06-BACKTEST.md` — eval harness + 8 promotion gates.
+- `plan/07-SIZING-AND-EXITS.md` — sizing layer.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](./LICENSE).

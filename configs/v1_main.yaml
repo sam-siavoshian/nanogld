@@ -1,4 +1,4 @@
-# nanoGLD V1 main training config (RunPod H100).
+# nanoGLD V1 main training config (GTX Spark x86_64 desktop, CUDA).
 #
 # Used by `python -m nanogld.training run --config configs/v1_main.yaml --fold N`.
 
