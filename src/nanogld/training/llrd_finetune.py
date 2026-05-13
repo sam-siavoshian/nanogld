@@ -52,6 +52,8 @@ class LLRDConfig:
     freelb_K: int = 2
     freelb_epsilon: float = 0.5
     log_every_n_steps: int = 100
+    snapshot_every_n_steps: int = 0
+    snapshot_keep: int = 3
     output_dir: Path = field(default_factory=lambda: Path("checkpoints/v1/llrd"))
     aecf_p_min: float = 0.1
     aecf_p_max: float = 0.9
@@ -243,9 +245,12 @@ def llrd_finetune(
             # Closure-style step for Cautious(FSAM(SF)). FSAM may call the
             # closure twice (ascent + descent); FreeLB runs K=2 embedding-
             # ascent steps inside each pass.
+            last_grad_norm: list[float] = []
+
             def closure(
                 _ne: Tensor = news_embeddings,
                 _grad_clip: float = cfg.grad_clip_max_norm,
+                _gn: list[float] = last_grad_norm,
             ) -> Tensor:
                 opt.zero_grad()
                 loss_local = freelb.compute_loss(
@@ -258,7 +263,8 @@ def llrd_finetune(
                     )
                 loss_local.backward()
                 if _grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), _grad_clip)
+                    gn = torch.nn.utils.clip_grad_norm_(model.parameters(), _grad_clip)
+                    _gn.append(float(gn))
                 return loss_local
 
             loss = opt.step(closure)
@@ -285,14 +291,19 @@ def llrd_finetune(
                     # Per-group LRs surface LLRD's layer-wise decay
                     # schedule so the dashboard shows the slope.
                     lr_avg = sum(g["lr"] for g in opt.param_groups) / max(1, len(opt.param_groups))
-                    wandb_run.log(
-                        {
-                            "llrd/loss": final_loss,
-                            "llrd/lr_avg": lr_avg,
-                            "llrd/epoch": epoch,
-                            "step": n_steps,
-                        }
-                    )
+                    payload = {
+                        "llrd/loss": final_loss,
+                        "llrd/lr_avg": lr_avg,
+                        "llrd/epoch": epoch,
+                        "step": n_steps,
+                    }
+                    if last_grad_norm:
+                        payload["llrd/grad_norm"] = last_grad_norm[-1]
+                    wandb_run.log(payload)
+
+            if cfg.snapshot_every_n_steps > 0 and n_steps % cfg.snapshot_every_n_steps == 0:
+                from nanogld.training.simmtm_pretrain import _write_snapshot
+                _write_snapshot(cfg.output_dir, "llrd", n_steps, model, cfg.snapshot_keep)
 
     if n_steps == 0:
         raise RuntimeError("llrd_finetune produced no steps; refusing to write checkpoint")

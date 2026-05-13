@@ -37,6 +37,8 @@ class LinearProbeConfig:
     grad_clip_max_norm: float = 1.0
     focal_gamma: float = 3.0
     log_every_n_steps: int = 100
+    snapshot_every_n_steps: int = 0
+    snapshot_keep: int = 3
     output_dir: Path = Path("checkpoints/v1/probe")
     aecf_p_min: float = 0.1
     aecf_p_max: float = 0.9
@@ -124,6 +126,7 @@ def train_linear_probe(
             # may run twice (FSAM ascent + descent); the LAST call's logits
             # land in latest[0].
             latest: list[Tensor] = []
+            last_grad_norm: list[float] = []
 
             def closure(
                 _ci: Tensor = channel_inputs,
@@ -134,6 +137,7 @@ def train_linear_probe(
                 _labels: Tensor = labels,
                 _hp: list[Tensor] = head_params,
                 _latest: list[Tensor] = latest,
+                _gn: list[float] = last_grad_norm,
             ) -> Tensor:
                 opt.zero_grad()
                 out = model(
@@ -149,7 +153,8 @@ def train_linear_probe(
                 loss = focal_loss(logits, _labels, gamma=cfg.focal_gamma)
                 loss.backward()
                 if cfg.grad_clip_max_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(_hp, cfg.grad_clip_max_norm)
+                    gn = torch.nn.utils.clip_grad_norm_(_hp, cfg.grad_clip_max_norm)
+                    _gn.append(float(gn))
                 return loss
 
             loss = opt.step(closure)
@@ -172,14 +177,19 @@ def train_linear_probe(
                     last_acc,
                 )
                 if wandb_run is not None:
-                    wandb_run.log(
-                        {
-                            "probe/loss": final_loss,
-                            "probe/acc": last_acc,
-                            "probe/epoch": epoch,
-                            "step": n_steps,
-                        }
-                    )
+                    payload = {
+                        "probe/loss": final_loss,
+                        "probe/acc": last_acc,
+                        "probe/epoch": epoch,
+                        "step": n_steps,
+                    }
+                    if last_grad_norm:
+                        payload["probe/grad_norm"] = last_grad_norm[-1]
+                    wandb_run.log(payload)
+
+            if cfg.snapshot_every_n_steps > 0 and n_steps % cfg.snapshot_every_n_steps == 0:
+                from nanogld.training.simmtm_pretrain import _write_snapshot
+                _write_snapshot(cfg.output_dir, "probe", n_steps, model, cfg.snapshot_keep)
 
     if n_steps == 0:
         raise RuntimeError("train_linear_probe produced no steps; refusing to write checkpoint")

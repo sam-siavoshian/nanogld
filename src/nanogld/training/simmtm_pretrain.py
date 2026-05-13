@@ -40,6 +40,23 @@ DEFAULT_MASK_RATIO = 0.40
 DEFAULT_K_VIEWS = 3
 
 
+def _write_snapshot(
+    output_dir: Path, stage: str, n_steps: int, model: nn.Module, keep: int
+) -> None:
+    """Write `output_dir/snapshots/step_<N>.pt`; prune oldest beyond `keep`."""
+    snap_dir = output_dir / "snapshots"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    snap_path = snap_dir / f"step_{n_steps:08d}.pt"
+    atomic_save_torch(
+        {"model_state": model.state_dict(), "n_steps": n_steps, "stage": stage},
+        snap_path,
+    )
+    snaps = sorted(snap_dir.glob("step_*.pt"))
+    while len(snaps) > keep:
+        snaps[0].unlink(missing_ok=True)
+        snaps = snaps[1:]
+
+
 @dataclass(frozen=True)
 class SimMTMConfig:
     """SSL stage config."""
@@ -52,6 +69,12 @@ class SimMTMConfig:
     lambda_aecf: float = 1.0
     grad_clip_max_norm: float = 1.0
     log_every_n_steps: int = 100
+    # Intermediate-snapshot cadence. When > 0, writes
+    # <output_dir>/snapshots/step_<N>.pt every N steps so a long SSL run
+    # doesn't lose progress on crash. Default 0 (disabled) keeps disk
+    # quiet for short runs; spark_train.sh can override via config.
+    snapshot_every_n_steps: int = 0
+    snapshot_keep: int = 3  # keep most recent K snapshots; older deleted
     output_dir: Path = Path("checkpoints/v1/ssl")
     # AECF curriculum mask (V1-SPEC §2.3 / §2.5). Stage 1 SSL ramps from
     # p_drop=0.0 to p_drop=0.9 over `aecf_curriculum_steps` iterations.
@@ -237,14 +260,20 @@ def pretrain_simmtm(
 
             _aux = optimizer_aux
             _loss = loss
+            # Mutable capture so the (possibly-twice-called) closure can
+            # surface the most recent gradient norm for W&B logging.
+            last_grad_norm: list[float] = []
 
-            def closure(_aux=_aux, _loss=_loss):  # noqa: B023
+            def closure(_aux=_aux, _loss=_loss, _gn=last_grad_norm):  # noqa: B023
                 optimizer.zero_grad()
                 if _aux is not None:
                     _aux.zero_grad()
                 _loss.backward(retain_graph=False)
                 if cfg.grad_clip_max_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_max_norm)
+                    gn = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), cfg.grad_clip_max_norm
+                    )
+                    _gn.append(float(gn))
                 return _loss
 
             # Closure-required path: build_optimizer returns
@@ -265,15 +294,19 @@ def pretrain_simmtm(
                     float(l_clip.detach().item()),
                 )
                 if wandb_run is not None:
-                    wandb_run.log(
-                        {
-                            "ssl/loss": final_loss,
-                            "ssl/simmtm_loss": float(l_simmtm.detach().item()),
-                            "ssl/clip_loss": float(l_clip.detach().item()),
-                            "ssl/epoch": epoch,
-                            "step": n_steps,
-                        }
-                    )
+                    payload = {
+                        "ssl/loss": final_loss,
+                        "ssl/simmtm_loss": float(l_simmtm.detach().item()),
+                        "ssl/clip_loss": float(l_clip.detach().item()),
+                        "ssl/epoch": epoch,
+                        "step": n_steps,
+                    }
+                    if last_grad_norm:
+                        payload["ssl/grad_norm"] = last_grad_norm[-1]
+                    wandb_run.log(payload)
+
+            if cfg.snapshot_every_n_steps > 0 and n_steps % cfg.snapshot_every_n_steps == 0:
+                _write_snapshot(cfg.output_dir, "ssl", n_steps, model, cfg.snapshot_keep)
 
     if n_steps == 0:
         raise RuntimeError("pretrain_simmtm produced no steps; refusing to write checkpoint")
