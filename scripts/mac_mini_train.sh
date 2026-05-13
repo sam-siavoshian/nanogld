@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Run V1 training for ONE fold on Mac mini M4 (MPS).
+# Mac-mini counterpart of spark_train.sh.
+#
+# Key differences vs spark_train.sh:
+#   - --device mps (no CUDA on Apple Silicon)
+#   - Caffeinate wrap to prevent sleep on long runs
+#   - No tmux; caller uses nohup or runs in foreground
+#   - Batch size override via NANOGLD_BATCH_SIZE env (Mac mini 16 GB
+#     unified means default config batch_size of 16+ will OOM; we
+#     pass batch_size_override config to the trainer)
+#
+# Usage:
+#     bash scripts/mac_mini_train.sh <fold> [max_steps]
+# e.g.
+#     bash scripts/mac_mini_train.sh 0 10        # smoke test
+#     bash scripts/mac_mini_train.sh 0           # real fold 0
+#
+# Hard-fails on:
+#   - fold out of [0, NANOGLD_N_FOLDS)
+#   - missing NANOGLD_DIR
+#   - missing unified.pt or per-fold sidecar
+#   - missing MPS at runtime
+
+set -Eeuo pipefail
+
+FOLD="${1:?usage: $0 <fold_idx 0..N-1> [max_steps]}"
+MAX_STEPS="${2:-}"
+N_FOLDS="${NANOGLD_N_FOLDS:-4}"
+CONFIG="${NANOGLD_CONFIG:-configs/v1_main.yaml}"
+NANOGLD_DIR="${NANOGLD_DIR:-$HOME/Desktop/nanogld}"
+BATCH_SIZE="${NANOGLD_BATCH_SIZE:-8}"
+DEVICE="${NANOGLD_DEVICE:-mps}"
+
+if [[ ! "${FOLD}" =~ ^[0-9]+$ ]] || (( FOLD < 0 || FOLD >= N_FOLDS )); then
+    echo "[train] fold ${FOLD} out of range [0,${N_FOLDS})" >&2
+    exit 2
+fi
+if [[ ! -d "${NANOGLD_DIR}" ]]; then
+    echo "[train] ${NANOGLD_DIR} missing; run mac_mini_setup.sh first" >&2
+    exit 3
+fi
+cd "${NANOGLD_DIR}"
+export PATH="$HOME/.local/bin:$PATH"
+
+# PYTHONHASHSEED must be set BEFORE python starts.
+export PYTHONHASHSEED="${NANOGLD_SEED:-42}"
+
+UNIFIED="data/processed/training_v1_unified.pt"
+SIDECAR="data/processed/training_v1_sidecar_fold_${FOLD}.pt"
+if [[ ! -f "${UNIFIED}" ]]; then
+    echo "[train] missing ${UNIFIED}" >&2
+    exit 4
+fi
+if [[ ! -f "${SIDECAR}" ]]; then
+    echo "[train] missing ${SIDECAR}; run 'uv run python scripts/build_v1_sidecar.py --per-fold' first" >&2
+    exit 5
+fi
+
+# Per-fold output dir + timestamped log.
+OUT_DIR="checkpoints/v1/fold_${FOLD}"
+mkdir -p "${OUT_DIR}" logs
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_FILE="logs/train_fold_${FOLD}_${TS}.log"
+echo "[train] fold=${FOLD} device=${DEVICE} batch_size=${BATCH_SIZE} config=${CONFIG}"
+echo "[train] log=${LOG_FILE}"
+
+# Verify SHA256 before training (no point burning GPU if data tampered).
+if [[ -f data/processed/MANIFEST.json ]]; then
+    uv run python - <<PY
+from pathlib import Path
+from nanogld.data.integrity import verify_artifacts
+verify_artifacts(Path("data/processed"), require=["training_v1_unified.pt", "training_v1_sidecar_fold_${FOLD}.pt"])
+print("verify OK")
+PY
+else
+    echo "[train] WARN: no MANIFEST.json; skipping sha256 verify"
+fi
+
+# Build a small override config so we don't mutate v1_main.yaml.
+# YAML is loaded by training/__main__.py via yaml.safe_load; the
+# orchestrator reads cfg["dataloader"]["batch_size"], so we write a
+# sibling yaml that includes the upstream + overrides batch_size.
+OVERRIDE_CFG="${OUT_DIR}/v1_main_macmini.yaml"
+uv run python - <<PY
+import yaml, copy
+from pathlib import Path
+cfg = yaml.safe_load(Path("${CONFIG}").read_text())
+cfg.setdefault("dataloader", {})["batch_size"] = ${BATCH_SIZE}
+cfg["dataloader"]["num_workers"] = 0  # Mac mini OOMs faster with worker fork copies
+Path("${OVERRIDE_CFG}").write_text(yaml.safe_dump(cfg))
+print(f"override config written: ${OVERRIDE_CFG} (batch_size=${BATCH_SIZE})")
+PY
+
+# Smoke-mode: bail after N steps per stage via NANOGLD_MAX_STEPS env var.
+# Each stage's batch loop checks and breaks.
+if [[ -n "${MAX_STEPS}" ]]; then
+    export NANOGLD_MAX_STEPS="${MAX_STEPS}"
+    echo "[train] SMOKE mode: NANOGLD_MAX_STEPS=${MAX_STEPS} (each stage breaks after ${MAX_STEPS} steps)"
+fi
+
+# Caffeinate to prevent sleep on long runs (Mac mini lid-closed default).
+echo "[train] starting Python at $(date -u +%FT%TZ)"
+caffeinate -dimsu uv run python -m nanogld.training run \
+    --config "${OVERRIDE_CFG}" \
+    --fold "${FOLD}" \
+    --output-dir "${OUT_DIR}" \
+    --device "${DEVICE}" 2>&1 | tee -a "${LOG_FILE}"
+
+# Write per-fold MANIFEST.json for backtest verify-on-load.
+uv run python - <<PY
+from pathlib import Path
+from nanogld.data.integrity import write_manifest
+write_manifest(Path("${OUT_DIR}/fold_${FOLD}/llrd"))
+print("manifest OK")
+PY
+
+# Stage 4: calibration. Skip for smoke (max_steps).
+if [[ -z "${MAX_STEPS}" ]]; then
+    echo "[train] Stage 4 calibration fold ${FOLD} ..."
+    caffeinate -dimsu uv run python -m nanogld.calibration run \
+        --config "${OVERRIDE_CFG}" \
+        --fold "${FOLD}" \
+        --checkpoint "${OUT_DIR}/fold_${FOLD}/llrd/llrd_final.pt" \
+        --output-dir "${OUT_DIR}/fold_${FOLD}" \
+        --device "${DEVICE}" 2>&1 | tee -a "${LOG_FILE}"
+fi
+
+echo "[train] OK fold ${FOLD} at $(date -u +%FT%TZ)"

@@ -165,6 +165,11 @@ def train_linear_probe(
 
             n_steps += 1
             final_loss = float(loss.detach().cpu().item())
+            import os as _os  # noqa: PLC0415
+            _smoke = int(_os.environ.get("NANOGLD_MAX_STEPS", "0") or 0)
+            if _smoke > 0 and n_steps >= _smoke:
+                LOG.info("probe smoke-break: NANOGLD_MAX_STEPS=%d reached", _smoke)
+                break
             if latest:
                 preds = latest[0].argmax(dim=-1)
                 last_acc = float((preds == labels).float().mean().item())

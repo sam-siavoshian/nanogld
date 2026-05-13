@@ -40,6 +40,17 @@ DEFAULT_MASK_RATIO = 0.40
 DEFAULT_K_VIEWS = 3
 
 
+def _max_steps_env() -> int:
+    """``NANOGLD_MAX_STEPS`` env var smoke-break; 0 = disabled."""
+    import os  # noqa: PLC0415
+
+    raw = os.environ.get("NANOGLD_MAX_STEPS", "0")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
 def _write_snapshot(
     output_dir: Path, stage: str, n_steps: int, model: nn.Module, keep: int
 ) -> None:
@@ -284,6 +295,10 @@ def pretrain_simmtm(
 
             n_steps += 1
             final_loss = float(loss.detach().cpu().item())
+            _smoke_break = _max_steps_env()
+            if _smoke_break > 0 and n_steps >= _smoke_break:
+                LOG.info("ssl smoke-break: NANOGLD_MAX_STEPS=%d reached", _smoke_break)
+                break
             if n_steps % cfg.log_every_n_steps == 0:
                 LOG.info(
                     "ssl epoch %d step %d loss=%.4f (simmtm=%.4f clip=%.4f)",
