@@ -117,6 +117,7 @@ def pretrain_simmtm(
     cfg: SimMTMConfig,
     device: str = "cpu",
     manifest: dict[str, Any] | None = None,
+    wandb_run: Any | None = None,
 ) -> dict[str, float]:
     """Run the SSL pretrain loop.
 
@@ -263,6 +264,16 @@ def pretrain_simmtm(
                     float(l_simmtm.detach().item()),
                     float(l_clip.detach().item()),
                 )
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "ssl/loss": final_loss,
+                            "ssl/simmtm_loss": float(l_simmtm.detach().item()),
+                            "ssl/clip_loss": float(l_clip.detach().item()),
+                            "ssl/epoch": epoch,
+                            "step": n_steps,
+                        }
+                    )
 
     if n_steps == 0:
         raise RuntimeError("pretrain_simmtm produced no steps; refusing to write checkpoint")

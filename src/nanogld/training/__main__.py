@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -23,6 +24,7 @@ from torch.utils.data import DataLoader
 
 from nanogld._manifest import build_manifest
 from nanogld.data.dataset import NanoGLDDataset
+from nanogld.data.integrity import verify_artifacts
 from nanogld.model import nanoGLDV1
 from nanogld.training.linear_probe import LinearProbeConfig, train_linear_probe
 from nanogld.training.llrd_finetune import LLRDConfig, llrd_finetune
@@ -32,6 +34,65 @@ from nanogld.training.simmtm_pretrain import SimMTMConfig, pretrain_simmtm
 from nanogld.training.train import setup_determinism
 
 LOG = logging.getLogger("nanogld.training.cli")
+
+_LOG_FORMATTER = logging.Formatter(
+    "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+)
+
+OOM_EXIT_CODE = 137  # matches Linux OOM-killer signal convention
+
+
+def _write_oom_sentinel(stage_dir: Path, message: str) -> None:
+    """Mark a stage as OOM-aborted so the next run distinguishes it from
+    a normal crash. The orchestrator can then refuse to retry until the
+    operator clears the sentinel (after lowering batch_size or freeing memory)."""
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "stage.oom").write_text(message + "\n", encoding="utf-8")
+
+
+def _refuse_if_oom(stage_dir: Path, stage_name: str) -> bool:
+    """Return True if a stage.oom sentinel is present (caller must abort).
+
+    On a fresh retry after an OOM, the orchestrator should NOT silently
+    re-run the failing stage — the operator first has to clear the
+    sentinel after lowering batch_size or freeing memory.
+    """
+    oom_path = stage_dir / "stage.oom"
+    if not oom_path.exists():
+        return False
+    LOG.error(
+        "%s has stage.oom sentinel at %s — lower batch_size in "
+        "configs/v1_main.yaml and delete the sentinel before retrying. "
+        "Sentinel content:\n%s",
+        stage_name,
+        oom_path,
+        oom_path.read_text(),
+    )
+    return True
+
+
+@contextmanager
+def _stage_log_file(fold_out: Path, stage: str):
+    """Add a FileHandler that writes `fold_out/<stage>.log` for the lifetime of the block.
+
+    Stdout still receives the same log lines (via the root handler set up
+    by ``logging.basicConfig`` in ``main``). The file gives post-mortem
+    evidence when tmux scrollback is gone or the process crashed.
+    """
+    fold_out.mkdir(parents=True, exist_ok=True)
+    log_path = fold_out / f"{stage}.log"
+    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(_LOG_FORMATTER)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    LOG.info("stage log file: %s", log_path)
+    try:
+        yield log_path
+    finally:
+        handler.flush()
+        handler.close()
+        root.removeHandler(handler)
 
 
 def _build_dataloader(cfg: dict, split: str, output_dir: Path, device: str = "cpu", seed: int = 42) -> DataLoader:
@@ -105,13 +166,36 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
     fold_out = output_dir / f"fold_{fold}"
     fold_out.mkdir(parents=True, exist_ok=True)
 
+    paths = cfg["paths"]
+
+    # Pre-flight (V1-SPEC §45): verify SHA-256 of unified.pt + per-fold
+    # sidecar against MANIFEST.json BEFORE building model / dataloader.
+    # A truncated rsync or corrupted artifact fails fast here, not 5
+    # minutes into training. MANIFEST.json is written by
+    # build_v1_sidecar.py and rsync'd by spark_sync.sh.
+    unified_path = Path(paths["unified"])
+    sidecar_path = Path(paths["sidecar"])
+    artifact_dir = unified_path.parent
+    require = []
+    if unified_path.exists():
+        require.append(unified_path.name)
+    if sidecar_path.exists():
+        require.append(sidecar_path.name)
+    if (artifact_dir / "MANIFEST.json").exists() and require:
+        verify_artifacts(artifact_dir, require=require)
+        LOG.info("pre-flight sha256 verify OK: %s", require)
+    else:
+        LOG.warning(
+            "no MANIFEST.json next to %s — skipping sha256 verify "
+            "(run scripts/build_v1_sidecar.py --per-fold to produce one)",
+            artifact_dir,
+        )
+
     LOG.info("building model + dataloaders for fold %d on device=%s", fold, device)
     model = _build_model(cfg).to(device)
     train_loader = _build_dataloader(
         cfg, split="train", output_dir=fold_out, device=device, seed=seed
     )
-
-    paths = cfg["paths"]
     run_manifest = build_manifest(
         dataset_path=Path(paths["unified"]) if Path(paths["unified"]).exists() else None,
         sidecar_path=Path(paths["sidecar"]) if Path(paths["sidecar"]).exists() else None,
@@ -144,6 +228,8 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         log_every_n_steps=int(cfg["ssl"]["log_every_n_steps"]),
         output_dir=fold_out / "ssl",
     )
+    if _refuse_if_oom(ssl_cfg.output_dir, "Stage 1 SSL"):
+        return OOM_EXIT_CODE
     ssl_done = (ssl_cfg.output_dir / "stage.done").exists()
     if ssl_done:
         LOG.info("Stage 1 SSL skipped — found %s", ssl_cfg.output_dir / "stage.done")
@@ -157,10 +243,25 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
             weight_decay=float(cfg["ssl"].get("weight_decay", 0.1)),
             warmup_steps=int(cfg["ssl"].get("warmup_steps", 300)),
         )
-        with heartbeat(fold_out / ".heartbeat", interval_seconds=heartbeat_interval):
-            ssl_metrics = pretrain_simmtm(
-                model, ssl_optimizer, train_loader, ssl_cfg, device=device, manifest=run_manifest
-            )
+        try:
+            with _stage_log_file(fold_out, "ssl"), heartbeat(
+                fold_out / ".heartbeat", interval_seconds=heartbeat_interval
+            ):
+                ssl_metrics = pretrain_simmtm(
+                    model,
+                    ssl_optimizer,
+                    train_loader,
+                    ssl_cfg,
+                    device=device,
+                    manifest=run_manifest,
+                    wandb_run=wandb_run,
+                )
+        except torch.cuda.OutOfMemoryError as exc:
+            LOG.exception("OOM during SSL pretrain; aborting fold %d", fold)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            _write_oom_sentinel(ssl_cfg.output_dir, f"fold={fold} stage=ssl exc={exc}")
+            return OOM_EXIT_CODE
 
     # SSL anchor MUST be the averaged-form weights, not the in-memory z-form
     # the optimizer maintains during training. pretrain_simmtm saves the
@@ -182,6 +283,8 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         focal_gamma=float(cfg["probe"]["focal_gamma"]),
         output_dir=fold_out / "probe",
     )
+    if _refuse_if_oom(probe_cfg.output_dir, "Stage 2 probe"):
+        return OOM_EXIT_CODE
     if (probe_cfg.output_dir / "stage.done").exists():
         LOG.info("Stage 2 probe skipped — found %s", probe_cfg.output_dir / "stage.done")
         probe_ckpt = torch.load(
@@ -192,10 +295,24 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         probe_metrics: dict[str, float] = {"resumed": 1.0}
     else:
         LOG.info("Stage 2: linear probe")
-        with heartbeat(fold_out / ".heartbeat", interval_seconds=heartbeat_interval):
-            probe_metrics = train_linear_probe(
-                model, train_loader, probe_cfg, device=device, manifest=run_manifest
-            )
+        try:
+            with _stage_log_file(fold_out, "probe"), heartbeat(
+                fold_out / ".heartbeat", interval_seconds=heartbeat_interval
+            ):
+                probe_metrics = train_linear_probe(
+                    model,
+                    train_loader,
+                    probe_cfg,
+                    device=device,
+                    manifest=run_manifest,
+                    wandb_run=wandb_run,
+                )
+        except torch.cuda.OutOfMemoryError as exc:
+            LOG.exception("OOM during probe; aborting fold %d", fold)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            _write_oom_sentinel(probe_cfg.output_dir, f"fold={fold} stage=probe exc={exc}")
+            return OOM_EXIT_CODE
     LOG.info("Stage 2 done: %s", probe_metrics)
 
     # Stage 3: LLRD fine-tune (skip if sentinel exists).
@@ -215,20 +332,32 @@ def run(config_path: Path, fold: int, output_dir: Path, device: str = "cpu") -> 
         freelb_epsilon=float(cfg["llrd"]["freelb_epsilon"]),
         output_dir=fold_out / "llrd",
     )
+    if _refuse_if_oom(llrd_cfg.output_dir, "Stage 3 LLRD"):
+        return OOM_EXIT_CODE
     if (llrd_cfg.output_dir / "stage.done").exists():
         LOG.info("Stage 3 LLRD skipped — found %s", llrd_cfg.output_dir / "stage.done")
         llrd_metrics: dict[str, float] = {"resumed": 1.0}
     else:
         LOG.info("Stage 3: LLRD fine-tune")
-        with heartbeat(fold_out / ".heartbeat", interval_seconds=heartbeat_interval):
-            llrd_metrics = llrd_finetune(
-                model,
-                ssl_anchor_state,
-                train_loader,
-                llrd_cfg,
-                device=device,
-                manifest=run_manifest,
-            )
+        try:
+            with _stage_log_file(fold_out, "llrd"), heartbeat(
+                fold_out / ".heartbeat", interval_seconds=heartbeat_interval
+            ):
+                llrd_metrics = llrd_finetune(
+                    model,
+                    ssl_anchor_state,
+                    train_loader,
+                    llrd_cfg,
+                    device=device,
+                    manifest=run_manifest,
+                    wandb_run=wandb_run,
+                )
+        except torch.cuda.OutOfMemoryError as exc:
+            LOG.exception("OOM during LLRD; aborting fold %d", fold)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            _write_oom_sentinel(llrd_cfg.output_dir, f"fold={fold} stage=llrd exc={exc}")
+            return OOM_EXIT_CODE
     LOG.info("Stage 3 done: %s", llrd_metrics)
 
     LOG.info(

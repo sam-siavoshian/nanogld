@@ -102,6 +102,7 @@ def llrd_finetune(
     cfg: LLRDConfig,
     device: str = "cpu",
     manifest: dict[str, Any] | None = None,
+    wandb_run: Any | None = None,
 ) -> dict[str, float]:
     """Run Stage 3 multi-task LLRD fine-tune.
 
@@ -280,6 +281,18 @@ def llrd_finetune(
             final_loss = float(loss.detach().cpu().item())
             if n_steps % cfg.log_every_n_steps == 0:
                 LOG.info("llrd epoch %d step %d loss=%.4f", epoch, n_steps, final_loss)
+                if wandb_run is not None:
+                    # Per-group LRs surface LLRD's layer-wise decay
+                    # schedule so the dashboard shows the slope.
+                    lr_avg = sum(g["lr"] for g in opt.param_groups) / max(1, len(opt.param_groups))
+                    wandb_run.log(
+                        {
+                            "llrd/loss": final_loss,
+                            "llrd/lr_avg": lr_avg,
+                            "llrd/epoch": epoch,
+                            "step": n_steps,
+                        }
+                    )
 
     if n_steps == 0:
         raise RuntimeError("llrd_finetune produced no steps; refusing to write checkpoint")

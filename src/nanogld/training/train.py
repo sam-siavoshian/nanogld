@@ -152,13 +152,32 @@ def llrd_param_groups(
 
 
 def setup_determinism(seed: int = 42) -> None:
-    """Seed every RNG and force deterministic algorithms."""
+    """Seed every RNG and force deterministic algorithms.
+
+    Python's ``hash()`` is salted at interpreter-startup using
+    ``PYTHONHASHSEED``. Setting the env var INSIDE the interpreter only
+    affects child processes, not this one. To get truly deterministic
+    dict iteration order we need the env var set in the shell BEFORE
+    ``python`` starts — ``scripts/spark_train.sh`` exports it; we log
+    a clear warning here when it's missing so the owner can spot the
+    miss in the per-stage log file.
+    """
+    import logging  # noqa: PLC0415
     import os  # noqa: PLC0415
     import random  # noqa: PLC0415
 
     import numpy as np  # noqa: PLC0415
 
-    os.environ["PYTHONHASHSEED"] = str(seed)
+    log = logging.getLogger("nanogld.training.setup_determinism")
+    if os.environ.get("PYTHONHASHSEED") is None:
+        log.warning(
+            "PYTHONHASHSEED not set in env at process start — "
+            "dict iteration order is not reproducible. "
+            "Export PYTHONHASHSEED=%d in your shell before launching "
+            "(scripts/spark_train.sh does this automatically).",
+            seed,
+        )
+    os.environ["PYTHONHASHSEED"] = str(seed)  # best-effort for subprocesses
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

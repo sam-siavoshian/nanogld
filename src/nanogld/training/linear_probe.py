@@ -65,6 +65,7 @@ def train_linear_probe(
     cfg: LinearProbeConfig,
     device: str = "cpu",
     manifest: dict[str, Any] | None = None,
+    wandb_run: Any | None = None,
 ) -> dict[str, float]:
     """Run Stage 2 linear probe.
 
@@ -170,6 +171,15 @@ def train_linear_probe(
                     final_loss,
                     last_acc,
                 )
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "probe/loss": final_loss,
+                            "probe/acc": last_acc,
+                            "probe/epoch": epoch,
+                            "step": n_steps,
+                        }
+                    )
 
     if n_steps == 0:
         raise RuntimeError("train_linear_probe produced no steps; refusing to write checkpoint")
