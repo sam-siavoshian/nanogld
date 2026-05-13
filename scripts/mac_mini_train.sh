@@ -78,18 +78,24 @@ else
 fi
 
 # Build a small override config so we don't mutate v1_main.yaml.
-# YAML is loaded by training/__main__.py via yaml.safe_load; the
-# orchestrator reads cfg["dataloader"]["batch_size"], so we write a
-# sibling yaml that includes the upstream + overrides batch_size.
+# Overrides:
+#   - batch_size to NANOGLD_BATCH_SIZE (16 GB RAM ceiling on Mac mini)
+#   - num_workers=0 (worker fork copies OOM fast on Apple Silicon)
+#   - numeric_dim auto-detected from unified.pt (different builds of
+#     the unified dataset have shipped with 651 vs 681 features; read
+#     the actual shape so RevIN's affine_weight matches the input).
 OVERRIDE_CFG="${OUT_DIR}/v1_main_macmini.yaml"
 uv run python - <<PY
-import yaml, copy
+import torch, yaml
 from pathlib import Path
 cfg = yaml.safe_load(Path("${CONFIG}").read_text())
+unified = torch.load("${UNIFIED}", map_location="cpu", weights_only=False)
+numeric_dim = int(unified["features"].shape[1])
+cfg.setdefault("model", {})["numeric_dim"] = numeric_dim
 cfg.setdefault("dataloader", {})["batch_size"] = ${BATCH_SIZE}
-cfg["dataloader"]["num_workers"] = 0  # Mac mini OOMs faster with worker fork copies
+cfg["dataloader"]["num_workers"] = 0
 Path("${OVERRIDE_CFG}").write_text(yaml.safe_dump(cfg))
-print(f"override config written: ${OVERRIDE_CFG} (batch_size=${BATCH_SIZE})")
+print(f"override config: numeric_dim={numeric_dim} batch_size=${BATCH_SIZE} -> ${OVERRIDE_CFG}")
 PY
 
 # Smoke-mode: bail after N steps per stage via NANOGLD_MAX_STEPS env var.
