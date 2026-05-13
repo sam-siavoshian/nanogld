@@ -41,14 +41,18 @@ DEFAULT_K_VIEWS = 3
 
 
 def _max_steps_env() -> int:
-    """``NANOGLD_MAX_STEPS`` env var smoke-break; 0 = disabled."""
+    """Per-stage step cap. ``NANOGLD_SSL_MAX_STEPS`` overrides ``NANOGLD_MAX_STEPS``; 0 = disabled."""
     import os  # noqa: PLC0415
 
-    raw = os.environ.get("NANOGLD_MAX_STEPS", "0")
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return 0
+    for key in ("NANOGLD_SSL_MAX_STEPS", "NANOGLD_MAX_STEPS"):
+        raw = os.environ.get(key, "")
+        if not raw:
+            continue
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            continue
+    return 0
 
 
 def _write_snapshot(
@@ -236,6 +240,17 @@ def pretrain_simmtm(
             views_pooled = torch.stack(view_pooled_list, dim=1)
             pred_per_view = recon_head(views_pooled)
             target_per_view = targets.mean(dim=2)
+
+            # Z-score target along the feature dim so MSE is scale-invariant.
+            # Raw channel inputs include unnormalized features (volume,
+            # dollar-volume ~1e5-1e7) which would otherwise produce 1e10-1e12
+            # MSE values that dominate every other loss term. RevIN inside the
+            # encoder normalizes the forward pass, but the SimMTM target is
+            # the pre-RevIN raw input; we normalize it here so the recon head
+            # learns to predict in unit-variance space.
+            target_per_view = torch.nn.functional.layer_norm(
+                target_per_view, normalized_shape=(target_per_view.shape[-1],)
+            )
 
             l_simmtm = simmtm_loss(
                 views=pred_per_view,

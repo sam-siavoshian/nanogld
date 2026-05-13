@@ -286,9 +286,17 @@ def llrd_finetune(
             n_steps += 1
             final_loss = float(loss.detach().cpu().item())
             import os as _os  # noqa: PLC0415
-            _smoke = int(_os.environ.get("NANOGLD_MAX_STEPS", "0") or 0)
+            _smoke = 0
+            for _k in ("NANOGLD_LLRD_MAX_STEPS", "NANOGLD_MAX_STEPS"):
+                _raw = _os.environ.get(_k, "")
+                if _raw:
+                    try:
+                        _smoke = max(0, int(_raw))
+                        break
+                    except ValueError:
+                        continue
             if _smoke > 0 and n_steps >= _smoke:
-                LOG.info("llrd smoke-break: NANOGLD_MAX_STEPS=%d reached", _smoke)
+                LOG.info("llrd step-cap: %d reached", _smoke)
                 break
             if n_steps % cfg.log_every_n_steps == 0:
                 LOG.info("llrd epoch %d step %d loss=%.4f", epoch, n_steps, final_loss)

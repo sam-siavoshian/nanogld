@@ -99,6 +99,12 @@ NUM_HEADS="${NANOGLD_NUM_HEADS:-4}"  # must divide d_model
 SSL_EPOCHS="${NANOGLD_SSL_EPOCHS:-3}"
 PROBE_EPOCHS="${NANOGLD_PROBE_EPOCHS:-2}"
 LLRD_EPOCHS="${NANOGLD_LLRD_EPOCHS:-3}"
+# Hard per-stage step caps. At ~24 steps/min on MPS, these total ~4.5h/fold:
+#   SSL 2000 → 83 min, probe 1500 → 63 min, LLRD 3000 → 125 min.
+# Set NANOGLD_*_MAX_STEPS=0 to disable cap and run full epoch budget instead.
+export NANOGLD_SSL_MAX_STEPS="${NANOGLD_SSL_MAX_STEPS:-2000}"
+export NANOGLD_PROBE_MAX_STEPS="${NANOGLD_PROBE_MAX_STEPS:-1500}"
+export NANOGLD_LLRD_MAX_STEPS="${NANOGLD_LLRD_MAX_STEPS:-3000}"
 
 uv run python - <<PY
 import torch, yaml
