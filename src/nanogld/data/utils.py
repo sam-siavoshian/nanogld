@@ -54,3 +54,18 @@ def raw_dir() -> Path:
         path = repo_root() / "data" / "raw"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def data_root() -> Path:
+    """Return ``<repo_root>/data``, creating it if missing.
+
+    Used by scripts that need both ``data/raw`` and ``data/processed``
+    (e.g. ``scripts/build_v1_sidecar.py``).
+    """
+    override = os.environ.get("NANOGLD_DATA_ROOT")
+    if override:
+        path = Path(override)
+    else:
+        path = repo_root() / "data"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
