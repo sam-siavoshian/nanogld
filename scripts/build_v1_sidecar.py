@@ -77,6 +77,11 @@ class BuildConfig:
     hmm_path: Path
     rv_lookback: int = 60
     atr_period: int = 14
+    # ATR-multiplied triple-barrier threshold. Lower mult → tighter bands
+    # → more UP/DOWN classifications. Sweep showed mult=1.0 gave 7/85/8
+    # class distribution which caused model collapse to NEUTRAL. mult=0.25
+    # gives ~30/39/31 — the target for balanced 3-class learning.
+    barrier_mult: float = 0.25
     fold_idx: int | None = None
 
 
@@ -156,7 +161,9 @@ def build_sidecar(cfg: BuildConfig) -> Path:
 
     aligned["next_log_return"] = _next_log_return(aligned).astype("float32")
 
-    aligned = add_atr_and_barriers(aligned, period=cfg.atr_period)
+    aligned = add_atr_and_barriers(
+        aligned, period=cfg.atr_period, barrier_mult=cfg.barrier_mult
+    )
     aligned = add_spread_feature(aligned)
 
     splits_arr = np.asarray(unified["splits"])
@@ -273,6 +280,17 @@ def main() -> int:
     parser.add_argument("--rv_lookback", type=int, default=60)
     parser.add_argument("--atr_period", type=int, default=14)
     parser.add_argument(
+        "--barrier-mult",
+        type=float,
+        default=float(os.environ.get("NANOGLD_BARRIER_MULT", "0.25")),
+        help=(
+            "ATR triple-barrier multiplier. Lower = tighter bands = more "
+            "UP/DOWN labels. 1.0 (V1-draft default) gave 7/85/8 distribution "
+            "and caused model collapse. 0.25 gives ~30/39/31. Env override: "
+            "NANOGLD_BARRIER_MULT."
+        ),
+    )
+    parser.add_argument(
         "--per-fold",
         action="store_true",
         help=(
@@ -297,6 +315,7 @@ def main() -> int:
             hmm_path=args.hmm,
             rv_lookback=args.rv_lookback,
             atr_period=args.atr_period,
+            barrier_mult=args.barrier_mult,
         )
         build_sidecar(cfg)
         # Write MANIFEST.json so dataset.__init__ can verify on load (§45).
@@ -334,6 +353,7 @@ def main() -> int:
             hmm_path=hmm_path,
             rv_lookback=args.rv_lookback,
             atr_period=args.atr_period,
+            barrier_mult=args.barrier_mult,
             fold_idx=fb.fold_idx,
         )
         build_sidecar(cfg)
