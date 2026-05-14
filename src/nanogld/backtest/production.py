@@ -141,7 +141,7 @@ def run_model_on_fold(
     dataset = NanoGLDDataset(
         unified_path=unified_path,
         sidecar_path=sidecar_path,
-        split="test",
+        split="all",
         lookback_T=int(dl_cfg["lookback_T"]),
         n_news_slots=int(dl_cfg["n_news_slots"]),
         label_mode=dl_cfg["label_mode"],

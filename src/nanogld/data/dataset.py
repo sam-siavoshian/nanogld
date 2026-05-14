@@ -46,7 +46,7 @@ LOG = get_logger("nanogld.data.dataset")
 
 DEFAULT_LOOKBACK_T = 64
 DEFAULT_NEWS_SLOTS = 8
-SPLIT_MODES = Literal["train", "val_a", "val_b", "val_c", "test"]
+SPLIT_MODES = Literal["train", "val_a", "val_b", "val_c", "test", "all"]
 
 
 @dataclass(frozen=True)
@@ -166,12 +166,14 @@ class NanoGLDDataset(Dataset):
         """Return indices of bars that are (a) in the requested split and
         (b) have at least lookback_T history available."""
         n_bars = len(self._splits_arr)
-        if split in ("train", "val_a", "val_b", "val_c", "test"):
+        if split in ("train", "val_a", "val_b", "val_c", "test", "all"):
             mode = split
         else:
             raise ValueError(f"unknown split {split!r}")
 
-        if mode == "train":
+        if mode == "all":
+            mask = np.ones(n_bars, dtype=bool)
+        elif mode == "train":
             mask = self._splits_arr == "train"
         elif mode == "test":
             mask = self._splits_arr == "test"
