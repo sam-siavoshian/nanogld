@@ -104,6 +104,7 @@ def run_model_on_fold(
     device: str = "cpu",
     batch_size: int = 32,
     conformal_floor: float = DEFAULT_CONFORMAL_FLOOR,
+    ablate_news: bool = False,
 ) -> dict[str, np.ndarray]:
     """Run the model on one fold's test window; return per-bar arrays.
 
@@ -172,6 +173,10 @@ def run_model_on_fold(
             news_mask = batch["news_mask"].to(device).float()
             is_news_present = batch["is_news_present"].to(device).long()
             regime_vec = batch["regime_vec"].to(device).float()
+            if ablate_news:
+                news_embeddings = torch.zeros_like(news_embeddings)
+                news_mask = torch.zeros_like(news_mask)
+                is_news_present = torch.zeros_like(is_news_present)
             out = model(
                 channel_inputs=channel_inputs,
                 news_embeddings=news_embeddings,
@@ -223,6 +228,7 @@ def build_production_contexts(
     device: str = "cpu",
     batch_size: int = 32,
     conformal_floor: float = DEFAULT_CONFORMAL_FLOOR,
+    ablate_news: bool = False,
 ) -> list[dict[str, Any]]:
     """Produce one fold context per (checkpoint, sidecar) pair.
 
@@ -266,6 +272,7 @@ def build_production_contexts(
             device=device,
             batch_size=batch_size,
             conformal_floor=conformal_floor,
+            ablate_news=ablate_news,
         )
         ctx: dict[str, Any] = {
             "fold_idx": fb.fold_idx,

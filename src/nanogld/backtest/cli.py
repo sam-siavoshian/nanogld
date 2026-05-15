@@ -178,6 +178,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="skip model inference, use synthetic positions (smoke path)",
     )
+    run_p.add_argument(
+        "--ablate-news",
+        action="store_true",
+        help=(
+            "Zero out news_embeddings + news_mask + is_news_present in the "
+            "inference path. Tests whether the news pathway is contributing "
+            "negative Sharpe (V2 showed news-present Sharpe=-6.24)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(message)s")
@@ -224,6 +233,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.batch_size,
             args.conformal_floor,
         )
+        if args.ablate_news:
+            LOG.info("ABLATION: news pathway zeroed in inference (V3a Agent-2 hypothesis test)")
         contexts = build_production_contexts(
             config_path=args.config,
             unified_path=unified_path,
@@ -233,6 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             device=args.device,
             batch_size=args.batch_size,
             conformal_floor=args.conformal_floor,
+            ablate_news=args.ablate_news,
         )
         # Production baselines need REAL train data; the harness in
         # production mode runs only the model strategy + price-only
