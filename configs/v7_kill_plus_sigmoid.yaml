@@ -1,0 +1,98 @@
+# V7 — V4 base + news_kill + VSN sigmoid (combined Agent-2 + Agent-4 fix).
+#
+# The most aggressive post-mortem-driven configuration. Tests whether
+# stacking both fixes compounds the lift (V3a inference-only news ablation
+# gave +0.66 Sharpe; broken VSN gate likely costs another tradeable
+# amount of edge).
+
+model:
+  numeric_dim: 651
+  d_model: 192
+  num_heads: 4
+  num_transformer_layers: 10
+  num_slstm_layers: 2
+  t_bars: 64
+  patch_len: 4
+  patch_stride: 4
+  n_classes: 3
+  regime_dim: 12
+  d_text: 256
+  n_news_slots: 8
+  dropout: 0.2
+  drop_path_max: 0.2
+  decomposition_kernel: 24
+
+dataloader:
+  batch_size: 8
+  num_workers: 2
+  lookback_T: 64
+  n_news_slots: 8
+  label_mode: triple_barrier
+
+ssl:
+  epochs: 10
+  mask_ratio: 0.40
+  k_views: 3
+  lambda_sim: 0.5
+  lambda_clip: 0.5
+  lambda_aecf: 1.0
+  grad_clip_max_norm: 1.0
+  log_every_n_steps: 100
+  lr: 1e-4
+  weight_decay: 0.1
+  warmup_steps: 300
+
+probe:
+  epochs: 5
+  lr: 1e-3
+  grad_clip_max_norm: 1.0
+  focal_gamma: 3.0
+
+llrd:
+  epochs: 10
+  base_lr: 1e-4
+  decay: 0.85
+  mixout_p: 0.7
+  ema_decay: 0.999
+  grad_clip_max_norm: 1.0
+  focal_gamma: 3.0
+  cost_bps: 2.0
+  focal_weight: 0.5
+  sharpe_weight: 0.5
+  aecf_weight: 0.05
+  freelb_K: 2
+  freelb_epsilon: 0.5
+
+calibration:
+  alpha_target: 0.10
+  raps_lambda: 0.01
+  raps_kreg: 1
+  t_scaling_max_iter: 50
+
+walk_forward:
+  n_folds: 4
+  train_years: 3.0
+  val_months: 6.0
+  test_months: 6.0
+  step_months: 3.0
+  embargo_days: 7
+
+reproducibility:
+  seed: 42
+  deterministic: true
+
+ablations:
+  # V7 = V4 + news_kill + VSN sigmoid. Set NANOGLD_VSN_GATE=sigmoid.
+  news_kill: true
+
+observability:
+  heartbeat_seconds: 30
+  wandb_tags: ["v7", "kill+sigmoid", "wf-true", "spark", "gb10"]
+
+paths:
+  unified: data/processed/training_v1_unified.pt
+  sidecar: data/processed/training_v1_sidecar.pt
+  sidecar_template: "data/processed/training_v1_sidecar_fold_{fold}.pt"
+  hmm: data/processed/v1_hmm.joblib
+  output_dir: checkpoints/v7
+  reports_dir: reports

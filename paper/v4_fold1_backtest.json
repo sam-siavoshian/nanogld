@@ -1,0 +1,29 @@
+{
+  "fold": 1,
+  "test_bars": 3685,
+  "test_days": 127,
+  "position": {
+    "abs_pos_mean": 1.0,
+    "pct_sat_99": 100.0,
+    "pct_sat_95": 100.0,
+    "mean": 1.0,
+    "std": 0.0,
+    "pct_long": 100.0,
+    "pct_short": 0.0
+  },
+  "accuracy": 0.3853459972862958,
+  "sharpe": {
+    "v4_intraday_1x": 1.1174772891434217,
+    "v4_intraday_05x": 1.1184228444505264,
+    "v4_intraday_15x": 1.1165312270428709,
+    "v4_daily_1x": 1.3167400903622095,
+    "v4_daily_05x": 1.317789237442921,
+    "v4_daily_15x": 1.3156901746101515,
+    "bh_intraday_1x": 1.119367926209867,
+    "bh_daily_1x": 1.3188373372477888,
+    "news_present": 1.0998748185374896,
+    "news_absent": 1.1455024844387798
+  },
+  "delta_vs_bh_intraday": -0.001890637066445322,
+  "verdict": "matches_bh"
+}

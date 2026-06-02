@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.uv-cache/
+
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+service-account*.json
+credentials.json
+hf_token*
+*api_key*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Data artifacts (kept on Mac mini / HF Hub)
+data/raw/
+data/processed/training_v1_unified.pt
+data/processed/training_v1_sidecar*.pt
+data/processed/v1_hmm*.joblib
+data/cache/
+*.parquet
+
+# Checkpoints (kept on HF Hub)
+checkpoints/
+runs/
+wandb/
+mlruns/
+
+# Logs
+*.log
+logs/
+.heartbeat
+
+# Tmp
+tmp/
+*.tmp
+*.bak
+
+# OS
+Thumbs.db

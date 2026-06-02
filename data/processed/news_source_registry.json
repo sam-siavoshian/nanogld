@@ -1,0 +1,195 @@
+{
+  "version": "v1_2026-05-05",
+  "spec": "plan/03-NEWS-EMBEDDING.md V4 SOURCE_REGISTRY",
+  "bias_tiers": [
+    "mainstream_neutral",
+    "mainstream_equity_bias",
+    "mixed_retail",
+    "aggregator",
+    "aggregator_neutral",
+    "industry_bullish",
+    "dealer_bullish",
+    "central_bank_official",
+    "government_official",
+    "retail_social",
+    "retail_technical_bias",
+    "training_labels_only"
+  ],
+  "sources": {
+    "alpaca_benzinga": {
+      "id": 0,
+      "bias_tier": "mixed_retail",
+      "public_domain": false
+    },
+    "polygon": {
+      "id": 0,
+      "bias_tier": "mixed_retail",
+      "public_domain": false
+    },
+    "gdelt:reuters": {
+      "id": 1,
+      "bias_tier": "mainstream_neutral",
+      "public_domain": false
+    },
+    "gdelt:bloomberg": {
+      "id": 2,
+      "bias_tier": "mainstream_neutral",
+      "public_domain": false
+    },
+    "gdelt:cnbc": {
+      "id": 3,
+      "bias_tier": "mainstream_equity_bias",
+      "public_domain": false
+    },
+    "gdelt:wsj": {
+      "id": 4,
+      "bias_tier": "mainstream_neutral",
+      "public_domain": false
+    },
+    "gdelt:other": {
+      "id": 5,
+      "bias_tier": "aggregator",
+      "public_domain": false
+    },
+    "kitco": {
+      "id": 6,
+      "bias_tier": "industry_bullish",
+      "public_domain": false
+    },
+    "investing_com": {
+      "id": 7,
+      "bias_tier": "aggregator_neutral",
+      "public_domain": false
+    },
+    "investing": {
+      "id": 7,
+      "bias_tier": "aggregator_neutral",
+      "public_domain": false
+    },
+    "bullionvault": {
+      "id": 8,
+      "bias_tier": "dealer_bullish",
+      "public_domain": false
+    },
+    "cnbc": {
+      "id": 9,
+      "bias_tier": "mainstream_equity_bias",
+      "public_domain": false
+    },
+    "wgc_research": {
+      "id": 10,
+      "bias_tier": "industry_bullish",
+      "public_domain": false
+    },
+    "fnspid:reuters": {
+      "id": 11,
+      "bias_tier": "mainstream_neutral",
+      "public_domain": false
+    },
+    "fnspid:nasdaq": {
+      "id": 12,
+      "bias_tier": "mainstream_neutral",
+      "public_domain": false
+    },
+    "fnspid:benzinga": {
+      "id": 13,
+      "bias_tier": "mixed_retail",
+      "public_domain": false
+    },
+    "fnspid": {
+      "id": 13,
+      "bias_tier": "mixed_retail",
+      "public_domain": false
+    },
+    "central_bank:fed": {
+      "id": 14,
+      "bias_tier": "central_bank_official",
+      "public_domain": true
+    },
+    "central_bank:ecb": {
+      "id": 15,
+      "bias_tier": "central_bank_official",
+      "public_domain": true
+    },
+    "central_bank:bis": {
+      "id": 16,
+      "bias_tier": "central_bank_official",
+      "public_domain": true
+    },
+    "central_bank:other": {
+      "id": 17,
+      "bias_tier": "central_bank_official",
+      "public_domain": true
+    },
+    "central_bank": {
+      "id": 17,
+      "bias_tier": "central_bank_official",
+      "public_domain": true
+    },
+    "ecb_fed_speeches": {
+      "id": 17,
+      "bias_tier": "central_bank_official",
+      "public_domain": true
+    },
+    "government:treasury": {
+      "id": 18,
+      "bias_tier": "government_official",
+      "public_domain": true
+    },
+    "government:cftc": {
+      "id": 19,
+      "bias_tier": "government_official",
+      "public_domain": true
+    },
+    "reddit:gold": {
+      "id": 20,
+      "bias_tier": "retail_social",
+      "public_domain": false
+    },
+    "reddit:wsb": {
+      "id": 21,
+      "bias_tier": "retail_social",
+      "public_domain": false
+    },
+    "reddit:investing": {
+      "id": 22,
+      "bias_tier": "retail_social",
+      "public_domain": false
+    },
+    "kaggle:gold_labeled": {
+      "id": 23,
+      "bias_tier": "training_labels_only",
+      "public_domain": false
+    },
+    "multisource": {
+      "id": 24,
+      "bias_tier": "aggregator",
+      "public_domain": false
+    },
+    "alpha_vantage": {
+      "id": 25,
+      "bias_tier": "aggregator",
+      "public_domain": false
+    },
+    "foxnews": {
+      "id": 27,
+      "bias_tier": "mainstream_equity_bias",
+      "public_domain": false
+    },
+    "foxbusiness": {
+      "id": 28,
+      "bias_tier": "mainstream_equity_bias",
+      "public_domain": false
+    },
+    "fox": {
+      "id": 27,
+      "bias_tier": "mainstream_equity_bias",
+      "public_domain": false
+    },
+    "UNK": {
+      "id": 26,
+      "bias_tier": "aggregator",
+      "public_domain": false
+    }
+  }
+}

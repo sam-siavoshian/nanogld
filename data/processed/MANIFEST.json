@@ -1,0 +1,74 @@
+{
+  "built_at_utc": "2026-05-14T17:22:52.815757+00:00",
+  "files": {
+    "bar_news_index_v1.parquet": {
+      "sha256": "5c31813b6d1b41529fe485ce47832c25063fd842c0a2d729d5228e3dce199a69",
+      "size_bytes": 1409155
+    },
+    "macro_features_daily.parquet": {
+      "sha256": "b34317a0f820543e1a0c179bf4441789dd843d6f87c94c8e9ce6f61cef18907a",
+      "size_bytes": 954607
+    },
+    "macro_features_daily_meta.json": {
+      "sha256": "3072efe89308f38360a81788130cc0d911d6ed93badde82807cba07befa489b4",
+      "size_bytes": 2544
+    },
+    "news_corpus_v1.parquet": {
+      "sha256": "2a93a8f3d533cbc123a83f04a1c4779f2fadaf6030466a509268f9e8bb43e286",
+      "size_bytes": 56961621
+    },
+    "news_source_registry.json": {
+      "sha256": "c13cbda499323bd911e581ba3b2953416a107d04c06f71cec263c15b87c3f569",
+      "size_bytes": 4394
+    },
+    "training_v1.parquet": {
+      "sha256": "6ad98167d65f7143bb210f2f2504f671eaaa4c438b4b3744f7a5b4dcd6150917",
+      "size_bytes": 196908706
+    },
+    "training_v1_sidecar.pt": {
+      "sha256": "7c05eded824d597cf20b1f2d8c105ed0e9b80dea61789da6de6a8b693a6fde7d",
+      "size_bytes": 6816839
+    },
+    "training_v1_sidecar_fold_0.pt": {
+      "sha256": "3bf1cab02e7fb82acfdc1532c7b8df3399a488b72e90fefbff49aaf2fc875597",
+      "size_bytes": 6834993
+    },
+    "training_v1_sidecar_fold_1.pt": {
+      "sha256": "d94fbe27f75b62aed37000f2ef8d8b3625d147b4e7c4ca0fc3c62725fda6382d",
+      "size_bytes": 6807793
+    },
+    "training_v1_sidecar_fold_2.pt": {
+      "sha256": "a1c9b6039ac8afe22aa649072e3bd3e4b3136060d13c99616a583a0e8eabd0ec",
+      "size_bytes": 6810353
+    },
+    "training_v1_sidecar_fold_3.pt": {
+      "sha256": "135e6ab83bc89456a2eaf33c503767376e912f74ca08d731b3c601617adba0a7",
+      "size_bytes": 6814321
+    },
+    "training_v1_unified.pt": {
+      "sha256": "f497c0312dccf50cb56a6c4afee9940b427e26c4a373b275ff8a51ee26b18a7d",
+      "size_bytes": 224269349
+    },
+    "v1_hmm.joblib": {
+      "sha256": "6d63ff182758ead987e22ccd51e15325b76b4f5df7c250ddd3aefc3c71509ebf",
+      "size_bytes": 1139
+    },
+    "v1_hmm_fold_0.joblib": {
+      "sha256": "c76b0b9b9095c0b68b2611171124f2c057755abab8f970d4fe744bc24bb1432c",
+      "size_bytes": 1139
+    },
+    "v1_hmm_fold_1.joblib": {
+      "sha256": "e5b81616adb967aa8417184d6bc9afe65cec3af26f8080350148f308c110e4fd",
+      "size_bytes": 1139
+    },
+    "v1_hmm_fold_2.joblib": {
+      "sha256": "e8ad4ddf5c54ac121440bb3a2a0c0e1d4016ddfcc1eba9da657772f5a42db53d",
+      "size_bytes": 1139
+    },
+    "v1_hmm_fold_3.joblib": {
+      "sha256": "98b8c6a7c8f7fa21a284c3b002d5668a36e9e13a7e9e00b45efaf7413acc0890",
+      "size_bytes": 1139
+    }
+  },
+  "schema_version": "v1_manifest.1"
+}

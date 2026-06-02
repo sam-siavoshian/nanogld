@@ -1,0 +1,121 @@
+# V4d — V4 walk-forward retrain with RELAXED LLRD recipe.
+#
+# V4 fold 0 result: model collapsed. Position head saturated at -1 for 100%
+# of bars; class head predicted FLAT 100%; raw Sharpe -0.863 vs buy-and-hold
+# +0.859. Root cause: aggressive multi-task stack (Mixout p=0.7 + Sharpe
+# loss + FreeLB K=2) pushed tanh to saturation; LLRD only 3 epochs (vs plan
+# 10) didn't allow recovery; Sharpe loss with B=8 batch uses cross-sample
+# variance, fragile under noise.
+#
+# v4d fixes:
+#   - mixout_p: 0.7 → 0.1 (keep some regularization, drop destabilization)
+#   - freelb_K: 2 → 0 (off; news adversarial noise hurt more than helped)
+#   - sharpe_weight: 0.5 → 0.0 for epochs 0-1, ramps 0.0 → 0.3 by epoch 5
+#     via new `sharpe_warmup_epochs` knob (focal CE establishes class head
+#     before Sharpe loss can saturate position head)
+#   - focal_weight: 0.5 → 1.0 (full weight while sharpe is warming up)
+#   - epochs: 3 → 8 (need more steps for stable convergence)
+#   - base_lr: 1e-4 → 5e-5 (less aggressive)
+#   - position_sat_check: true (NEW guard; bail if |pos|.mean() > 0.95
+#     after epoch 1, indicating recipe still collapsing)
+#
+# Strategy: validate on fold 0 first (~38h). If pos-sat check passes
+# and backtest Sharpe > 0, launch folds 1-3. If fails → diagnose
+# further before more compute.
+
+model:
+  numeric_dim: 651
+  d_model: 192
+  num_heads: 4
+  num_transformer_layers: 10
+  num_slstm_layers: 2
+  t_bars: 64
+  patch_len: 4
+  patch_stride: 4
+  n_classes: 3
+  regime_dim: 12
+  d_text: 256
+  n_news_slots: 8
+  dropout: 0.2
+  drop_path_max: 0.2
+  decomposition_kernel: 24
+
+dataloader:
+  batch_size: 8
+  num_workers: 0
+  lookback_T: 64
+  n_news_slots: 8
+  label_mode: triple_barrier
+
+ssl:
+  # SSL anchor reused from V4 (already trained); resume via stage.done sentinel
+  epochs: 10
+  mask_ratio: 0.40
+  k_views: 3
+  lambda_sim: 0.5
+  lambda_clip: 0.5
+  lambda_aecf: 1.0
+  grad_clip_max_norm: 1.0
+  log_every_n_steps: 100
+  lr: 1.0e-4
+  weight_decay: 0.1
+  warmup_steps: 300
+
+probe:
+  # Probe retrained fresh per fold (depends on SSL anchor)
+  epochs: 5
+  lr: 1.0e-3
+  grad_clip_max_norm: 1.0
+  focal_gamma: 3.0
+
+llrd:
+  # V4d relaxed recipe. See header comment for rationale.
+  epochs: 8
+  base_lr: 5.0e-5
+  decay: 0.85
+  mixout_p: 0.1
+  ema_decay: 0.999
+  grad_clip_max_norm: 1.0
+  focal_gamma: 3.0
+  cost_bps: 2.0
+  focal_weight: 1.0
+  sharpe_weight: 0.3
+  sharpe_warmup_epochs: 2
+  aecf_weight: 0.05
+  freelb_K: 0
+  freelb_epsilon: 0.5
+  position_sat_check: true
+  position_sat_threshold: 0.95
+
+calibration:
+  alpha_target: 0.10
+  raps_lambda: 0.01
+  raps_kreg: 1
+  t_scaling_max_iter: 50
+
+walk_forward:
+  n_folds: 4
+  train_years: 3.0
+  val_months: 6.0
+  test_months: 6.0
+  step_months: 3.0
+  embargo_days: 7
+
+reproducibility:
+  seed: 42
+  deterministic: true
+
+ablations:
+  news_kill: false
+
+observability:
+  heartbeat_seconds: 30
+  wandb_tags: ["v4d", "wf-true", "spark", "gb10", "relaxed-llrd"]
+
+paths:
+  unified: data/processed/training_v1_unified.pt
+  sidecar: data/processed/training_v1_sidecar.pt
+  sidecar_template: "data/processed/training_v1_sidecar_fold_{fold}.pt"
+  hmm: data/processed/v1_hmm.joblib
+  output_dir: checkpoints/v4d
+  reports_dir: reports

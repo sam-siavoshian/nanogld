@@ -1,0 +1,80 @@
+{
+  "base_cost_bps": 2.0,
+  "gates": {
+    "gate_1_sharpe_gt_1_at_1x": {
+      "note": "walk-forward mean Sharpe across folds, net 1x cost",
+      "pass": false,
+      "threshold": 1.0,
+      "value": -0.8631617684636119
+    },
+    "gate_2_sharpe_gt_0_5_at_1_5x": {
+      "note": "walk-forward mean Sharpe across folds, net 1.5x cost",
+      "pass": false,
+      "threshold": 0.5,
+      "value": -0.8641411525891249
+    },
+    "gate_3_beats_baseline_3of4": {
+      "note": "folds where nanogld_v1 beats best baseline by >= 0.2 Sharpe; baselines considered: ['buy_hold', 'ma_cross', 'donchian', 'gao_2014', 'xgboost', 'dlinear', 'tsmixer', 'timemixer', 'xlstm_time', 'vlstm', 'forecast_to_fill']",
+      "pass": false,
+      "threshold": 3,
+      "value": 0
+    },
+    "gate_4_conformal_coverage": {
+      "note": "pending_verification \u2014 needs calibration coverage report",
+      "pass": null,
+      "threshold": "+/- 2% of nominal",
+      "value": null
+    },
+    "gate_5_sizer_stage2_beats_stage1": {
+      "note": "pending_verification \u2014 needs sizer stage A/B run",
+      "pass": null,
+      "threshold": 0.2,
+      "value": null
+    },
+    "gate_6_drawdown_breaker_2_regimes": {
+      "note": "pending_verification \u2014 needs regime-tagged drawdown_breaker test",
+      "pass": null,
+      "threshold": 2,
+      "value": null
+    },
+    "gate_7_dsr_gt_1": {
+      "note": "min deflated Sharpe across folds",
+      "pass": false,
+      "threshold": 1.0,
+      "value": -2.5279731564385486
+    },
+    "gate_8_per_bucket_positive": {
+      "note": "per-fold pass count for {present,absent} both > 0",
+      "pass": false,
+      "threshold": 1,
+      "value": 0
+    }
+  },
+  "manifest": {
+    "cuda_version": "13.0",
+    "extras": {
+      "stage": "backtest_report"
+    },
+    "git_sha": "v4-fold0-real-bl2",
+    "hostname": "spark-0ef7",
+    "platform": "linux/aarch64",
+    "python_version": "3.12.3",
+    "started_at_utc": "2026-05-25T21:47:43.403890+00:00",
+    "torch_version": "2.11.0+cu130"
+  },
+  "n_folds": 1,
+  "strategies": [
+    "nanogld_v1",
+    "buy_hold",
+    "ma_cross",
+    "donchian",
+    "gao_2014",
+    "xgboost",
+    "dlinear",
+    "tsmixer",
+    "timemixer",
+    "xlstm_time",
+    "vlstm",
+    "forecast_to_fill"
+  ]
+}
